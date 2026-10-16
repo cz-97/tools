@@ -4,9 +4,9 @@
 //! launcher's own commands. Enter runs the highlighted one, Esc hides the
 //! panel.
 //!
-//! The search bar doubles as the panel's drag surface and as the way into the
-//! settings window, so the launcher owns the text field instead of letting the
-//! list draw its own.
+//! The panel draws its own settings page rather than opening a second window,
+//! and its header doubles as the drag surface. That is why the launcher owns the
+//! text field instead of letting the list draw its own.
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -14,13 +14,14 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::{List, ListDelegate, ListState};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, IndexPath, Selectable, Theme, ThemeMode, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, IndexPath, Selectable, Sizable as _, Theme, ThemeMode,
+    h_flex, v_flex,
 };
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, ClickEvent, Context, Div, Entity, Focusable, Font, FontWeight,
-    Hsla, IntoElement, Pixels, QuitMode, Render, RenderOnce, Subscription, Task, TextRun,
-    WeakEntity, Window, WindowBounds, WindowControlArea, WindowOptions, actions, div, prelude::*,
-    px, size,
+    AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, Context, Div, Entity, Focusable, Font,
+    FontWeight, Hsla, IntoElement, Pixels, QuitMode, Render, RenderOnce, Subscription, Task,
+    TextRun, WeakEntity, Window, WindowBounds, WindowControlArea, WindowOptions, actions, div,
+    prelude::*, px, size,
 };
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
 use gpui_tools::window::NativeWindow;
@@ -30,19 +31,22 @@ const WINDOW_TITLE: &str = "GPUI Tools Launcher";
 const WINDOW_WIDTH: f32 = 720.;
 const WINDOW_HEIGHT: f32 = 464.;
 
-const SETTINGS_TITLE: &str = "GPUI Tools Settings";
-const SETTINGS_WIDTH: f32 = 520.;
-const SETTINGS_HEIGHT: f32 = 380.;
-
 const REPOSITORY_URL: &str = "https://github.com/cz-97/gpui-tools";
 
-/// The height of the search bar, which is also the panel's drag surface.
-const SEARCH_BAR_HEIGHT: f32 = 52.;
-/// The search field's height, matching the component's medium input.
-const SEARCH_FIELD_HEIGHT: f32 = 32.;
-/// The padding the component draws inside the field, both sides together.
-/// The field has to pay for it to keep its text in view.
-const SEARCH_FIELD_PADDING: f32 = 20.;
+/// The shortcut that summons the panel, as the settings page shows it.
+const HOTKEY_LABEL: &str = "Ctrl + Space";
+
+/// The height of the panel's header, which is also its drag surface.
+const HEADER_HEIGHT: f32 = 52.;
+/// The width of the settings page's section list.
+const SIDEBAR_WIDTH: f32 = 148.;
+/// The search field's height: the component's small input plus a little slack,
+/// so the line box fits without its descenders being clipped.
+const SEARCH_FIELD_HEIGHT: f32 = 26.;
+/// The padding the component draws inside the field, both sides together
+/// (`input_px` is 8 for its small size). The field has to pay for it to keep
+/// its text in view.
+const SEARCH_FIELD_PADDING: f32 = 16.;
 /// The room an empty field keeps for the caret. Anything wider would eat into
 /// the drag surface for nothing.
 const SEARCH_FIELD_CARET: f32 = 4.;
@@ -332,11 +336,60 @@ impl ListDelegate for ToolDelegate {
     }
 }
 
+/// Which page the panel is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Page {
+    /// The command list.
+    Commands,
+    /// Settings, opened on the given section.
+    Settings(SettingsTab),
+}
+
+/// The settings sections, in the order the section list shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsTab {
+    System,
+    Appearance,
+    About,
+}
+
+impl SettingsTab {
+    /// Every section, in the order the section list shows them.
+    const ALL: [Self; 3] = [Self::System, Self::Appearance, Self::About];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::System => "系统",
+            Self::Appearance => "外观",
+            Self::About => "关于",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Self::System => IconName::Cpu,
+            Self::Appearance => IconName::Palette,
+            Self::About => IconName::Info,
+        }
+    }
+
+    /// The section `delta` steps away, clamped to the last one.
+    fn shifted(self, delta: isize) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|tab| *tab == self)
+            .unwrap_or_default() as isize;
+        Self::ALL[(index + delta).clamp(0, Self::ALL.len() as isize - 1) as usize]
+    }
+}
+
 struct Launcher {
     list: Entity<ListState<ToolDelegate>>,
     search: Entity<InputState>,
     /// The text in the search field, kept so the bar can size itself to it.
     query: String,
+    /// The page on show, which the header, body and footer all follow.
+    page: Page,
     /// Kept alive for as long as the launcher is: dropping it would stop the
     /// field from reporting what the user typed.
     _search_events: Subscription,
@@ -365,6 +418,7 @@ impl Launcher {
             list,
             search,
             query: String::new(),
+            page: Page::Commands,
             _search_events: search_events,
         };
         // GPUI focuses nothing by default, so the launcher would swallow every
@@ -404,6 +458,14 @@ impl Launcher {
         });
     }
 
+    /// Up and down: the highlighted command, or the settings section.
+    fn navigate(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        match self.page {
+            Page::Commands => self.move_selection(delta, window, cx),
+            Page::Settings(tab) => self.select_tab(tab.shifted(delta), cx),
+        }
+    }
+
     /// Move the highlight by `delta` rows, clamped to the visible commands.
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.list.read(cx).delegate().visible_count();
@@ -421,7 +483,7 @@ impl Launcher {
         });
     }
 
-    /// Start a fresh session: query cleared, first row highlighted.
+    /// Start a fresh session: command list, query cleared, first row highlighted.
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.query.is_empty() {
             self.search
@@ -430,6 +492,7 @@ impl Launcher {
         }
         self.list
             .update(cx, |list, cx| list.set_query("", window, cx));
+        self.page = Page::Commands;
         self.focus_search(window, cx);
         self.select_row(0, window, cx);
         cx.notify();
@@ -437,71 +500,310 @@ impl Launcher {
 
     /// Run the highlighted command.
     fn activate_selected(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.page, Page::Commands) {
+            return;
+        }
         if let Some(tool) = self.list.read(cx).delegate().selected_tool() {
             (tool.action)(cx);
         }
     }
 
-    /// Open the settings window in place of the panel.
-    fn open_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        // Both steps move windows, which must not happen while this one is
-        // dispatching the click that asked for them.
-        cx.defer(|cx| {
+    /// Esc steps back out of settings before it hides the panel.
+    fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.page, Page::Settings(_)) {
+            self.back_to_commands(window, cx);
+        } else {
             hide_launcher(cx);
-            open_settings_window(cx);
-        });
+        }
     }
 
-    /// The search bar, which is also the panel's drag surface.
+    /// Show the settings page in place of the command list.
+    fn open_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.page = Page::Settings(SettingsTab::System);
+        cx.notify();
+    }
+
+    /// Return to the command list, with the field ready to type into.
+    fn back_to_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = Page::Commands;
+        self.focus_search(window, cx);
+        cx.notify();
+    }
+
+    /// Show another settings section.
+    fn select_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
+        if self.page == Page::Settings(tab) {
+            return;
+        }
+        self.page = Page::Settings(tab);
+        cx.notify();
+    }
+
+    /// Switch colour scheme, in every window, and remember the choice.
+    fn choose_theme(&mut self, choice: ColorScheme, window: &mut Window, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        if settings.theme == choice {
+            return;
+        }
+        settings.theme = choice;
+        apply_theme(choice, Some(window), cx);
+        store_settings(settings, cx);
+        cx.notify();
+    }
+
+    /// The panel's header, which is also its drag surface.
     ///
-    /// Only the controls that need the mouse themselves are excluded from the
-    /// drag region — the search field and the settings button. The field is
-    /// exactly as wide as the text in it, so an empty field leaves the whole
-    /// bar, hint included, free to drag the panel by.
-    fn search_bar(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+    /// On the command page it holds the search field and the way into settings;
+    /// on the settings page it shows the way back instead. Either way only the
+    /// controls that need the mouse themselves are excluded from the drag
+    /// region: the field is exactly as wide as the text in it, so an empty bar
+    /// is free to drag the panel by, hint included.
+    fn header(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let (muted_fg, border) = {
             let theme = cx.theme();
             (theme.muted_foreground, theme.border)
         };
 
-        div()
-            .id("search-bar")
+        let bar = div()
+            .id("panel-bar")
             .window_control_area(WindowControlArea::Drag)
             .flex()
             .items_center()
             .gap_2()
-            .h(px(SEARCH_BAR_HEIGHT))
+            .h(px(HEADER_HEIGHT))
             .px_3()
             .border_b_1()
-            .border_color(border)
-            .child(Icon::new(IconName::Search).size_4().text_color(muted_fg))
-            .child(
-                div()
-                    .id("search-field")
-                    .occlude()
-                    .flex_shrink_0()
-                    .w(search_field_width(window, cx, &self.query))
-                    .h(px(SEARCH_FIELD_HEIGHT))
-                    .child(Input::new(&self.search).appearance(false).cleanable(false)),
+            .border_color(border);
+
+        match self.page {
+            Page::Commands => bar
+                .child(Icon::new(IconName::Search).size_4().text_color(muted_fg))
+                .child(
+                    div()
+                        .id("search-field")
+                        .occlude()
+                        .flex_shrink_0()
+                        .w(search_field_width(window, cx, &self.query))
+                        .h(px(SEARCH_FIELD_HEIGHT))
+                        .child(
+                            // Small, not the default medium: the medium input
+                            // spends 16px of its height on its own vertical
+                            // padding, which is more than the line box has
+                            // left, and the bottom of every glyph gets cut.
+                            Input::new(&self.search)
+                                .small()
+                                .appearance(false)
+                                .cleanable(false),
+                        ),
+                )
+                .when(self.query.is_empty(), |this| {
+                    // The hint belongs to the drag surface, not to the field: it
+                    // is there to be read while the bar is dragged by.
+                    this.child(div().text_sm().text_color(muted_fg).child(SEARCH_HINT))
+                })
+                .child(div().flex_1())
+                .child(
+                    div().id("settings-button").occlude().flex_shrink_0().child(
+                        Button::new("settings")
+                            .ghost()
+                            .icon(IconName::Settings)
+                            .tooltip("设置")
+                            .on_click(cx.listener(|launcher, _, window, cx| {
+                                launcher.open_settings(window, cx)
+                            })),
+                    ),
+                )
+                .into_any_element(),
+            Page::Settings(_) => bar
+                .child(
+                    div().id("settings-back").occlude().flex_shrink_0().child(
+                        Button::new("back-to-commands")
+                            .ghost()
+                            .icon(IconName::ArrowLeft)
+                            .tooltip("返回")
+                            .on_click(cx.listener(|launcher, _, window, cx| {
+                                launcher.back_to_commands(window, cx)
+                            })),
+                    ),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("设置"),
+                )
+                .child(div().flex_1())
+                .into_any_element(),
+        }
+    }
+
+    /// The settings page: the sections on the left, the chosen one on the right.
+    fn settings_page(&self, tab: SettingsTab, cx: &Context<Self>) -> impl IntoElement {
+        let (border, muted, muted_fg, fg, accent, accent_fg) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.muted,
+                theme.muted_foreground,
+                theme.foreground,
+                theme.accent,
+                theme.accent_foreground,
             )
-            .when(self.query.is_empty(), |this| {
-                // The hint belongs to the drag surface, not to the field: it is
-                // there to be read while the bar is dragged by.
-                this.child(div().text_sm().text_color(muted_fg).child(SEARCH_HINT))
-            })
-            .child(div().flex_1())
+        };
+        let colors = RowColors {
+            background: muted,
+            foreground: fg,
+            muted_foreground: muted_fg,
+            accent,
+        };
+        let settings = stored_settings(cx);
+
+        let sections = v_flex()
+            .w(px(SIDEBAR_WIDTH))
+            .flex_shrink_0()
+            .p_2()
+            .gap_1()
+            .border_r_1()
+            .border_color(border)
+            .children(SettingsTab::ALL.into_iter().enumerate().map(|(ix, item)| {
+                let selected = item == tab;
+                h_flex()
+                    .id(("section", ix))
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(6.))
+                    .text_sm()
+                    .text_color(if selected { accent_fg } else { fg })
+                    .cursor_pointer()
+                    .when(selected, move |this| this.bg(accent))
+                    .when(!selected, move |this| {
+                        this.hover(move |style| style.bg(muted_fg.opacity(0.18)))
+                    })
+                    .on_click(cx.listener(move |launcher, _, _, cx| launcher.select_tab(item, cx)))
+                    .child(Icon::new(item.icon()).size_4().text_color(if selected {
+                        accent_fg
+                    } else {
+                        muted_fg
+                    }))
+                    .child(div().child(item.label()))
+            }));
+
+        let content =
+            match tab {
+                SettingsTab::System => v_flex()
+                    .gap_1()
+                    .child(info_row("全局快捷键", HOTKEY_LABEL.to_string(), colors))
+                    .child(action_row(
+                        "open-config",
+                        "配置文件夹",
+                        settings_directory(),
+                        colors,
+                        cx.listener(|_, _, _, cx| open_settings_folder(cx)),
+                    ))
+                    .child(action_row(
+                        "quit",
+                        "退出启动器",
+                        "关闭面板与托盘".to_string(),
+                        colors,
+                        cx.listener(|_, _, _, cx| quit_launcher(cx)),
+                    ))
+                    .into_any_element(),
+                SettingsTab::Appearance => v_flex()
+                    .gap_1()
+                    .child(section(
+                        "主题",
+                        muted_fg,
+                        h_flex()
+                            .gap_2()
+                            .children(ColorScheme::ALL.into_iter().enumerate().map(
+                                |(ix, choice)| {
+                                    let selected = choice == settings.theme;
+                                    div()
+                                        .id(("theme", ix))
+                                        .px_3()
+                                        .py_1()
+                                        .rounded(px(6.))
+                                        .text_sm()
+                                        .text_color(if selected { accent_fg } else { fg })
+                                        .cursor_pointer()
+                                        .when(selected, move |this| this.bg(accent))
+                                        .when(!selected, move |this| {
+                                            this.hover(move |style| {
+                                                style.bg(muted_fg.opacity(0.18))
+                                            })
+                                        })
+                                        .on_click(cx.listener(move |launcher, _, window, cx| {
+                                            launcher.choose_theme(choice, window, cx)
+                                        }))
+                                        .child(choice.label())
+                                },
+                            )),
+                    ))
+                    .into_any_element(),
+                SettingsTab::About => v_flex()
+                    .gap_1()
+                    .child(info_row(
+                        "版本",
+                        env!("CARGO_PKG_VERSION").to_string(),
+                        colors,
+                    ))
+                    .child(action_row(
+                        "open-repository",
+                        "项目仓库",
+                        REPOSITORY_URL.to_string(),
+                        colors,
+                        cx.listener(|_, _, _, cx| open_repository(cx)),
+                    ))
+                    .child(action_row(
+                        "open-folder",
+                        "程序文件夹",
+                        program_dir().display().to_string(),
+                        colors,
+                        cx.listener(|_, _, _, cx| open_program_folder(cx)),
+                    ))
+                    .into_any_element(),
+            };
+
+        // `h_flex` centers on the cross axis by default, which would float the
+        // page in the middle of the panel; the sections belong at the top.
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .items_stretch()
+            .overflow_hidden()
+            .child(sections)
             .child(
-                div().id("settings-button").occlude().flex_shrink_0().child(
-                    Button::new("settings")
-                        .ghost()
-                        .icon(IconName::Settings)
-                        .tooltip("设置")
-                        .on_click(cx.listener(|launcher, _, window, cx| {
-                            launcher.open_settings(window, cx)
-                        })),
-                ),
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .px_4()
+                    .py_4()
+                    .child(content),
             )
     }
+}
+
+/// The folder the settings file lives in, for the row that opens it.
+fn settings_directory() -> String {
+    Settings::directory().map_or_else(
+        || "未找到配置目录".to_string(),
+        |dir| dir.display().to_string(),
+    )
+}
+
+/// Open the folder that holds the settings file.
+fn open_settings_folder(cx: &mut App) {
+    let Some(dir) = Settings::directory() else {
+        eprintln!("gpui-tools: no settings directory to open");
+        return;
+    };
+    if !dir.is_dir() {
+        eprintln!("gpui-tools: {} has not been created yet", dir.display());
+        return;
+    }
+    open_folder(&dir, cx);
 }
 
 /// How wide the search field must be to show `query` without scrolling.
@@ -563,6 +865,21 @@ impl Render for Launcher {
                 .child(div().text_color(muted_fg).child(label))
         };
 
+        let (hints, trailing): (Vec<(&'static str, &'static str)>, String) = match self.page {
+            Page::Commands => (
+                vec![
+                    ("\u{2191}\u{2193}", "Navigate"),
+                    ("Enter", "Open"),
+                    ("Esc", "Close"),
+                ],
+                format!("{count} commands"),
+            ),
+            Page::Settings(_) => (
+                vec![("\u{2191}\u{2193}", "Sections"), ("Esc", "Back")],
+                String::new(),
+            ),
+        };
+
         let footer = h_flex()
             .px_3()
             .py_2()
@@ -570,15 +887,21 @@ impl Render for Launcher {
             .border_t_1()
             .border_color(border)
             .text_xs()
-            .child(chip("\u{2191}\u{2193}", "Navigate"))
-            .child(chip("Enter", "Open"))
-            .child(chip("Esc", "Close"))
+            .children(hints.into_iter().map(|(key, label)| chip(key, label)))
             .child(div().flex_1())
-            .child(
-                div()
-                    .text_color(muted_fg)
-                    .child(format!("{count} commands")),
-            );
+            .when(!trailing.is_empty(), move |this| {
+                this.child(div().text_color(muted_fg).child(trailing))
+            });
+
+        let body = match self.page {
+            Page::Commands => div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .child(List::new(&self.list).px_1().py_1())
+                .into_any_element(),
+            Page::Settings(tab) => self.settings_page(tab, cx).into_any_element(),
+        };
 
         div()
             .flex()
@@ -586,36 +909,9 @@ impl Render for Launcher {
             .size_full()
             .bg(bg)
             .text_color(fg)
-            .child(self.search_bar(window, cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .child(List::new(&self.list).px_1().py_1()),
-            )
+            .child(self.header(window, cx))
+            .child(body)
             .child(footer)
-    }
-}
-
-/// The settings window's root view.
-struct SettingsView;
-
-impl SettingsView {
-    fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
-        Self
-    }
-
-    /// Switch colour scheme, in every window, and remember the choice.
-    fn choose_theme(&mut self, choice: ColorScheme, window: &mut Window, cx: &mut Context<Self>) {
-        let mut settings = stored_settings(cx);
-        if settings.theme == choice {
-            return;
-        }
-        settings.theme = choice;
-        apply_theme(choice, Some(window), cx);
-        store_settings(settings, cx);
-        cx.notify();
     }
 }
 
@@ -678,126 +974,6 @@ fn section(title: &'static str, muted_fg: Hsla, content: impl IntoElement) -> im
         .gap_2()
         .child(div().text_xs().text_color(muted_fg).child(title))
         .child(content)
-}
-
-impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (bg, fg, border, muted, muted_fg, accent, accent_fg) = {
-            let theme = cx.theme();
-            (
-                theme.background,
-                theme.foreground,
-                theme.border,
-                theme.muted,
-                theme.muted_foreground,
-                theme.accent,
-                theme.accent_foreground,
-            )
-        };
-        let settings = stored_settings(cx);
-        let colors = RowColors {
-            background: muted,
-            foreground: fg,
-            muted_foreground: muted_fg,
-            accent,
-        };
-
-        // The page's own drag surface, minus the button that closes it.
-        let header = div()
-            .id("settings-bar")
-            .window_control_area(WindowControlArea::Drag)
-            .flex()
-            .items_center()
-            .justify_between()
-            .h(px(SEARCH_BAR_HEIGHT))
-            .px_3()
-            .border_b_1()
-            .border_color(border)
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("设置"),
-            )
-            .child(
-                div().id("settings-close").occlude().flex_shrink_0().child(
-                    Button::new("close-settings")
-                        .ghost()
-                        .icon(IconName::Close)
-                        .tooltip("关闭")
-                        .on_click(cx.listener(|_, _, _, cx| close_settings(cx))),
-                ),
-            );
-
-        let theme_choices =
-            h_flex()
-                .gap_2()
-                .children(
-                    ColorScheme::ALL
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ix, choice)| {
-                            let selected = choice == settings.theme;
-                            div()
-                                .id(("theme", ix))
-                                .px_3()
-                                .py_1()
-                                .rounded(px(6.))
-                                .bg(if selected { accent } else { muted })
-                                .text_sm()
-                                .text_color(if selected { accent_fg } else { fg })
-                                .cursor_pointer()
-                                .when(!selected, move |this| {
-                                    this.hover(move |style| style.bg(muted_fg.opacity(0.25)))
-                                })
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.choose_theme(choice, window, cx)
-                                }))
-                                .child(choice.label())
-                        }),
-                );
-
-        let about = v_flex()
-            .gap_1()
-            .child(info_row(
-                "版本",
-                env!("CARGO_PKG_VERSION").to_string(),
-                colors,
-            ))
-            .child(action_row(
-                "open-repository",
-                "项目仓库",
-                REPOSITORY_URL.to_string(),
-                colors,
-                cx.listener(|_, _, _, cx| open_repository(cx)),
-            ))
-            .child(action_row(
-                "open-folder",
-                "程序文件夹",
-                program_dir().display().to_string(),
-                colors,
-                cx.listener(|_, _, _, cx| open_program_folder(cx)),
-            ));
-
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(bg)
-            .text_color(fg)
-            .child(header)
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .px_4()
-                    .py_4()
-                    .gap_5()
-                    .child(section("外观", muted_fg, theme_choices))
-                    .child(section("关于", muted_fg, about)),
-            )
-    }
 }
 
 fn launch() {
@@ -863,7 +1039,7 @@ fn launch() {
             cx.on_action(show_launcher_action)
                 .on_action(quit_application_action);
 
-            // The bar's keys are claimed before keymap resolution: the field
+            // The panel's keys are claimed before keymap resolution: the field
             // would otherwise swallow Enter, and the list — which is no longer
             // the focused view — would never see the arrows or Escape.
             let interceptor = cx.intercept_keystrokes(|event, window, cx| {
@@ -875,19 +1051,15 @@ fn launch() {
                         with_launcher(cx, |launcher, _window, cx| launcher.activate_selected(cx));
                     }
                     "up" => {
-                        with_launcher(cx, |launcher, window, cx| {
-                            launcher.move_selection(-1, window, cx)
-                        });
+                        with_launcher(cx, |launcher, window, cx| launcher.navigate(-1, window, cx));
                         cx.stop_propagation();
                     }
                     "down" => {
-                        with_launcher(cx, |launcher, window, cx| {
-                            launcher.move_selection(1, window, cx)
-                        });
+                        with_launcher(cx, |launcher, window, cx| launcher.navigate(1, window, cx));
                         cx.stop_propagation();
                     }
                     "escape" => {
-                        hide_launcher(cx);
+                        with_launcher(cx, |launcher, window, cx| launcher.escape(window, cx));
                         cx.stop_propagation();
                     }
                     _ => {}
@@ -937,7 +1109,7 @@ fn launch() {
                     cx.set_global(HotkeyRegistration { _manager: manager });
                 } else {
                     eprintln!(
-                        "Could not register Ctrl+Space; another application may already own it."
+                        "Could not register {HOTKEY_LABEL}; another application may already own it."
                     );
                 }
             } else {
@@ -1015,11 +1187,9 @@ fn with_launcher(
     });
 }
 
-/// Show and raise the launcher panel, always starting from a clean query.
+/// Show and raise the launcher panel, always starting from a clean session.
 fn show_launcher(cx: &mut App) {
     with_launcher(cx, |launcher, window, cx| launcher.reset(window, cx));
-    // The panel comes forward alone: overlapping panels are just clutter.
-    close_settings(cx);
     if let Some(panel) = cx.try_global::<LauncherPanel>() {
         panel.window.show();
         panel.window.focus();
@@ -1035,59 +1205,6 @@ fn hide_launcher(cx: &mut App) {
         panel.window.hide();
     }
     remember_window_position(cx);
-}
-
-/// Open the settings window, or raise the one that is already open.
-fn open_settings_window(cx: &mut App) {
-    if let Some(window) = NativeWindow::find(SETTINGS_TITLE) {
-        window.show();
-        window.focus();
-        return;
-    }
-
-    let bounds = Bounds::centered(None, size(px(SETTINGS_WIDTH), px(SETTINGS_HEIGHT)), cx);
-    let opened = gpui_kit::open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            show: false,
-            focus: false,
-            ..Default::default()
-        },
-        cx,
-        |window, cx| {
-            window.set_window_title(SETTINGS_TITLE);
-            window.on_window_should_close(cx, |_, cx| {
-                close_settings(cx);
-                false
-            });
-            cx.new(|cx| SettingsView::new(window, cx))
-        },
-    );
-
-    // The window keeps its own root view alive; the handle it returns is not
-    // needed once it exists.
-    if let Err(error) = opened {
-        eprintln!("gpui-tools: could not open the settings window: {error:?}");
-        return;
-    }
-
-    match NativeWindow::find(SETTINGS_TITLE) {
-        Some(window) => {
-            if !window.apply_panel_chrome(SETTINGS_WIDTH, SETTINGS_HEIGHT) {
-                eprintln!("gpui-tools: could not apply the settings chrome in full");
-            }
-            window.show();
-            window.focus();
-        }
-        None => eprintln!("gpui-tools: the settings window was not found after creation"),
-    }
-}
-
-/// Hide the settings window without destroying it.
-fn close_settings(_cx: &mut App) {
-    if let Some(window) = NativeWindow::find(SETTINGS_TITLE) {
-        window.hide();
-    }
 }
 
 /// Put the stored colour scheme in force in every window.
@@ -1131,9 +1248,15 @@ fn remember_window_position(cx: &mut App) {
 }
 
 fn open_program_folder(cx: &mut App) {
-    let dir = program_dir();
+    open_folder(&program_dir(), cx);
+}
+
+/// Show a folder in the file manager, bringing the panel back to the front
+/// afterwards: Explorer takes the foreground, and the panel is meant to be what
+/// the user is looking at.
+fn open_folder(dir: &std::path::Path, cx: &mut App) {
     // An argument array, never a shell string.
-    if let Err(error) = std::process::Command::new("explorer").arg(&dir).spawn() {
+    if let Err(error) = std::process::Command::new("explorer").arg(dir).spawn() {
         eprintln!("gpui-tools: could not open {}: {error}", dir.display());
     }
     cx.activate(true);

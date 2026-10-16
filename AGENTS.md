@@ -10,9 +10,9 @@
 2. 输入关键词过滤命令。
 3. 上下方向键选择。
 4. Enter 执行选中项。
-5. Esc 隐藏窗口。
+5. Esc 隐藏窗口；在设置页里 Esc 先返回命令列表。
 6. 拖动搜索栏空白处移动面板（纵坐标会被记住）。
-7. 搜索栏右侧的齿轮图标打开设置页。
+7. 搜索栏右侧的齿轮图标打开面板内设置页（系统 / 外观 / 关于三个标签）。
 
 不追求成为通用启动器框架，也不做插件扩展体系。命令是编译进主程序的静态表。
 
@@ -30,7 +30,7 @@
 - 窗口外壳：无边框、精确客户区尺寸、按显示器工作区居中（`src/window.rs`）。
 - 命令列表的过滤、渲染与键盘导航。
 - 命令的执行。
-- 设置窗口（`SettingsView`）与设置持久化（`src/settings.rs`）。
+- 设置页（面板内的 `Page::Settings`）与设置持久化（`src/settings.rs`）。
 - 系统托盘。
 
 ## 4. 命令
@@ -64,14 +64,25 @@
 - 搜索框宽度跟随文字（`search_field_width`），不用 `flex_1`：它占的每一像素都是拖不动的
   区域。空查询时只留光标宽度，因此「没有文字时整条搜索栏（含占位提示）都能拖」。
 - 占位提示是拖动区里的普通 `div`，不是 Input 的 placeholder —— 提示要能跟着被拖。
-- 设置按钮在搜索栏右端，点击后先藏面板再开设置窗口（两个窗口不叠在一起）。
+- 搜索框用 `Size::Small`（`input_px == 8`、`input_py == 2`、高 24）。Medium 的上下内边距
+  是 8+8，一行 1.25rem 的文字只剩 16px，**下半截字形会被裁掉**；容器高度要按
+  `SEARCH_FIELD_HEIGHT`(26) 给足。
+- 设置按钮在搜索栏右端，点击把面板切到设置页（`Page::Settings`）；页头变成「返回 +
+  设置」，同一个拖动区。
 
 ## 5.2 键盘
 
 输入框是唯一持有焦点的控件，而 List 不再是焦点视图，所以**按键统一由
 `App::intercept_keystrokes` 处理**（`enter` / `up` / `down` / `escape`），并通过
-`with_launcher` 回到视图。拦截器要先用 `owns_window` 确认按键属于启动器窗口，否则设置
-窗口里的按键会被启动器吞掉。
+`with_launcher` 回到视图。`up/down` 按 `Page` 分派：命令页移动高亮，设置页切换标签；
+`Esc` 在设置页先返回命令列表，再隐藏面板。拦截器用 `owns_window` 确认按键属于面板
+窗口（现在只有这一个窗口，留着是给以后可能出现的窗口兜底）。
+
+## 5.3 设置页
+
+设置是面板内的一个页面（`Page::Settings(SettingsTab)`），不是独立窗口：左侧
+系统 / 外观 / 关于三个标签（`SettingsTab`），右侧内容，页头是同一个拖动区。`h_flex`
+默认在交叉轴居中，设置页的骨架要显式 `.items_stretch()`，否则内容会悬在面板中间。
 
 ## 5.3 设置
 
@@ -114,16 +125,18 @@
 - List 不再用自带搜索框（`searchable(false)`），但 `ListState::set_query` 仍然可用（它写
   内部 input 并触发 `perform_search`）。它需要 `&mut Window`，所以只能经 `with_launcher`
   延迟调用。
-- `Input` 根节点是 `size_full()`，宽度只能由外层 div 控制；输入框内边距是
-  `Size::Medium` 的 `input_px() == 10` 两侧、`input_h() == 32`，测量文字宽度时要把它算进去。
+- `Input` 根节点是 `size_full()`，宽高都只能由外层 div 控制；内边距来自 `Size`：
+  `input_px()`（Medium 10 / Small 8）与 `input_py()`（Medium 8 / Small 2），行高是
+  1.25rem——容器高减去上下内边距必须 >= 行高，否则字形被裁。
+- `h_flex()` = `flex().flex_row().items_center()`（gpui-base `styled.rs`），**交叉轴默认
+  居中**；要顶对齐必须显式 `.items_stretch()` 或 `.items_start()`。`v_flex()` 只设
+  `flex().flex_col()`，不装交叉轴对齐。
 - **`Entity::update_in` / `WeakEntity::update_in` 只对窗口根视图生效**，从只有 `&mut App`
   的回调里更新普通视图会报 `entity has no current window`。用 `with_launcher`。
 - 在实体 A 的 update 里 update 实体 B 会 panic（`cannot update X while it is already being
 updated`）。跨实体通知必须 `app.defer(...)`。
 - 从回调和拦截器里更新窗口的错误不能 `.ok()` 吞掉：吞掉之后的现象和「按键完全没反应」
   一模一样。
-- 创建窗口不要在自己的点击回调里直接开：`cx.defer` 到本周期之后再 hide + open，避免在
-  窗口事件分发过程中挪窗口。
 
 ## 10. 开发要求
 

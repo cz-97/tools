@@ -97,6 +97,14 @@ impl Settings {
         )
     }
 
+    /// The folder the settings live in, for the host to point the user at.
+    ///
+    /// The folder is not created on demand: a first run with no settings has
+    /// nothing worth showing, and the caller decides what to do about that.
+    pub fn directory() -> Option<PathBuf> {
+        Self::path()?.parent().map(std::path::Path::to_path_buf)
+    }
+
     /// Parse a stored record. Unknown keys and unusable values are ignored.
     fn parse(text: &str) -> Self {
         let mut settings = Self::default();
