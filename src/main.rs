@@ -51,8 +51,9 @@ const SEARCH_FIELD_PADDING: f32 = 16.;
 /// the drag surface for nothing.
 const SEARCH_FIELD_CARET: f32 = 4.;
 /// Slack added to a measured query, so a field that is a hair too narrow never
-/// scrolls the text out of sight.
-const SEARCH_FIELD_SLACK: f32 = 8.;
+/// scrolls the text out of sight. A full em covers a shaping fallback that
+/// measures wider than the theme font does.
+const SEARCH_FIELD_SLACK: f32 = 14.;
 /// The widest the field may grow, leaving the icon, the hint and the settings
 /// button their room.
 const SEARCH_FIELD_MAX: f32 = 560.;
@@ -386,13 +387,16 @@ impl SettingsTab {
 struct Launcher {
     list: Entity<ListState<ToolDelegate>>,
     search: Entity<InputState>,
-    /// The text in the search field, kept so the bar can size itself to it.
+    /// The committed search text, mirrored from the field to drive the list.
+    /// Text an IME is still composing is not here yet, which is why the bar
+    /// sizes itself from the field's own value instead (see `header`).
     query: String,
     /// The page on show, which the header, body and footer all follow.
     page: Page,
-    /// Kept alive for as long as the launcher is: dropping it would stop the
-    /// field from reporting what the user typed.
+    /// Kept alive for as long as the launcher is: dropping either would stop
+    /// the field from reporting what the user typed.
     _search_events: Subscription,
+    _search_observation: Subscription,
 }
 
 impl Launcher {
@@ -413,6 +417,15 @@ impl Launcher {
                 launcher.search_changed(query, cx);
             }
         });
+        // A change event only fires once an IME composition is committed, but
+        // the field already holds the composing text while it is in flight, and
+        // the bar has to grow with it. The state notifies on every such update,
+        // so follow it and redraw whenever the two texts disagree.
+        let search_observation = cx.observe(&search, |launcher, search, cx| {
+            if search.read(cx).value().as_ref() != launcher.query {
+                cx.notify();
+            }
+        });
 
         let launcher = Self {
             list,
@@ -420,6 +433,7 @@ impl Launcher {
             query: String::new(),
             page: Page::Commands,
             _search_events: search_events,
+            _search_observation: search_observation,
         };
         // GPUI focuses nothing by default, so the launcher would swallow every
         // keystroke until the user clicked the field.
@@ -563,6 +577,11 @@ impl Launcher {
             let theme = cx.theme();
             (theme.muted_foreground, theme.border)
         };
+        // Size the bar from the field's own text, not from the committed query:
+        // while an IME composition is in flight the buffer already holds text
+        // the query knows nothing about, and a bar sized to the query would
+        // scroll that text out of view to the left.
+        let field_text = self.search.read(cx).value().to_string();
 
         let bar = div()
             .id("panel-bar")
@@ -583,7 +602,7 @@ impl Launcher {
                         .id("search-field")
                         .occlude()
                         .flex_shrink_0()
-                        .w(search_field_width(window, cx, &self.query))
+                        .w(search_field_width(window, cx, &field_text))
                         .h(px(SEARCH_FIELD_HEIGHT))
                         .child(
                             // Small, not the default medium: the medium input
@@ -596,7 +615,7 @@ impl Launcher {
                                 .cleanable(false),
                         ),
                 )
-                .when(self.query.is_empty(), |this| {
+                .when(field_text.is_empty(), |this| {
                     // The hint belongs to the drag surface, not to the field: it
                     // is there to be read while the bar is dragged by.
                     this.child(div().text_sm().text_color(muted_fg).child(SEARCH_HINT))
