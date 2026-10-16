@@ -1,0 +1,23 @@
+[package]
+name = "gpui-tools"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui-kit = "0.7.3"
+global-hotkey = "0.8"
+gpui-tray = { version = "0.1.4", default-features = false, features = ["gpui-kit"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 2
+lto = "thin"
