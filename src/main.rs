@@ -27,6 +27,7 @@ use gpui_kit::{
 use gpui_tools::autostart;
 use gpui_tools::logo;
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
+use gpui_tools::shell;
 use gpui_tools::window::NativeWindow;
 use gpui_tray::{Icon as TrayIcon, Tray};
 
@@ -52,6 +53,12 @@ const SIDEBAR_WIDTH: f32 = 148.;
 /// (`input_px` is 8 for its small size). The field has to pay for it to keep
 /// its text in view.
 const SEARCH_FIELD_PADDING: f32 = 16.;
+/// How often the panel checks whether it still owns the foreground.
+const FOCUS_CHECK_INTERVAL: Duration = Duration::from_millis(60);
+/// How many checks in a row may miss the foreground before the panel hides.
+/// A few, so the moment between raising the window and the shell handing the
+/// foreground over does not count as the user leaving.
+const FOCUS_LOST_SAMPLES: u8 = 3;
 /// The room an empty field keeps for the caret. Anything wider would eat into
 /// the drag surface for nothing.
 const SEARCH_FIELD_CARET: f32 = 4.;
@@ -402,6 +409,9 @@ struct Launcher {
     /// summon inside the stored retention window reopens that section instead
     /// of the command list.
     last_section: Option<(Instant, SettingsTab)>,
+    /// The loop that hides the panel once another window takes the foreground.
+    /// Restarted on every summon; the previous one has already ended by then.
+    focus_watch: Option<Task<()>>,
     /// Kept alive for as long as the launcher is: dropping either would stop
     /// the field from reporting what the user typed.
     _search_events: Subscription,
@@ -442,6 +452,7 @@ impl Launcher {
             query: String::new(),
             page: Page::Commands,
             last_section: None,
+            focus_watch: None,
             _search_events: search_events,
             _search_observation: search_observation,
         };
@@ -524,7 +535,56 @@ impl Launcher {
         };
         self.focus_search(window, cx);
         self.select_row(0, window, cx);
+        self.watch_focus(cx);
         cx.notify();
+    }
+
+    /// Hide the panel once another window takes the foreground, the way a
+    /// launcher is expected to behave.
+    ///
+    /// GPUI reports no window-activation event, and the platform keeps that
+    /// state to itself, so the panel samples the foreground window instead. The
+    /// loop ends as soon as the panel hides, and the next summon starts a fresh
+    /// one; the panel must have been in front at least once, so a window the
+    /// shell refused to raise is not hidden before it is ever seen.
+    fn watch_focus(&mut self, cx: &mut Context<Self>) {
+        self.focus_watch = Some(cx.spawn(async move |this, cx| {
+            let mut was_in_front = false;
+            let mut misses = 0u8;
+            loop {
+                cx.background_executor().timer(FOCUS_CHECK_INTERVAL).await;
+                let watching = this.update(cx, |launcher, cx| {
+                    let Some(panel) = cx.try_global::<LauncherPanel>().copied() else {
+                        return false;
+                    };
+                    if !panel.window.is_visible() {
+                        return false;
+                    }
+                    if panel.window.is_foreground() {
+                        was_in_front = true;
+                        misses = 0;
+                        return true;
+                    }
+                    if !was_in_front {
+                        return true;
+                    }
+                    misses += 1;
+                    if misses < FOCUS_LOST_SAMPLES {
+                        return true;
+                    }
+                    launcher.leave_on_focus_loss(cx);
+                    false
+                });
+                if !watching.unwrap_or(false) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Leave the panel because the user moved to another window.
+    fn leave_on_focus_loss(&mut self, cx: &mut Context<Self>) {
+        hide_launcher(cx);
     }
 
     /// The settings section a summon should reopen, if the panel left it
@@ -925,7 +985,7 @@ fn settings_directory() -> String {
 }
 
 /// Open the folder that holds the settings file.
-fn open_settings_folder(cx: &mut App) {
+fn open_settings_folder(_cx: &mut App) {
     let Some(dir) = Settings::directory() else {
         eprintln!("gpui-tools: no settings directory to open");
         return;
@@ -934,7 +994,7 @@ fn open_settings_folder(cx: &mut App) {
         eprintln!("gpui-tools: {} has not been created yet", dir.display());
         return;
     }
-    open_folder(&dir, cx);
+    open_folder(&dir);
 }
 
 /// How wide the search field must be to show `query` without scrolling.
@@ -1519,23 +1579,27 @@ fn remember_window_position(cx: &mut App) {
     store_settings(settings, cx);
 }
 
-fn open_program_folder(cx: &mut App) {
-    open_folder(&program_dir(), cx);
+fn open_program_folder(_cx: &mut App) {
+    open_folder(&program_dir());
 }
 
-/// Show a folder in the file manager, bringing the panel back to the front
-/// afterwards: Explorer takes the foreground, and the panel is meant to be what
-/// the user is looking at.
-fn open_folder(dir: &std::path::Path, cx: &mut App) {
-    // An argument array, never a shell string.
-    if let Err(error) = std::process::Command::new("explorer").arg(dir).spawn() {
-        eprintln!("gpui-tools: could not open {}: {error}", dir.display());
+/// Show a folder in whatever file manager the user has made the default.
+///
+/// The shell resolves the association, so naming a program here — Explorer
+/// included — would ignore a different default. Opening something else is the
+/// user leaving the launcher, so the panel hides behind it like any other
+/// focus loss.
+fn open_folder(dir: &std::path::Path) {
+    if !shell::open(dir) {
+        eprintln!("gpui-tools: could not open {}", dir.display());
     }
-    cx.activate(true);
 }
 
-fn open_repository(cx: &mut App) {
-    cx.open_url(REPOSITORY_URL);
+/// Open the project page in the user's default browser.
+fn open_repository(_cx: &mut App) {
+    if !shell::open(REPOSITORY_URL) {
+        eprintln!("gpui-tools: could not open {REPOSITORY_URL}");
+    }
 }
 
 fn quit_launcher(cx: &mut App) {
@@ -1550,6 +1614,7 @@ impl gpui_kit::Global for SettingsStore {}
 
 /// The launcher's native window, kept so every caller shares one handle
 /// instead of re-finding the window by title on each action.
+#[derive(Clone, Copy)]
 struct LauncherPanel {
     window: NativeWindow,
 }

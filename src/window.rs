@@ -82,6 +82,14 @@ impl NativeWindow {
         sys::focus(self.handle)
     }
 
+    /// Whether this window is the one the user is working in.
+    ///
+    /// A launcher hides itself when another window takes over, and GPUI reports
+    /// no activation event, so the host asks the window manager instead.
+    pub fn is_foreground(self) -> bool {
+        sys::is_foreground(self.handle)
+    }
+
     /// Physical pixels per logical UI unit on the monitor this window is on.
     pub fn scale_factor(self) -> f32 {
         sys::scale_factor(self.handle)
@@ -172,12 +180,12 @@ mod sys {
     use windows_sys::Win32::UI::Controls::MARGINS;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GWL_STYLE, GetClientRect, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
-        ICON_BIG, ICON_SMALL, IMAGE_ICON, IsWindow, IsWindowVisible, LR_DEFAULTCOLOR, LoadImageW,
-        SM_CXICON, SM_CXSMICON, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-        SetWindowPos, ShowWindow, WM_SETICON, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-        WS_SYSMENU, WS_THICKFRAME,
+        FindWindowW, GWL_STYLE, GetClientRect, GetForegroundWindow, GetSystemMetrics,
+        GetWindowLongPtrW, GetWindowRect, ICON_BIG, ICON_SMALL, IMAGE_ICON, IsWindow,
+        IsWindowVisible, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXSMICON, SW_HIDE, SW_SHOW,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW,
+        SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_SETICON, WS_CAPTION,
+        WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
 
     /// The styles that make up the native title bar, its buttons and the
@@ -224,6 +232,10 @@ mod sys {
 
     pub fn focus(handle: WindowHandle) -> bool {
         is_open(handle) && unsafe { SetForegroundWindow(hwnd(handle)) } != 0
+    }
+
+    pub fn is_foreground(handle: WindowHandle) -> bool {
+        is_open(handle) && unsafe { GetForegroundWindow() } == hwnd(handle)
     }
 
     pub fn scale_factor(handle: WindowHandle) -> f32 {
@@ -474,6 +486,10 @@ mod sys {
         false
     }
 
+    pub fn is_foreground(_handle: WindowHandle) -> bool {
+        false
+    }
+
     pub fn scale_factor(_handle: WindowHandle) -> f32 {
         1.0
     }
@@ -544,6 +560,7 @@ mod tests {
         assert!(!window.show());
         assert!(!window.hide());
         assert!(!window.focus());
+        assert!(!window.is_foreground());
         assert!(!window.set_borderless(true));
         assert!(!window.set_client_size(640.0, 480.0));
         assert!(!window.center_on_monitor());
