@@ -137,6 +137,15 @@ impl NativeWindow {
         sys::center_x_at(self.handle, y)
     }
 
+    /// Adopt the icon the executable carries as resource `id`.
+    ///
+    /// The icon resource is what the shell shows in the task bar and in
+    /// Alt-Tab; GPUI does not set one, so the host has to. A build without the
+    /// resource reports `false` rather than failing.
+    pub fn set_icon(self, id: u16) -> bool {
+        sys::set_icon(self.handle, id)
+    }
+
     /// The chrome every host panel wants: frameless, exact client size, centred.
     ///
     /// Returns whether all three steps succeeded; a partially applied panel is
@@ -159,13 +168,16 @@ mod sys {
     use windows_sys::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
     };
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Controls::MARGINS;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GWL_STYLE, GetClientRect, GetWindowLongPtrW, GetWindowRect, IsWindow,
-        IsWindowVisible, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-        WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+        FindWindowW, GWL_STYLE, GetClientRect, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
+        ICON_BIG, ICON_SMALL, IMAGE_ICON, IsWindow, IsWindowVisible, LR_DEFAULTCOLOR, LoadImageW,
+        SM_CXICON, SM_CXSMICON, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
+        SetWindowPos, ShowWindow, WM_SETICON, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+        WS_SYSMENU, WS_THICKFRAME,
     };
 
     /// The styles that make up the native title bar, its buttons and the
@@ -407,6 +419,31 @@ mod sys {
             ) != 0
         }
     }
+
+    pub fn set_icon(handle: WindowHandle, id: u16) -> bool {
+        if !is_open(handle) {
+            return false;
+        }
+        let window = hwnd(handle);
+        let module = unsafe { GetModuleHandleW(ptr::null()) };
+        if module.is_null() {
+            return false;
+        }
+        // The resource id travels as a pointer-sized integer, the way the
+        // MAKEINTRESOURCE macro spells it.
+        let name = id as usize as *const u16;
+        let mut applied = true;
+        for (metric, kind) in [(SM_CXICON, ICON_BIG), (SM_CXSMICON, ICON_SMALL)] {
+            let edge = unsafe { GetSystemMetrics(metric) };
+            let icon = unsafe { LoadImageW(module, name, IMAGE_ICON, edge, edge, LR_DEFAULTCOLOR) };
+            if icon.is_null() {
+                applied = false;
+                continue;
+            }
+            unsafe { SendMessageW(window, WM_SETICON, kind as usize, icon as isize) };
+        }
+        applied
+    }
 }
 
 #[cfg(not(windows))]
@@ -468,6 +505,10 @@ mod sys {
     pub fn center_x_at(_handle: WindowHandle, _y: i32) -> bool {
         false
     }
+
+    pub fn set_icon(_handle: WindowHandle, _id: u16) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -507,6 +548,7 @@ mod tests {
         assert!(!window.set_client_size(640.0, 480.0));
         assert!(!window.center_on_monitor());
         assert!(!window.center_x_at(240));
+        assert!(!window.set_icon(1));
         assert!(!window.apply_panel_chrome(640.0, 480.0));
         assert_eq!(window.client_size(), (0, 0));
         assert_eq!(window.outer_size(), (0, 0));

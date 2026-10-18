@@ -31,6 +31,8 @@
 - 命令列表的过滤、渲染与键盘导航。
 - 命令的执行。
 - 设置页（面板内的 `Page::Settings`）与设置持久化（`src/settings.rs`）。
+- 登录启动项的读写（`src/autostart.rs`，HKCU 下的 Run 键，无需提权）。
+- 应用图标：`src/logo.rs` 画，`build.rs` 嵌进 exe（见 5.4）。
 - 系统托盘。
 
 ## 4. 命令
@@ -65,8 +67,9 @@
   区域。空查询时只留光标宽度，因此「没有文字时整条搜索栏（含占位提示）都能拖」。
 - 占位提示是拖动区里的普通 `div`，不是 Input 的 placeholder —— 提示要能跟着被拖。
 - 搜索框用 `Size::Small`（`input_px == 8`、`input_py == 2`、高 24）。Medium 的上下内边距
-  是 8+8，一行 1.25rem 的文字只剩 16px，**下半截字形会被裁掉**；容器高度要按
-  `SEARCH_FIELD_HEIGHT`(26) 给足。
+  是 8+8，一行 1.25rem 的文字只剩 16px，**下半截字形会被裁掉**；容器高度按设置里的
+  `search_height`（默认 26）给足。Input 根节点是 `size_full().items_center()`，容器抬高
+  时文字自动垂直居中，不必改字号。
 - 设置按钮在搜索栏右端，点击把面板切到设置页（`Page::Settings`）；页头变成「返回 +
   设置」，同一个拖动区。
 
@@ -84,6 +87,13 @@
 系统 / 外观 / 关于三个标签（`SettingsTab`），右侧内容，页头是同一个拖动区。`h_flex`
 默认在交叉轴居中，设置页的骨架要显式 `.items_stretch()`，否则内容会悬在面板中间。
 
+每一项都是同一副骨架（`settings_row`）：**左侧是名称和它的描述（两行），右侧是控件**
+（分段选择 `segmented`、步进 `stepper`、开关 `Switch`、只读值 `value_label`，或
+「提示 + 箭头」的 `action_row`）。不要为某一项另起一套排布。
+
+`h_flex` 交叉轴居中，控件靠 `justify_between` 推到右端；描述行 `min_w_0` +
+`text_ellipsis`，控件 `flex_shrink_0`，所以描述宁可截断也不挤掉控件。
+
 ## 5.3 设置
 
 设置存在 `%APPDATA%\gpui-tools\settings.ini`（`src/settings.rs`，`key = value` 文本，
@@ -92,6 +102,25 @@
 - `theme` = `system` / `light` / `dark`。设置页改主题后立刻 `Theme::change` 并落盘。
 - `window_y` = 面板顶边的物理像素。**只记纵坐标**，横坐标每次启动重新居中；恢复时按显示器
   工作区夹紧（`NativeWindow::center_x_at`）。写入时机：面板隐藏、退出命令、托盘退出。
+- `search_height` = 搜索框高度（逻辑像素，24–56，步进 4，默认 26）。页头高度跟着它走
+  （`header_height` = 高度 + 26，最小 52），所以调高时列表会被顶下去，这是预期的。
+- `launch_at_login` = 是否写入登录启动项。**注册表才是事实**：启动时用
+  `autostart::enabled()` 覆盖这一项，用户在任务管理器里删掉后不会被悄悄重建。
+- `resume_seconds` = 子页面保持秒数（0 / 15 / 30 / 60 / 300）。`Launcher::remember_section`
+  在**离开设置页时**（Esc 返回命令页、或面板隐藏）记下 `(时刻, 标签)`，
+  `reset` 在窗口内重新唤起时回到那一页；超时就回命令页。Esc 在设置页是先返回命令页，
+  所以离开的两条路径都要记，只记「隐藏」的话永远记不到设置页。
+
+## 5.4 图标
+
+`src/logo.rs` 是唯一的图形来源：纯计算的光栅化（4×4 超采样、多边形扫描线），
+`rgba(size)` 给托盘，`ico()` 给可执行文件。`build.rs` 用 `#[path]` 直接包含它，
+生成 `.ico` + `.rc`，找 `rc.exe`（PATH 或 `Windows Kits\10\bin\<最新>\x64`）编成 `.res`
+再用 `cargo:rustc-link-arg-bins` 链进去；找不到 `rc.exe` 只警告、照常构建。
+
+窗口图标（任务栏 / Alt-Tab）不归 GPUI 管，由 `NativeWindow::set_icon(1)` 用
+`LoadImageW` 从 exe 的资源 id 1 取，失败写 stderr。改图形只动 `logo.rs`，
+可执行文件、托盘、窗口三处一起变。
 
 ## 6. 外部程序调用
 

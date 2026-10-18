@@ -2,5 +2,7 @@
 //!
 //! Normative project guidance: `AGENTS.md` at the repository root.
 
+pub mod autostart;
+pub mod logo;
 pub mod settings;
 pub mod window;

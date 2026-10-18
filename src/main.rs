@@ -8,21 +8,24 @@
 //! and its header doubles as the drag surface. That is why the launcher owns the
 //! text field instead of letting the list draw its own.
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::{List, ListDelegate, ListState};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Selectable, Sizable as _, Theme, ThemeMode,
     h_flex, v_flex,
 };
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, Context, Div, Entity, Focusable, Font,
-    FontWeight, Hsla, IntoElement, Pixels, QuitMode, Render, RenderOnce, Subscription, Task,
-    TextRun, WeakEntity, Window, WindowBounds, WindowControlArea, WindowOptions, actions, div,
-    prelude::*, px, size,
+    FontWeight, Hsla, IntoElement, Pixels, QuitMode, Render, RenderOnce, SharedString,
+    Subscription, Task, TextRun, WeakEntity, Window, WindowBounds, WindowControlArea,
+    WindowOptions, actions, div, prelude::*, px, size,
 };
+use gpui_tools::autostart;
+use gpui_tools::logo;
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
 use gpui_tools::window::NativeWindow;
 use gpui_tray::{Icon as TrayIcon, Tray};
@@ -36,13 +39,15 @@ const REPOSITORY_URL: &str = "https://github.com/cz-97/gpui-tools";
 /// The shortcut that summons the panel, as the settings page shows it.
 const HOTKEY_LABEL: &str = "Ctrl + Space";
 
-/// The height of the panel's header, which is also its drag surface.
-const HEADER_HEIGHT: f32 = 52.;
+/// The icon resource `build.rs` embeds, which the window and the shell show.
+const APP_ICON_ID: u16 = 1;
+
+/// The smallest the header may be drawn, whatever the field's height.
+const HEADER_MIN_HEIGHT: f32 = 52.;
+/// The room the header keeps around the search field, top and bottom together.
+const HEADER_SLACK: f32 = 26.;
 /// The width of the settings page's section list.
 const SIDEBAR_WIDTH: f32 = 148.;
-/// The search field's height: the component's small input plus a little slack,
-/// so the line box fits without its descenders being clipped.
-const SEARCH_FIELD_HEIGHT: f32 = 26.;
 /// The padding the component draws inside the field, both sides together
 /// (`input_px` is 8 for its small size). The field has to pay for it to keep
 /// its text in view.
@@ -393,6 +398,10 @@ struct Launcher {
     query: String,
     /// The page on show, which the header, body and footer all follow.
     page: Page,
+    /// The settings section the panel last stood on, and when it left it. A
+    /// summon inside the stored retention window reopens that section instead
+    /// of the command list.
+    last_section: Option<(Instant, SettingsTab)>,
     /// Kept alive for as long as the launcher is: dropping either would stop
     /// the field from reporting what the user typed.
     _search_events: Subscription,
@@ -432,6 +441,7 @@ impl Launcher {
             search,
             query: String::new(),
             page: Page::Commands,
+            last_section: None,
             _search_events: search_events,
             _search_observation: search_observation,
         };
@@ -497,7 +507,9 @@ impl Launcher {
         });
     }
 
-    /// Start a fresh session: command list, query cleared, first row highlighted.
+    /// Start a fresh session: query cleared, first row highlighted, and — if
+    /// the user came back inside the retention window — the settings section
+    /// they were last on.
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.query.is_empty() {
             self.search
@@ -506,10 +518,31 @@ impl Launcher {
         }
         self.list
             .update(cx, |list, cx| list.set_query("", window, cx));
-        self.page = Page::Commands;
+        self.page = match self.resumed_tab(cx) {
+            Some(tab) => Page::Settings(tab),
+            None => Page::Commands,
+        };
         self.focus_search(window, cx);
         self.select_row(0, window, cx);
         cx.notify();
+    }
+
+    /// The settings section a summon should reopen, if the panel left it
+    /// recently enough to still be on the user's mind.
+    fn resumed_tab(&self, cx: &Context<Self>) -> Option<SettingsTab> {
+        let (at, tab) = self.last_section?;
+        let window = stored_settings(cx).resume_seconds;
+        (window > 0 && at.elapsed() < Duration::from_secs(window.into())).then_some(tab)
+    }
+
+    /// Note the section the panel is leaving, so `reset` can come back to it.
+    ///
+    /// Both ways out count: hiding the panel and stepping back to the command
+    /// list, because Escape steps back before it hides.
+    fn remember_section(&mut self) {
+        if let Page::Settings(tab) = self.page {
+            self.last_section = Some((Instant::now(), tab));
+        }
     }
 
     /// Run the highlighted command.
@@ -539,6 +572,7 @@ impl Launcher {
 
     /// Return to the command list, with the field ready to type into.
     fn back_to_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember_section();
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
@@ -554,13 +588,56 @@ impl Launcher {
     }
 
     /// Switch colour scheme, in every window, and remember the choice.
-    fn choose_theme(&mut self, choice: ColorScheme, window: &mut Window, cx: &mut Context<Self>) {
+    fn choose_theme(
+        &mut self,
+        choice: ColorScheme,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let mut settings = stored_settings(cx);
         if settings.theme == choice {
             return;
         }
         settings.theme = choice;
-        apply_theme(choice, Some(window), cx);
+        apply_theme(choice, window, cx);
+        store_settings(settings, cx);
+        cx.notify();
+    }
+
+    /// Resize the search field, and with it the header that holds it.
+    fn set_search_height(&mut self, height: u32, cx: &mut Context<Self>) {
+        let height = height.clamp(Settings::SEARCH_HEIGHT_MIN, Settings::SEARCH_HEIGHT_MAX);
+        let mut settings = stored_settings(cx);
+        if settings.search_height == height {
+            return;
+        }
+        settings.search_height = height;
+        store_settings(settings, cx);
+        cx.notify();
+    }
+
+    /// Choose how long a hidden panel remembers its settings section.
+    fn set_resume_seconds(&mut self, seconds: u32, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        if settings.resume_seconds == seconds {
+            return;
+        }
+        settings.resume_seconds = seconds;
+        store_settings(settings, cx);
+        cx.notify();
+    }
+
+    /// Add or remove the login startup entry.
+    fn set_launch_at_login(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if !autostart::set_enabled(enabled) {
+            // The switch is a controlled value, so a failed write only leaves
+            // it where it was: say so rather than pretending it took.
+            eprintln!("gpui-tools: could not update the login startup entry");
+            cx.notify();
+            return;
+        }
+        let mut settings = stored_settings(cx);
+        settings.launch_at_login = enabled;
         store_settings(settings, cx);
         cx.notify();
     }
@@ -582,6 +659,8 @@ impl Launcher {
         // the query knows nothing about, and a bar sized to the query would
         // scroll that text out of view to the left.
         let field_text = self.search.read(cx).value().to_string();
+        let settings = stored_settings(cx);
+        let field_height = px(settings.search_height as f32);
 
         let bar = div()
             .id("panel-bar")
@@ -589,7 +668,7 @@ impl Launcher {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(HEADER_HEIGHT))
+            .h(header_height(settings))
             .px_3()
             .border_b_1()
             .border_color(border);
@@ -603,7 +682,7 @@ impl Launcher {
                         .occlude()
                         .flex_shrink_0()
                         .w(search_field_width(window, cx, &field_text))
-                        .h(px(SEARCH_FIELD_HEIGHT))
+                        .h(field_height)
                         .child(
                             // Small, not the default medium: the medium input
                             // spends 16px of its height on its own vertical
@@ -658,10 +737,11 @@ impl Launcher {
 
     /// The settings page: the sections on the left, the chosen one on the right.
     fn settings_page(&self, tab: SettingsTab, cx: &Context<Self>) -> impl IntoElement {
-        let (border, muted, muted_fg, fg, accent, accent_fg) = {
+        let (border, background, muted, muted_fg, fg, accent, accent_fg) = {
             let theme = cx.theme();
             (
                 theme.border,
+                theme.background,
                 theme.muted,
                 theme.muted_foreground,
                 theme.foreground,
@@ -670,10 +750,12 @@ impl Launcher {
             )
         };
         let colors = RowColors {
-            background: muted,
+            surface: muted,
+            control: background,
             foreground: fg,
             muted_foreground: muted_fg,
             accent,
+            accent_foreground: accent_fg,
         };
         let settings = stored_settings(cx);
 
@@ -708,81 +790,111 @@ impl Launcher {
                     .child(div().child(item.label()))
             }));
 
-        let content =
-            match tab {
-                SettingsTab::System => v_flex()
-                    .gap_1()
-                    .child(info_row("全局快捷键", HOTKEY_LABEL.to_string(), colors))
-                    .child(action_row(
-                        "open-config",
-                        "配置文件夹",
-                        settings_directory(),
+        let content = match tab {
+            SettingsTab::System => v_flex()
+                .gap_1()
+                .child(settings_row(
+                    "全局快捷键",
+                    "在任意窗口唤出面板",
+                    colors,
+                    value_label(HOTKEY_LABEL, colors),
+                ))
+                .child(settings_row(
+                    "开机启动",
+                    "登录 Windows 后自动在后台运行",
+                    colors,
+                    Switch::new("launch-at-login")
+                        .checked(settings.launch_at_login)
+                        .on_change(cx.listener(|launcher, checked: &bool, _window, cx| {
+                            launcher.set_launch_at_login(*checked, cx)
+                        })),
+                ))
+                .child(settings_row(
+                    "子页面保持",
+                    "隐藏后短时间内再唤出，仍停在原页面",
+                    colors,
+                    segmented(
+                        "resume",
+                        Settings::RESUME_CHOICES,
+                        settings.resume_seconds,
                         colors,
-                        cx.listener(|_, _, _, cx| open_settings_folder(cx)),
-                    ))
-                    .child(action_row(
-                        "quit",
-                        "退出启动器",
-                        "关闭面板与托盘".to_string(),
+                        cx,
+                        |launcher, seconds, cx| launcher.set_resume_seconds(seconds, cx),
+                    ),
+                ))
+                .child(action_row(
+                    "open-config",
+                    "配置文件夹",
+                    settings_directory(),
+                    "打开",
+                    colors,
+                    cx.listener(|_, _, _, cx| open_settings_folder(cx)),
+                ))
+                .child(action_row(
+                    "quit",
+                    "退出启动器",
+                    "关闭面板与托盘",
+                    "退出",
+                    colors,
+                    cx.listener(|_, _, _, cx| quit_launcher(cx)),
+                ))
+                .into_any_element(),
+            SettingsTab::Appearance => v_flex()
+                .gap_1()
+                .child(settings_row(
+                    "主题",
+                    "面板、列表与设置页的配色",
+                    colors,
+                    segmented(
+                        "theme",
+                        ColorScheme::ALL
+                            .into_iter()
+                            .map(|theme| (theme, theme.label())),
+                        settings.theme,
                         colors,
-                        cx.listener(|_, _, _, cx| quit_launcher(cx)),
-                    ))
-                    .into_any_element(),
-                SettingsTab::Appearance => v_flex()
-                    .gap_1()
-                    .child(section(
-                        "主题",
-                        muted_fg,
-                        h_flex()
-                            .gap_2()
-                            .children(ColorScheme::ALL.into_iter().enumerate().map(
-                                |(ix, choice)| {
-                                    let selected = choice == settings.theme;
-                                    div()
-                                        .id(("theme", ix))
-                                        .px_3()
-                                        .py_1()
-                                        .rounded(px(6.))
-                                        .text_sm()
-                                        .text_color(if selected { accent_fg } else { fg })
-                                        .cursor_pointer()
-                                        .when(selected, move |this| this.bg(accent))
-                                        .when(!selected, move |this| {
-                                            this.hover(move |style| {
-                                                style.bg(muted_fg.opacity(0.18))
-                                            })
-                                        })
-                                        .on_click(cx.listener(move |launcher, _, window, cx| {
-                                            launcher.choose_theme(choice, window, cx)
-                                        }))
-                                        .child(choice.label())
-                                },
-                            )),
-                    ))
-                    .into_any_element(),
-                SettingsTab::About => v_flex()
-                    .gap_1()
-                    .child(info_row(
-                        "版本",
-                        env!("CARGO_PKG_VERSION").to_string(),
+                        cx,
+                        |launcher, choice, cx| launcher.choose_theme(choice, None, cx),
+                    ),
+                ))
+                .child(settings_row(
+                    "搜索框高度",
+                    "输入框的高度，越高越好点中",
+                    colors,
+                    stepper(
+                        "search-height",
+                        settings.search_height,
                         colors,
-                    ))
-                    .child(action_row(
-                        "open-repository",
-                        "项目仓库",
-                        REPOSITORY_URL.to_string(),
-                        colors,
-                        cx.listener(|_, _, _, cx| open_repository(cx)),
-                    ))
-                    .child(action_row(
-                        "open-folder",
-                        "程序文件夹",
-                        program_dir().display().to_string(),
-                        colors,
-                        cx.listener(|_, _, _, cx| open_program_folder(cx)),
-                    ))
-                    .into_any_element(),
-            };
+                        cx,
+                        |launcher, height, cx| launcher.set_search_height(height, cx),
+                    ),
+                ))
+                .into_any_element(),
+            SettingsTab::About => v_flex()
+                .gap_1()
+                .child(settings_row(
+                    "版本",
+                    "当前运行的程序版本",
+                    colors,
+                    value_label(env!("CARGO_PKG_VERSION"), colors),
+                ))
+                .child(action_row(
+                    "open-repository",
+                    "项目仓库",
+                    REPOSITORY_URL,
+                    "打开",
+                    colors,
+                    cx.listener(|_, _, _, cx| open_repository(cx)),
+                ))
+                .child(action_row(
+                    "open-folder",
+                    "程序文件夹",
+                    program_dir().display().to_string(),
+                    "打开",
+                    colors,
+                    cx.listener(|_, _, _, cx| open_program_folder(cx)),
+                ))
+                .into_any_element(),
+        };
 
         // `h_flex` centers on the cross axis by default, which would float the
         // page in the middle of the panel; the sections belong at the top.
@@ -937,62 +1049,199 @@ impl Render for Launcher {
 /// The colours a settings row draws with.
 #[derive(Clone, Copy)]
 struct RowColors {
-    background: Hsla,
+    /// The row's own backing, which separates it from the page.
+    surface: Hsla,
+    /// The backing of a control inside the row, so it reads as one piece.
+    control: Hsla,
     foreground: Hsla,
     muted_foreground: Hsla,
     accent: Hsla,
+    accent_foreground: Hsla,
 }
 
-/// A settings row: a label on the left, its value on the right.
-fn info_row(label: &'static str, value: String, colors: RowColors) -> Div {
+/// A settings row: what the setting is on the left, its control on the right.
+///
+/// Every setting is a row of this shape, so the name and its description always
+/// sit in the same place whatever the control beside them looks like.
+fn settings_row(
+    name: &'static str,
+    description: impl Into<SharedString>,
+    colors: RowColors,
+    control: impl IntoElement,
+) -> Div {
     h_flex()
+        .w_full()
+        .min_w_0()
         .justify_between()
         .items_center()
-        .gap_3()
+        .gap_4()
         .px_3()
         .py_2()
         .rounded(px(6.))
-        .bg(colors.background)
-        .overflow_hidden()
+        .bg(colors.surface)
         .child(
-            div()
-                .flex_shrink_0()
-                .text_sm()
-                .text_color(colors.muted_foreground)
-                .child(label),
-        )
-        .child(
-            div()
+            v_flex()
+                .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .text_sm()
-                .text_color(colors.foreground)
-                .child(value),
+                .gap_0p5()
+                .child(div().text_sm().text_color(colors.foreground).child(name))
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(description.into()),
+                ),
         )
+        .child(div().flex_shrink_0().child(control))
+}
+
+/// The text a read-only row shows in place of a control.
+fn value_label(value: impl Into<SharedString>, colors: RowColors) -> impl IntoElement {
+    div()
+        .text_sm()
+        .text_color(colors.muted_foreground)
+        .child(value.into())
 }
 
 /// A settings row that runs something when clicked.
 fn action_row(
     id: &'static str,
-    label: &'static str,
-    value: String,
+    name: &'static str,
+    description: impl Into<SharedString>,
+    hint: &'static str,
     colors: RowColors,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    info_row(label, value, colors)
-        .id(id)
-        .cursor_pointer()
-        .hover(move |style| style.bg(colors.accent.opacity(0.18)))
-        .on_click(on_click)
+    settings_row(
+        name,
+        description,
+        colors,
+        h_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(colors.muted_foreground)
+                    .child(hint),
+            )
+            .child(
+                Icon::new(IconName::ChevronRight)
+                    .size_4()
+                    .text_color(colors.muted_foreground),
+            ),
+    )
+    .id(id)
+    .cursor_pointer()
+    .hover(move |style| style.bg(colors.accent.opacity(0.18)))
+    .on_click(on_click)
 }
 
-/// A settings section: a caption above its content.
-fn section(title: &'static str, muted_fg: Hsla, content: impl IntoElement) -> impl IntoElement {
-    v_flex()
-        .gap_2()
-        .child(div().text_xs().text_color(muted_fg).child(title))
-        .child(content)
+/// A row control that picks one of a few values, drawn as a pill of chips.
+fn segmented<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: impl IntoIterator<Item = (T, &'static str)>,
+    selected: T,
+    colors: RowColors,
+    cx: &Context<Launcher>,
+    on_select: impl Fn(&mut Launcher, T, &mut Context<Launcher>) + Copy + 'static,
+) -> impl IntoElement {
+    h_flex()
+        .gap_0p5()
+        .p_0p5()
+        .rounded(px(8.))
+        .bg(colors.control)
+        .children(
+            options
+                .into_iter()
+                .enumerate()
+                .map(move |(ix, (value, label))| {
+                    let current = value == selected;
+                    div()
+                        .id((id, ix))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(6.))
+                        .text_sm()
+                        .text_color(if current {
+                            colors.accent_foreground
+                        } else {
+                            colors.muted_foreground
+                        })
+                        .cursor_pointer()
+                        .when(current, move |this| this.bg(colors.accent))
+                        .when(!current, move |this| {
+                            this.hover(move |style| style.bg(colors.muted_foreground.opacity(0.18)))
+                        })
+                        .on_click(cx.listener(move |launcher, _: &ClickEvent, _window, cx| {
+                            on_select(launcher, value, cx)
+                        }))
+                        .child(label)
+                }),
+        )
+}
+
+/// A row control that steps a number, drawn as minus / value / plus.
+fn stepper(
+    id: &'static str,
+    value: u32,
+    colors: RowColors,
+    cx: &Context<Launcher>,
+    on_change: impl Fn(&mut Launcher, u32, &mut Context<Launcher>) + Copy + 'static,
+) -> impl IntoElement {
+    let lowest = Settings::SEARCH_HEIGHT_MIN;
+    let highest = Settings::SEARCH_HEIGHT_MAX;
+    let step = Settings::SEARCH_HEIGHT_STEP as isize;
+    let at_bottom = value <= lowest;
+    let at_top = value >= highest;
+
+    let button = move |ix: usize, icon: IconName, disabled: bool| {
+        let button = div()
+            .id((id, ix))
+            .size_6()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .text_color(colors.foreground);
+        if disabled {
+            return button.opacity(0.3);
+        }
+        let delta = if ix == 0 { -step } else { step };
+        let next = (value as isize + delta).clamp(lowest as isize, highest as isize) as u32;
+        button
+            .cursor_pointer()
+            .hover(move |style| style.bg(colors.muted_foreground.opacity(0.18)))
+            .on_click(cx.listener(move |launcher, _: &ClickEvent, _window, cx| {
+                on_change(launcher, next, cx)
+            }))
+            .child(Icon::new(icon).size_4())
+    };
+
+    h_flex()
+        .gap_1()
+        .p_0p5()
+        .rounded(px(8.))
+        .bg(colors.control)
+        .child(button(0, IconName::Minus, at_bottom))
+        .child(
+            div()
+                .w(px(64.))
+                .text_center()
+                .text_sm()
+                .text_color(colors.foreground)
+                .child(format!("{value} px")),
+        )
+        .child(button(1, IconName::Plus, at_top))
+}
+
+/// The height the header needs to hold a field `height` logical pixels tall
+/// with the same room above and below as the default.
+fn header_height(settings: Settings) -> Pixels {
+    let needed = settings.search_height as f32 + HEADER_SLACK;
+    px(needed.max(HEADER_MIN_HEIGHT))
 }
 
 fn launch() {
@@ -1002,7 +1251,11 @@ fn launch() {
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
 
-            let settings = Settings::load();
+            let mut settings = Settings::load();
+            // The registry, not the settings file, decides whether the app
+            // starts at login: the user can remove the entry from Task Manager
+            // without the host noticing.
+            settings.launch_at_login = autostart::enabled();
             cx.set_global(SettingsStore(settings));
 
             let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
@@ -1040,6 +1293,11 @@ fn launch() {
                 Some(window) => {
                     if !window.apply_panel_chrome(WINDOW_WIDTH, WINDOW_HEIGHT) {
                         eprintln!("gpui-tools: could not apply the panel chrome in full");
+                    }
+                    // The task bar and Alt-Tab take their icon from the window,
+                    // which GPUI leaves unset; the icon resource is the answer.
+                    if !window.set_icon(APP_ICON_ID) {
+                        eprintln!("gpui-tools: could not adopt the window icon");
                     }
                     // The horizontal position is deliberately whatever centring
                     // produced; only the remembered top edge is honoured.
@@ -1140,18 +1398,10 @@ fn launch() {
 actions!(gpui_tools, [ShowLauncher, QuitApplication]);
 
 fn launcher_tray_icon() -> TrayIcon {
-    let mut rgba = Vec::with_capacity(16 * 16 * 4);
-    for y in 0..16 {
-        for x in 0..16 {
-            let inside = (3..13).contains(&x) && (3..13).contains(&y);
-            rgba.extend_from_slice(if inside {
-                &[39, 196, 189, 255]
-            } else {
-                &[0, 0, 0, 0]
-            });
-        }
-    }
-    TrayIcon::from_rgba(rgba, 16, 16).expect("valid launcher tray icon")
+    // The tray wants its own resolution: Windows hands the shell a bitmap and
+    // scales it to the task bar's icon metric.
+    const SIZE: u32 = 32;
+    TrayIcon::from_rgba(logo::rgba(SIZE), SIZE, SIZE).expect("valid launcher tray icon")
 }
 
 fn show_launcher_action(_: &ShowLauncher, cx: &mut App) {
@@ -1220,6 +1470,9 @@ fn show_launcher(cx: &mut App) {
 
 /// Hide the launcher panel without destroying it.
 fn hide_launcher(cx: &mut App) {
+    // Note the page being left before the window goes: a summon inside the
+    // retention window should come back to it.
+    with_launcher(cx, |launcher, _window, _cx| launcher.remember_section());
     if let Some(panel) = cx.try_global::<LauncherPanel>() {
         panel.window.hide();
     }
