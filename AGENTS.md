@@ -38,6 +38,10 @@
 - 应用图标：`src/logo.rs` 画，`build.rs` 嵌进 exe（见 5.4）。
 - 系统托盘。
 
+release 构建是 **windows 子系统**（`windows_subsystem = "windows"`，见 `main.rs` 顶部），
+双击或从快捷方式启动不会弹控制台、也不会一闪而过一个黑框。debug 构建保留控制台，
+`eprintln!` 的诊断才看得见；release 下这些输出无处可去，属于预期。
+
 ## 4. 命令
 
 命令全部声明在 `src/catalogue.rs` 的 `COMMANDS` 里。一条 `Command` = `id` + `section` +
@@ -124,13 +128,11 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
 - **`commands` 的主键是 `(section, id)`**：`section` = `Section::key()`（`system` / `commands` /
   `appearance` / `about`），两个子模块可以有同名的命令而互不干扰。`Section::key()` 与
   `Command::id` 都是持久化主键的一半，**发布后都不要改**（改标签不影响，改 key 会丢数据）。
-- 表结构靠 `PRAGMA user_version` 演进：0 → 建表（=2）；1 → `MIGRATE_1_TO_2`（旧表只有 id 主键，
-  行全部搬进 `system` 段）。加新版本就加一条迁移，**不要**改 `SCHEMA` 去凑旧库。
 - **只有用户改过**的命令才有行（全默认的不写），所以表不会随命令变多而膨胀。
 - 读不出来（文件损坏 / 打不开）就退回默认并写 stderr，绝不让启动器起不来。
-- 首次运行（两张表都空）会从旧的 `settings.toml` → `settings.ini` 顺序**迁移一次**
-  （`adopt_legacy`），写完就不再理旧文件。`LegacySettings` 那套 `serde` 结构只服务于这次
-  迁移，命令一律落到 `system` 段。
+- **不写迁移**：这是自用项目，表结构一改就直接删库重建（`%APPDATA%\gpui-tools\gpui-tools.db`），
+  不要保留 `PRAGMA user_version` 分支、旧格式解析或 legacy 字段。老版本留下的
+  `settings.toml` / `settings.ini` 也不再读。
 - `uses` 只在内存里累加，面板隐藏或退出时随整份记录落盘（`remember_window_position`）。
   所以那个函数**必须每次隐藏都写**，不能「window_y 没变就早退」，否则计数永远存不下来。
 - `shortcut` 存的是 `keyboard-types` 的键名（`KeyP` / `Digit1` / `F1` / `ArrowUp`），

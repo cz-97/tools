@@ -7,6 +7,12 @@
 //! The panel draws its own settings page rather than opening a second window,
 //! and its header doubles as the drag surface. That is why the launcher owns the
 //! text field instead of letting the list draw its own.
+
+// A released build is a windowed program: double-clicking it, or starting it
+// from a shortcut, must not flash a console window. Debug builds keep the
+// console so the standard-error reports stay visible while working on it.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;

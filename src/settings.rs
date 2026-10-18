@@ -18,11 +18,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use rusqlite::{Connection, params};
-use serde::Deserialize;
 
 /// The colour scheme the host draws with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Theme {
     /// Follow the operating system.
     #[default]
@@ -55,8 +53,7 @@ impl Theme {
 }
 
 /// What the user has decided about one command.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSettings {
     /// Whether the command shows up on the home list.
     ///
@@ -128,26 +125,6 @@ CREATE TABLE IF NOT EXISTS commands (
     shortcut TEXT,
     PRIMARY KEY (section, id)
 );
-PRAGMA user_version = 2;
-";
-
-/// Version 1 keyed commands by the bare id, so a second section reusing an id
-/// would have collided. Every command that existed under that schema belonged
-/// to the launcher's own section, which is where its rows go.
-const MIGRATE_1_TO_2: &str = "
-ALTER TABLE commands RENAME TO commands_v1;
-CREATE TABLE commands (
-    section  TEXT NOT NULL,
-    id       TEXT NOT NULL,
-    enabled  INTEGER NOT NULL,
-    uses     INTEGER NOT NULL,
-    shortcut TEXT,
-    PRIMARY KEY (section, id)
-);
-INSERT INTO commands (section, id, enabled, uses, shortcut)
-    SELECT 'system', id, enabled, uses, shortcut FROM commands_v1;
-DROP TABLE commands_v1;
-PRAGMA user_version = 2;
 ";
 
 impl Settings {
@@ -169,10 +146,7 @@ impl Settings {
         (300, "5 分钟"),
     ];
 
-    /// Read the database, or the defaults when there is none yet.
-    ///
-    /// A database with nothing in it is a first run: the files earlier versions
-    /// wrote are taken over once, then never looked at again.
+    /// Read the database, or the defaults when there is nothing stored yet.
     pub fn load() -> Self {
         let Some(connection) = Self::open() else {
             return Self::default();
@@ -182,13 +156,7 @@ impl Settings {
                 settings.tidy();
                 settings
             }
-            Ok(None) => {
-                let legacy = Self::adopt_legacy();
-                if !legacy.save() {
-                    eprintln!("gpui-tools: could not move the earlier settings into the database");
-                }
-                legacy
-            }
+            Ok(None) => Self::default(),
             Err(error) => {
                 eprintln!("gpui-tools: could not read the settings ({error}); using defaults");
                 Self::default()
@@ -224,7 +192,7 @@ impl Settings {
         Some(PathBuf::from(profile).join("gpui-tools"))
     }
 
-    /// Open the database, bringing its schema up to date.
+    /// Open the database, creating the tables the first time.
     fn open() -> Option<Connection> {
         let path = Self::path()?;
         if let Some(parent) = path.parent()
@@ -239,15 +207,7 @@ impl Settings {
                 return None;
             }
         };
-        let version: i64 = connection
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap_or_default();
-        let upgrade = match version {
-            0 => SCHEMA,
-            1 => MIGRATE_1_TO_2,
-            _ => return Some(connection),
-        };
-        match connection.execute_batch(upgrade) {
+        match connection.execute_batch(SCHEMA) {
             Ok(()) => Some(connection),
             Err(error) => {
                 eprintln!("gpui-tools: could not prepare the settings table ({error})");
@@ -416,67 +376,6 @@ impl Settings {
             .search_height
             .clamp(Self::SEARCH_HEIGHT_MIN, Self::SEARCH_HEIGHT_MAX);
     }
-
-    /// Take over the files earlier versions wrote: TOML first, then the
-    /// `key = value` list before it. Read once, at the moment the database is
-    /// created; neither file is consulted again.
-    fn adopt_legacy() -> Self {
-        let Some(directory) = Self::directory() else {
-            return Self::default();
-        };
-        if let Ok(text) = std::fs::read_to_string(directory.join("settings.toml")) {
-            match toml::from_str::<LegacySettings>(&text) {
-                Ok(legacy) => {
-                    let mut settings = legacy.into_settings();
-                    settings.tidy();
-                    return settings;
-                }
-                Err(error) => eprintln!("gpui-tools: ignoring settings.toml ({error})"),
-            }
-        }
-        match std::fs::read_to_string(directory.join("settings.ini")) {
-            Ok(text) => Self::from_ini(&text),
-            Err(_) => Self::default(),
-        }
-    }
-
-    /// Parse the oldest `key = value` file.
-    fn from_ini(text: &str) -> Self {
-        let mut settings = Self::default();
-        for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let value = value.trim();
-            match key.trim() {
-                "theme" => {
-                    settings.theme = match value {
-                        "light" => Theme::Light,
-                        "dark" => Theme::Dark,
-                        _ => Theme::System,
-                    };
-                }
-                "window_y" => settings.window_y = value.parse().ok(),
-                "search_height" => {
-                    if let Ok(height) = value.parse() {
-                        settings.search_height = height;
-                    }
-                }
-                "launch_at_login" => {
-                    settings.launch_at_login =
-                        matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "on");
-                }
-                "resume_seconds" => {
-                    if let Ok(seconds) = value.parse() {
-                        settings.resume_seconds = seconds;
-                    }
-                }
-                _ => {}
-            }
-        }
-        settings.tidy();
-        settings
-    }
 }
 
 impl Default for Settings {
@@ -491,55 +390,6 @@ impl Default for Settings {
         }
     }
 }
-
-/// The TOML file version 0.4 wrote, for the one-time import.
-///
-/// Its `[commands.<id>]` blocks carry no section, so they all land in the
-/// launcher's own section — the only one that had commands then.
-#[derive(Deserialize)]
-#[serde(default)]
-struct LegacySettings {
-    theme: Theme,
-    window_y: Option<i32>,
-    search_height: u32,
-    launch_at_login: bool,
-    resume_seconds: u32,
-    commands: BTreeMap<String, CommandSettings>,
-}
-
-impl Default for LegacySettings {
-    fn default() -> Self {
-        Self {
-            theme: Theme::System,
-            window_y: None,
-            search_height: Settings::SEARCH_HEIGHT_DEFAULT,
-            launch_at_login: false,
-            resume_seconds: 0,
-            commands: BTreeMap::new(),
-        }
-    }
-}
-
-impl LegacySettings {
-    /// Fold the old shape into the current one.
-    fn into_settings(self) -> Settings {
-        Settings {
-            theme: self.theme,
-            window_y: self.window_y,
-            search_height: self.search_height,
-            launch_at_login: self.launch_at_login,
-            resume_seconds: self.resume_seconds,
-            commands: self
-                .commands
-                .into_iter()
-                .map(|(id, state)| ((SYSTEM_SECTION.to_string(), id), state))
-                .collect(),
-        }
-    }
-}
-
-/// The section key the commands of the legacy files belong to.
-const SYSTEM_SECTION: &str = "system";
 
 #[cfg(test)]
 mod tests {
@@ -654,37 +504,6 @@ mod tests {
     }
 
     #[test]
-    fn a_version_one_database_keeps_its_counters() {
-        let connection = Connection::open_in_memory().expect("in-memory database");
-        connection
-            .execute_batch(
-                "
-                CREATE TABLE settings (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
-                CREATE TABLE commands (
-                    id TEXT PRIMARY KEY NOT NULL,
-                    enabled INTEGER NOT NULL,
-                    uses INTEGER NOT NULL,
-                    shortcut TEXT
-                );
-                INSERT INTO commands VALUES ('program-folder', 1, 4, 'ctrl+alt+KeyP');
-                PRAGMA user_version = 1;
-                ",
-            )
-            .expect("old schema");
-        connection
-            .execute_batch(super::MIGRATE_1_TO_2)
-            .expect("migrates");
-        let read = Settings::read(&connection)
-            .expect("reads")
-            .expect("has rows");
-        assert_eq!(read.command_uses("system", "program-folder"), 4);
-        assert_eq!(
-            read.command_shortcut("system", "program-folder"),
-            Some("ctrl+alt+KeyP")
-        );
-    }
-
-    #[test]
     fn a_stored_field_height_is_pulled_back_into_range() {
         let connection = database();
         connection
@@ -698,23 +517,5 @@ mod tests {
             .expect("has rows");
         settings.tidy();
         assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
-    }
-
-    #[test]
-    fn the_old_ini_file_still_reads() {
-        let settings = Settings::from_ini("theme=dark\nwindow_y=118\nsearch_height=999\n");
-        assert_eq!(settings.theme, Theme::Dark);
-        assert_eq!(settings.window_y, Some(118));
-        assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
-    }
-
-    #[test]
-    fn the_old_toml_file_lands_in_the_system_section() {
-        let legacy: super::LegacySettings =
-            toml::from_str("theme = \"light\"\n\n[commands.program-folder]\nuses = 7\n")
-                .expect("parses");
-        let settings = legacy.into_settings();
-        assert_eq!(settings.theme, Theme::Light);
-        assert_eq!(settings.command_uses("system", "program-folder"), 7);
     }
 }
