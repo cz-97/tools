@@ -40,15 +40,18 @@
 
 ## 4. 命令
 
-命令全部声明在 `src/catalogue.rs`：`MODULES` 是模块（如「文件」「链接」「应用」）的数组，
-每个模块带自己的 `commands`。一条 `Command` = `id` + 名称 + 描述 + 搜索词 + 图标 +
-`fn(&mut App)` 动作。
+命令全部声明在 `src/catalogue.rs` 的 `COMMANDS` 里。一条 `Command` = `id` + `section` +
+名称 + 描述 + 搜索词 + 图标 + `fn(&mut App)` 动作。
 
-新增命令 = 往某个模块的 `commands` 里加一项；新增模块 = 加一个 `Module`。
-**不需要动设置页、主页列表或存储代码**：搜索、列表渲染、命令页、启用开关、调用次数、
-全局快捷键全部由 `id` 派生。
+**`section` 就是设置里的子模块**（`Section` = 系统 / 命令 / 外观 / 关于，与设置左侧的四个
+标签一一对应）：命令归到它作用的那一页下面。现有的三条（Program Folder / Repository /
+Quit GPUI Tools）都是启动器自身的事，所以都属于「系统」。
 
-- `Command::id` 是持久化主键（设置文件、计数、快捷键都按它存），一旦发布就**不要改**，
+新增命令 = 往 `COMMANDS` 里加一项，选一个 `section`。**不需要动设置页、主页列表或存储
+代码**：搜索、列表渲染、命令页分组、启用开关、调用次数、全局快捷键全部由 `id` 派生。
+新增子模块 = 给 `Section` 加一个变体（同时它也就是一个新的设置标签）。
+
+- `Command::id` 是持久化主键（数据库、计数、快捷键都按它存），一旦发布就**不要改**，
   改名只动 `name`。id 必须全表唯一。
 - 不想出现在主页的命令不删代码，而是在命令页关掉（`enabled = false`）。
 - 需要窗口的命令走 `with_launcher`，避免在按键分发过程中重入窗口。
@@ -58,8 +61,9 @@
 列表项布局：
 
 - 左侧：图标。
-- 右侧第一行：名称。
-- 右侧第二行：描述。
+- 中间第一行：名称；第二行：描述。
+- 右侧（始终显示，不随是否有值而变）：所属子模块、调用次数、全局快捷键（没有时写
+  「无快捷键」）。三项都读 `CommandState` 快照，不从全局现取。
 
 行高、图标尺寸、选中态、hover 与截断规则由主程序统一实现（见 `ToolRow`），不要在各个
 命令里各自处理。
@@ -104,27 +108,25 @@
 
 ## 5.3 设置
 
-设置存在 `%APPDATA%\gpui-tools\settings.toml`（`src/settings.rs`，`serde` + `toml`）。
-缺字段取默认、未知字段忽略、坏文件整体回退默认；老的 `settings.ini` 只在第一次读到
-TOML 之前迁移一次（`Settings::adopt_legacy`），之后不再看它。
+设置存在 SQLite 数据库 `%APPDATA%\gpui-tools\gpui-tools.db`（`src/settings.rs`，
+`rusqlite` 的 `bundled` 特性）。两张表，整份记录一次读、一次写（事务）：
 
-```toml
-theme = "system"          # system / light / dark
-window_y = 422            # 面板顶边物理像素，只记纵坐标
-search_height = 26        # 24–56，页头高度 = 高度 + 26（最小 52）
-launch_at_login = false   # 注册表才是事实，启动时覆盖
-resume_seconds = 0        # 子页面保持秒数
-
-[commands.program-folder] # key = Command::id
-enabled = false           # 是否出现在主页
-uses = 3                  # 调用次数
-shortcut = "ctrl+alt+KeyP" # 可选，全局快捷键
+```sql
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE commands (id TEXT PRIMARY KEY, enabled INTEGER NOT NULL,
+                       uses INTEGER NOT NULL, shortcut TEXT);
 ```
 
-- 只有**用户改过**的命令才写进文件：全默认的记录在保存时被 `prune` 掉，所以文件不会随着
-  命令变多而膨胀。
+- `settings` 里的键：`theme`(system/light/dark)、`window_y`（面板顶边物理像素，只记纵坐标）、
+  `search_height`（24–56，页头高度 = 高度 + 26、最小 52）、`launch_at_login`（**注册表才是
+  事实**，启动时覆盖）、`resume_seconds`（子页面保持秒数）。
+- `commands` 的 `id` = `Command::id`；**只有用户改过**的命令才有行（全默认的不写，和旧的
+  prune 等价），所以表不会随命令变多而膨胀。
+- 读不出来（文件损坏 / 打不开）就退回默认并写 stderr，绝不让启动器起不来。
+- 首次运行（两张表都空）会从旧的 `settings.toml` → `settings.ini` 顺序**迁移一次**
+  （`adopt_legacy`），写完就不再理旧文件。TOML 的 `serde` 结构只服务于这次迁移。
 - `uses` 只在内存里累加，面板隐藏或退出时随整份记录落盘（`remember_window_position`）。
-  所以那个函数**必须每次隐藏都写**，不能再「window_y 没变就早退」，否则计数永远存不下来。
+  所以那个函数**必须每次隐藏都写**，不能「window_y 没变就早退」，否则计数永远存不下来。
 - `shortcut` 存的是 `keyboard-types` 的键名（`KeyP` / `Digit1` / `F1` / `ArrowUp`），
   显示时才转成 `Ctrl + Alt + P`。解析失败只影响那一条绑定。
 - `window_y` 写入时机：面板隐藏、退出命令、托盘退出；恢复时按显示器工作区夹紧
@@ -146,9 +148,11 @@ shortcut = "ctrl+alt+KeyP" # 可选，全局快捷键
 
 ## 5.5 命令页
 
-「命令」标签里再分左右：左侧是模块（`catalogue::MODULES`），右侧是选中模块的命令行。
-每行：图标 + 名称/描述 + 调用次数 + 快捷键按钮 + 启用开关。模块列的右侧显示
-「启用数/总数」，右侧列表上方是模块的 `description`。
+「命令」标签里再分左右：左侧是**设置子模块**（`catalogue::Section::ALL`：系统 / 命令 /
+外观 / 关于），右侧是该子模块的命令行。列表上方写「<子模块>的命令」，空组显示
+「这个子模块还没有命令」。
+每行：图标 + 名称/描述 + 调用次数 + 快捷键按钮 + 启用开关。左侧每项右侧显示
+「启用数/总数」。
 
 - 点快捷键按钮进入**录制**状态（`Launcher::recording`），下一组按键就是答案：
   `Esc` 取消、`Backspace`/`Delete` 清除、没有修饰键的组合被忽略（否则会把面板里打字的
@@ -182,6 +186,11 @@ shortcut = "ctrl+alt+KeyP" # 可选，全局快捷键
 - **打开文件夹 / 链接一律走 `gpui_tools::shell::open`**（`ShellExecuteW`，verb `open`）：
   由 shell 解析关联，用户把默认文件管理器或浏览器换成别的也照样生效。**不要写
   `explorer.exe`、`cmd /c start`、`cx.open_url`**，那等于把用户的选择钉死在某一个程序上。
+- `shell::open` **在自己的线程里跑**（先 `CoInitializeEx` 成 STA）。原因：`ShellExecuteW`
+  会起 shell 自己的消息泵，泵在 GPUI 持有 App 借用时把事件送回面板，就会
+  `RefCell already borrowed` → `panic in a function that cannot unwind` → 进程直接 abort
+  （实测在列表点击里打开文件夹必崩）。**绝不要**在 `&mut App` 的回调里直接调
+  `ShellExecuteW`。
 - 打开外部目标会让对方抢走前台，面板因此自动隐藏（见 5.6），这是预期行为，不要
   `cx.activate(true)` 把面板抢回来。
 

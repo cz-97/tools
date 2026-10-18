@@ -1,16 +1,18 @@
 //! The settings the host remembers between runs.
 //!
-//! Stored as TOML at `%APPDATA%\gpui-tools\settings.toml`. Every field falls
-//! back to its default when missing, so a file written by an older build still
-//! loads, and a hand-edited file only loses the entry it got wrong.
+//! Kept in a small SQLite database at `%APPDATA%\gpui-tools\gpui-tools.db`:
+//! one `settings` table of named values, and one `commands` table holding what
+//! the user decided about each command together with its usage counter.
 //!
-//! Per-command state is keyed by the command's stable id, not by position:
-//! adding or reordering commands leaves what the user already decided about the
-//! others alone.
+//! The record is small enough to be read and written whole, in a transaction,
+//! so an interrupted write leaves the previous state intact instead of half a
+//! file. Every value falls back to its default when missing or unreadable: a
+//! damaged database must never keep the launcher from starting.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 /// The colour scheme the host draws with.
@@ -36,6 +38,15 @@ impl Theme {
             Self::Dark => "深色",
         }
     }
+
+    /// The value this choice is stored as.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
 }
 
 /// What the user has decided about one command.
@@ -55,8 +66,8 @@ pub struct CommandSettings {
 impl CommandSettings {
     /// Whether this record states anything of its own.
     ///
-    /// A command the user never touched is left out of the file rather than
-    /// written as a block of defaults.
+    /// A command the user never touched is not stored at all rather than
+    /// written as a row of defaults.
     fn is_default(&self) -> bool {
         self.enabled && self.uses == 0 && self.shortcut.is_none()
     }
@@ -95,9 +106,23 @@ pub struct Settings {
     /// was showing. Zero always reopens on the command list.
     pub resume_seconds: u32,
     /// Per-command state, keyed by the command's stable id.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub commands: BTreeMap<String, CommandSettings>,
 }
+
+/// The tables the host needs, created on first use and left alone after that.
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS commands (
+    id       TEXT PRIMARY KEY NOT NULL,
+    enabled  INTEGER NOT NULL,
+    uses     INTEGER NOT NULL,
+    shortcut TEXT
+);
+PRAGMA user_version = 1;
+";
 
 impl Settings {
     /// The shortest search field the appearance page offers.
@@ -118,51 +143,50 @@ impl Settings {
         (300, "5 分钟"),
     ];
 
-    /// Read the settings file, or the defaults when there is none.
+    /// Read the database, or the defaults when there is none yet.
+    ///
+    /// A database with nothing in it is a first run: the files earlier versions
+    /// wrote are taken over once, then never looked at again.
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
+        let Some(connection) = Self::open() else {
             return Self::default();
         };
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            match toml::from_str::<Self>(&text) {
-                Ok(mut settings) => {
-                    settings.tidy();
-                    return settings;
+        match Self::read(&connection) {
+            Ok(Some(mut settings)) => {
+                settings.tidy();
+                settings
+            }
+            Ok(None) => {
+                let legacy = Self::adopt_legacy();
+                if !legacy.save() {
+                    eprintln!("gpui-tools: could not move the earlier settings into the database");
                 }
-                Err(error) => eprintln!(
-                    "gpui-tools: {} is damaged ({error}); falling back to its defaults",
-                    path.display()
-                ),
+                legacy
+            }
+            Err(error) => {
+                eprintln!("gpui-tools: could not read the settings ({error}); using defaults");
+                Self::default()
             }
         }
-        Settings::adopt_legacy()
     }
 
     /// Store the settings, reporting whether they were written.
     pub fn save(&self) -> bool {
-        let Some(path) = Self::path() else {
+        let Some(connection) = Self::open() else {
             return false;
         };
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return false;
-        }
-        let mut record = self.clone();
-        record.prune();
-        let rendered = match toml::to_string_pretty(&record) {
-            Ok(rendered) => rendered,
+        match self.write(&connection) {
+            Ok(()) => true,
             Err(error) => {
-                eprintln!("gpui-tools: could not render the settings: {error}");
-                return false;
+                eprintln!("gpui-tools: could not store the settings ({error})");
+                false
             }
-        };
-        std::fs::write(&path, rendered).is_ok()
+        }
     }
 
-    /// The file the settings live in, inside the user's profile.
+    /// The database file, inside the user's profile.
     fn path() -> Option<PathBuf> {
-        Some(Self::directory()?.join("settings.toml"))
+        Some(Self::directory()?.join("gpui-tools.db"))
     }
 
     /// The folder the settings live in, for the host to point the user at.
@@ -172,6 +196,125 @@ impl Settings {
     pub fn directory() -> Option<PathBuf> {
         let profile = std::env::var_os("APPDATA")?;
         Some(PathBuf::from(profile).join("gpui-tools"))
+    }
+
+    /// Open the database, creating the tables the first time.
+    fn open() -> Option<Connection> {
+        let path = Self::path()?;
+        if let Some(parent) = path.parent()
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return None;
+        }
+        let connection = match Connection::open(&path) {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("gpui-tools: could not open {} ({error})", path.display());
+                return None;
+            }
+        };
+        if let Err(error) = connection.execute_batch(SCHEMA) {
+            eprintln!("gpui-tools: could not prepare the settings table ({error})");
+            return None;
+        }
+        Some(connection)
+    }
+
+    /// Read every stored value, or `None` when the database is still empty.
+    fn read(connection: &Connection) -> rusqlite::Result<Option<Self>> {
+        let mut settings = Self::default();
+        let mut found = false;
+
+        {
+            let mut statement = connection.prepare("SELECT key, value FROM settings")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                found = true;
+                let key: String = row.get(0)?;
+                let value: String = row.get(1)?;
+                match key.as_str() {
+                    "theme" => {
+                        settings.theme = match value.as_str() {
+                            "light" => Theme::Light,
+                            "dark" => Theme::Dark,
+                            _ => Theme::System,
+                        };
+                    }
+                    "window_y" => settings.window_y = value.parse().ok(),
+                    "search_height" => {
+                        if let Ok(height) = value.parse() {
+                            settings.search_height = height;
+                        }
+                    }
+                    "launch_at_login" => settings.launch_at_login = value == "1",
+                    "resume_seconds" => {
+                        if let Ok(seconds) = value.parse() {
+                            settings.resume_seconds = seconds;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        {
+            let mut statement =
+                connection.prepare("SELECT id, enabled, uses, shortcut FROM commands")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                found = true;
+                let id: String = row.get(0)?;
+                settings.commands.insert(
+                    id,
+                    CommandSettings {
+                        enabled: row.get::<_, i64>(1)? != 0,
+                        uses: row.get::<_, i64>(2)?.max(0) as u64,
+                        shortcut: row.get(3)?,
+                    },
+                );
+            }
+        }
+
+        Ok(found.then_some(settings))
+    }
+
+    /// Replace every stored value in one transaction.
+    fn write(&self, connection: &Connection) -> rusqlite::Result<()> {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute("DELETE FROM settings", [])?;
+        {
+            let mut insert =
+                transaction.prepare("INSERT INTO settings (key, value) VALUES (?1, ?2)")?;
+            insert.execute(params!["theme", self.theme.key()])?;
+            insert.execute(params!["search_height", self.search_height.to_string()])?;
+            insert.execute(params![
+                "launch_at_login",
+                u8::from(self.launch_at_login).to_string()
+            ])?;
+            insert.execute(params!["resume_seconds", self.resume_seconds.to_string()])?;
+            if let Some(y) = self.window_y {
+                insert.execute(params!["window_y", y.to_string()])?;
+            }
+        }
+
+        transaction.execute("DELETE FROM commands", [])?;
+        {
+            let mut insert = transaction.prepare(
+                "INSERT INTO commands (id, enabled, uses, shortcut) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (id, state) in &self.commands {
+                if state.is_default() {
+                    continue;
+                }
+                insert.execute(params![
+                    id,
+                    i64::from(state.enabled),
+                    state.uses as i64,
+                    state.shortcut.as_deref(),
+                ])?;
+            }
+        }
+        transaction.commit()
     }
 
     /// What the user has decided about `command`, with its defaults filled in.
@@ -218,30 +361,37 @@ impl Settings {
     }
 
     /// Bring a freshly read record back inside the ranges the pages offer, so a
-    /// hand-edited file cannot produce an unusable layout.
+    /// hand-edited database cannot produce an unusable layout.
     fn tidy(&mut self) {
         self.search_height = self
             .search_height
             .clamp(Self::SEARCH_HEIGHT_MIN, Self::SEARCH_HEIGHT_MAX);
     }
 
-    /// Drop records that say nothing, so the file only holds real choices.
-    fn prune(&mut self) {
-        self.commands.retain(|_, state| !state.is_default());
-    }
-
-    /// Take over the `key = value` file earlier versions wrote.
-    ///
-    /// Read once: the reworked file is written straight back, so the old one is
-    /// never consulted again.
+    /// Take over the files earlier versions wrote: TOML first, then the
+    /// `key = value` list before it. Read once, at the moment the database is
+    /// created; neither file is consulted again.
     fn adopt_legacy() -> Self {
         let Some(directory) = Self::directory() else {
             return Self::default();
         };
-        let Ok(text) = std::fs::read_to_string(directory.join("settings.ini")) else {
-            return Self::default();
-        };
+        if let Ok(text) = std::fs::read_to_string(directory.join("settings.toml")) {
+            match toml::from_str::<Self>(&text) {
+                Ok(mut settings) => {
+                    settings.tidy();
+                    return settings;
+                }
+                Err(error) => eprintln!("gpui-tools: ignoring settings.toml ({error})"),
+            }
+        }
+        match std::fs::read_to_string(directory.join("settings.ini")) {
+            Ok(text) => Self::from_ini(&text),
+            Err(_) => Self::default(),
+        }
+    }
 
+    /// Parse the oldest `key = value` file.
+    fn from_ini(text: &str) -> Self {
         let mut settings = Self::default();
         for line in text.lines() {
             let Some((key, value)) = line.split_once('=') else {
@@ -258,7 +408,7 @@ impl Settings {
                 }
                 "window_y" => settings.window_y = value.parse().ok(),
                 "search_height" => {
-                    if let Ok(height) = value.parse::<u32>() {
+                    if let Ok(height) = value.parse() {
                         settings.search_height = height;
                     }
                 }
@@ -267,7 +417,7 @@ impl Settings {
                         matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "on");
                 }
                 "resume_seconds" => {
-                    if let Ok(seconds) = value.parse::<u32>() {
+                    if let Ok(seconds) = value.parse() {
                         settings.resume_seconds = seconds;
                     }
                 }
@@ -275,9 +425,6 @@ impl Settings {
             }
         }
         settings.tidy();
-        if !settings.save() {
-            eprintln!("gpui-tools: could not move the old settings to TOML");
-        }
         settings
     }
 }
@@ -297,7 +444,14 @@ impl Default for Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandSettings, Settings, Theme};
+    use super::{CommandSettings, SCHEMA, Settings, Theme};
+    use rusqlite::Connection;
+
+    fn database() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection.execute_batch(SCHEMA).expect("schema");
+        connection
+    }
 
     fn sample() -> Settings {
         let mut settings = Settings {
@@ -319,39 +473,29 @@ mod tests {
     #[test]
     fn a_record_survives_a_round_trip() {
         let settings = sample();
-        let text = toml::to_string_pretty(&settings).expect("renders");
-        let read: Settings = toml::from_str(&text).expect("parses");
+        let connection = database();
+        settings.write(&connection).expect("writes");
+        let read = Settings::read(&connection)
+            .expect("reads")
+            .expect("has rows");
         assert_eq!(read, settings);
     }
 
     #[test]
     fn a_record_without_a_position_survives_a_round_trip() {
         let settings = Settings::default();
-        let text = toml::to_string_pretty(&settings).expect("renders");
-        let read: Settings = toml::from_str(&text).expect("parses");
+        let connection = database();
+        settings.write(&connection).expect("writes");
+        let read = Settings::read(&connection)
+            .expect("reads")
+            .expect("has rows");
         assert_eq!(read, settings);
     }
 
     #[test]
-    fn missing_keys_fall_back_to_their_defaults() {
-        let read: Settings = toml::from_str("theme = \"light\"\n").expect("parses");
-        assert_eq!(read.theme, Theme::Light);
-        assert_eq!(read.search_height, Settings::SEARCH_HEIGHT_DEFAULT);
-        assert!(!read.launch_at_login);
-        assert!(read.command_enabled("anything"));
-    }
-
-    #[test]
-    fn unknown_keys_do_not_sink_the_file() {
-        let read: Settings = toml::from_str("theme = \"dark\"\nmystery = 1\n").expect("parses");
-        assert_eq!(read.theme, Theme::Dark);
-    }
-
-    #[test]
-    fn a_stored_field_height_is_pulled_back_into_range() {
-        let mut read: Settings = toml::from_str("search_height = 400\n").expect("parses");
-        read.tidy();
-        assert_eq!(read.search_height, Settings::SEARCH_HEIGHT_MAX);
+    fn an_untouched_database_reads_as_empty() {
+        let connection = database();
+        assert!(Settings::read(&connection).expect("reads").is_none());
     }
 
     #[test]
@@ -367,23 +511,40 @@ mod tests {
     }
 
     #[test]
-    fn pruning_leaves_only_records_that_say_something() {
+    fn untouched_commands_are_not_stored() {
         let mut settings = sample();
         settings.set_command_enabled("quit", true);
-        settings.prune();
-        assert!(settings.commands.contains_key("repository"));
-        assert!(settings.commands.contains_key("program-folder"));
-        assert!(!settings.commands.contains_key("quit"));
+        let connection = database();
+        settings.write(&connection).expect("writes");
+        let read = Settings::read(&connection)
+            .expect("reads")
+            .expect("has rows");
+        assert!(read.commands.contains_key("repository"));
+        assert!(read.commands.contains_key("program-folder"));
+        assert!(!read.commands.contains_key("quit"));
     }
 
     #[test]
-    fn the_record_written_out_carries_every_choice() {
-        let settings = sample();
-        let text = toml::to_string_pretty(&settings).expect("renders");
-        assert!(text.contains("theme = \"dark\""), "{text}");
-        assert!(text.contains("[commands.repository]"), "{text}");
-        assert!(text.contains("enabled = false"), "{text}");
-        assert!(text.contains("uses = 3"), "{text}");
-        assert!(text.contains("shortcut = \"ctrl+alt+KeyP\""), "{text}");
+    fn a_stored_field_height_is_pulled_back_into_range() {
+        let connection = database();
+        connection
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('search_height', '400')",
+                [],
+            )
+            .expect("insert");
+        let mut settings = Settings::read(&connection)
+            .expect("reads")
+            .expect("has rows");
+        settings.tidy();
+        assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
+    }
+
+    #[test]
+    fn the_old_ini_file_still_reads() {
+        let settings = Settings::from_ini("theme=dark\nwindow_y=118\nsearch_height=999\n");
+        assert_eq!(settings.theme, Theme::Dark);
+        assert_eq!(settings.window_y, Some(118));
+        assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
     }
 }

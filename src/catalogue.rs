@@ -1,24 +1,65 @@
 //! The launcher's command catalogue.
 //!
-//! A module is a named group of commands; a command is one entry with a stable
-//! id, a face for the list, and an action. Adding a command is adding one entry
-//! here: search, the home list, the commands page, the usage counter and the
-//! optional global shortcut all follow from the entry and are keyed by `id`.
+//! A command is one entry with a stable id, a face for the list, the section of
+//! the settings it belongs to, and an action. Adding a command is adding one
+//! entry here: search, the home list, the commands page, the usage counter and
+//! the optional global shortcut all follow from the entry and are keyed by
+//! `id`.
 //!
-//! Nothing outside this file knows which commands exist, so a new module is a
-//! new `Module` entry and nothing else.
+//! The sections are the settings sub-modules (系统 / 命令 / 外观 / 关于), so the
+//! commands page reads as an index of the settings: a command lives under the
+//! page whose subject it acts on.
 
 use gpui_kit::App;
 use gpui_kit::component::IconName;
+
+/// The part of the application a command acts on.
+///
+/// Mirrors the settings sub-modules one for one; the settings tabs take their
+/// label and icon from here rather than repeating them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    System,
+    Commands,
+    Appearance,
+    About,
+}
+
+impl Section {
+    /// Every section, in the order the settings page lists them.
+    pub const ALL: [Self; 4] = [Self::System, Self::Commands, Self::Appearance, Self::About];
+
+    /// The label the settings page and the commands page both show.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "系统",
+            Self::Commands => "命令",
+            Self::Appearance => "外观",
+            Self::About => "关于",
+        }
+    }
+
+    /// The section's icon, shared by the settings tabs and the commands page.
+    pub fn icon(self) -> IconName {
+        match self {
+            Self::System => IconName::Cpu,
+            Self::Commands => IconName::SquareTerminal,
+            Self::Appearance => IconName::Palette,
+            Self::About => IconName::Info,
+        }
+    }
+}
 
 /// One command the launcher can run.
 pub struct Command {
     /// The stable key everything stored about this command is filed under.
     ///
     /// Renaming the command must not change it, and it must be unique across
-    /// the catalogue: the settings file, the usage counts and the shortcuts all
+    /// the catalogue: the database, the usage counts and the shortcuts all
     /// address the command by this string.
     pub id: &'static str,
+    /// The settings sub-module this command belongs to.
+    pub section: Section,
     /// The name the list and the commands page show.
     pub name: &'static str,
     pub description: &'static str,
@@ -29,69 +70,48 @@ pub struct Command {
     pub action: fn(&mut App),
 }
 
-/// A named group of commands, shown as one page of the commands section.
-pub struct Module {
-    /// The stable key of the group, for the page that shows it.
-    pub id: &'static str,
-    pub name: &'static str,
-    pub description: &'static str,
-    pub icon: IconName,
-    pub commands: &'static [Command],
-}
-
-/// Every module, in the order the commands page lists them.
-pub static MODULES: &[Module] = &[
-    Module {
-        id: "files",
-        name: "文件",
-        description: "本机上的位置",
+/// Every command, in the order the home list shows them.
+pub static COMMANDS: &[Command] = &[
+    Command {
+        id: "program-folder",
+        section: Section::System,
+        name: "Program Folder",
+        description: "打开启动器所在的文件夹",
+        keyword: "program folder directory 程序 目录 文件夹 打开",
         icon: IconName::FolderOpen,
-        commands: &[Command {
-            id: "program-folder",
-            name: "Program Folder",
-            description: "打开启动器所在的文件夹",
-            keyword: "program folder directory 程序 目录 文件夹 打开",
-            icon: IconName::FolderOpen,
-            action: crate::open_program_folder,
-        }],
+        action: crate::open_program_folder,
     },
-    Module {
-        id: "links",
-        name: "链接",
-        description: "网络上的目标",
+    Command {
+        id: "repository",
+        section: Section::System,
+        name: "Repository",
+        description: "在浏览器打开项目仓库",
+        keyword: "github repository source 仓库 源码 项目",
         icon: IconName::Globe,
-        commands: &[Command {
-            id: "repository",
-            name: "Repository",
-            description: "在浏览器打开项目仓库",
-            keyword: "github repository source 仓库 源码 项目",
-            icon: IconName::Globe,
-            action: crate::open_repository,
-        }],
+        action: crate::open_repository,
     },
-    Module {
-        id: "app",
-        name: "应用",
-        description: "启动器本身",
-        icon: IconName::Frame,
-        commands: &[Command {
-            id: "quit",
-            name: "Quit GPUI Tools",
-            description: "退出启动器",
-            keyword: "quit exit close 退出 关闭",
-            icon: IconName::Close,
-            action: crate::quit_launcher,
-        }],
+    Command {
+        id: "quit",
+        section: Section::System,
+        name: "Quit GPUI Tools",
+        description: "退出启动器",
+        keyword: "quit exit close 退出 关闭",
+        icon: IconName::Close,
+        action: crate::quit_launcher,
     },
 ];
 
+/// The commands of one section, in catalogue order.
+pub fn commands(section: Section) -> impl Iterator<Item = &'static Command> {
+    COMMANDS
+        .iter()
+        .filter(move |command| command.section == section)
+}
+
 /// The command with this id, if the catalogue still has it.
 ///
-/// A file written by an older build can name a command that has since gone; the
-/// caller is expected to shrug that off.
-pub fn find(id: &str) -> Option<(&'static Module, &'static Command)> {
-    MODULES
-        .iter()
-        .flat_map(|module| module.commands.iter().map(move |command| (module, command)))
-        .find(|(_, command)| command.id == id)
+/// A record written by an older build can name a command that has since gone;
+/// the caller is expected to shrug that off.
+pub fn find(id: &str) -> Option<&'static Command> {
+    COMMANDS.iter().find(|command| command.id == id)
 }

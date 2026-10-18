@@ -5,27 +5,53 @@
 //! resolve the association instead, so a folder opens in whatever file manager
 //! is registered as the default and a link opens in the default browser.
 //!
-//! The target is passed as one argument, never through a shell command line, so
-//! there is nothing to quote or escape.
+//! The call happens on a thread of its own. `ShellExecuteW` runs the shell's
+//! message pump, and starting that pump while GPUI holds its application borrow
+//! lets the shell deliver events straight back into the launcher, which panics
+//! with "RefCell already borrowed" and aborts the process. The call also blocks
+//! until the handler takes over. A short-lived thread with COM initialised keeps
+//! both off the UI thread.
+
+use std::ffi::OsStr;
 
 /// Ask the shell to open `target` with its default handler.
 ///
-/// Returns whether the shell accepted the request; the handler may still fail
-/// afterwards, which is out of the host's hands.
-pub fn open(target: impl AsRef<std::ffi::OsStr>) -> bool {
-    sys::open(target.as_ref())
+/// Returns immediately; a failure is reported on standard error from the thread
+/// that attempted the open.
+pub fn open(target: impl AsRef<OsStr>) {
+    let target = target.as_ref().to_owned();
+    std::thread::spawn(move || {
+        sys::prepare();
+        if !sys::open(&target) {
+            eprintln!(
+                "gpui-tools: could not open {}",
+                std::path::Path::new(&target).display()
+            );
+        }
+    });
 }
 
 #[cfg(windows)]
 mod sys {
     use std::ffi::OsStr;
     use std::ptr;
+    use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     /// `ShellExecuteW` reports success as anything above 32; the smaller values
     /// are its own error codes.
     const SHELL_SUCCESS: isize = 32;
+
+    /// Give this thread the apartment the shell expects.
+    ///
+    /// A failure is not fatal: the open still runs, it only loses the shell
+    /// extensions that need COM.
+    pub fn prepare() {
+        unsafe {
+            CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32);
+        }
+    }
 
     fn wide(text: &OsStr) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt as _;
@@ -52,6 +78,8 @@ mod sys {
 #[cfg(not(windows))]
 mod sys {
     use std::ffi::OsStr;
+
+    pub fn prepare() {}
 
     pub fn open(_target: &OsStr) -> bool {
         false

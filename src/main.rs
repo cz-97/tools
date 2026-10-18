@@ -108,9 +108,8 @@ impl Default for CommandState {
 
 /// The state of every command, read from the settings in one pass.
 fn command_states(settings: &Settings) -> BTreeMap<&'static str, CommandState> {
-    catalogue::MODULES
+    catalogue::COMMANDS
         .iter()
-        .flat_map(|module| module.commands)
         .map(|command| {
             (
                 command.id,
@@ -178,17 +177,20 @@ impl RenderOnce for ToolRow {
             muted
         };
 
-        // The metadata sits to the right of the description, right-aligned, so
-        // every row lines up no matter how long the text is.
-        let uses = (self.state.uses > 0).then(|| {
-            div()
-                .text_xs()
-                .text_color(detail_color)
-                .child(format!("\u{00d7}{}", self.state.uses))
-                .into_any_element()
-        });
-        let shortcut = self.state.shortcut.clone().map(|chord| {
-            div()
+        // Everything the user can decide about a command stays visible on the
+        // row: which section it belongs to, how often it has run, and the chord
+        // that runs it — even when that is "never" and "none", so the row does
+        // not silently change shape once a counter starts moving.
+        let section = div()
+            .text_xs()
+            .text_color(detail_color)
+            .child(self.command.section.label());
+        let uses = div()
+            .text_xs()
+            .text_color(detail_color)
+            .child(format!("{} 次", self.state.uses));
+        let shortcut = match self.state.shortcut.clone() {
+            Some(chord) => div()
                 .px_1p5()
                 .py_0p5()
                 .rounded(px(4.))
@@ -196,8 +198,13 @@ impl RenderOnce for ToolRow {
                 .text_xs()
                 .text_color(detail_color)
                 .child(shortcut_label(&chord))
-                .into_any_element()
-        });
+                .into_any_element(),
+            None => div()
+                .text_xs()
+                .text_color(detail_color.opacity(0.7))
+                .child("无快捷键")
+                .into_any_element(),
+        };
 
         h_flex()
             .w_full()
@@ -246,8 +253,14 @@ impl RenderOnce for ToolRow {
                             .child(self.command.description),
                     ),
             )
-            .children(uses)
-            .children(shortcut)
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .gap_2()
+                    .child(section)
+                    .child(uses)
+                    .child(shortcut),
+            )
     }
 }
 
@@ -274,9 +287,8 @@ impl ToolDelegate {
 
     /// Every command that the user kept on the home list and the query matches.
     fn visible(&self) -> Vec<&'static catalogue::Command> {
-        catalogue::MODULES
+        catalogue::COMMANDS
             .iter()
-            .flat_map(|module| module.commands)
             .filter(|command| self.enabled(command.id) && self.matches(command))
             .collect()
     }
@@ -417,6 +429,9 @@ enum Page {
 }
 
 /// The settings sections, in the order the section list shows them.
+///
+/// These are the sub-modules the commands page groups commands by, so a command
+/// is declared against one of them in `catalogue.rs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsTab {
     System,
@@ -429,22 +444,23 @@ impl SettingsTab {
     /// Every section, in the order the section list shows them.
     const ALL: [Self; 4] = [Self::System, Self::Commands, Self::Appearance, Self::About];
 
-    fn label(self) -> &'static str {
+    /// The catalogue section this tab shows.
+    fn section(self) -> catalogue::Section {
         match self {
-            Self::System => "系统",
-            Self::Commands => "命令",
-            Self::Appearance => "外观",
-            Self::About => "关于",
+            Self::System => catalogue::Section::System,
+            Self::Commands => catalogue::Section::Commands,
+            Self::Appearance => catalogue::Section::Appearance,
+            Self::About => catalogue::Section::About,
         }
     }
 
+    /// The label shown in the section list and the commands page.
+    fn label(self) -> &'static str {
+        self.section().label()
+    }
+
     fn icon(self) -> IconName {
-        match self {
-            Self::System => IconName::Cpu,
-            Self::Commands => IconName::SquareTerminal,
-            Self::Appearance => IconName::Palette,
-            Self::About => IconName::Info,
-        }
+        self.section().icon()
     }
 
     /// The section `delta` steps away, clamped to the last one.
@@ -473,9 +489,9 @@ struct Launcher {
     /// The loop that hides the panel once another window takes the foreground.
     /// Restarted on every summon; the previous one has already ended by then.
     focus_watch: Option<Task<()>>,
-    /// Which module the commands page is showing, as an index into the
-    /// catalogue.
-    module: usize,
+    /// Which sub-module the commands page is showing, as an index into
+    /// `catalogue::Section::ALL`.
+    section: usize,
     /// The command whose shortcut is being captured, if any.
     recording: Option<&'static str>,
     /// Kept alive for as long as the launcher is: dropping either would stop
@@ -520,7 +536,7 @@ impl Launcher {
             page: Page::Commands,
             last_section: None,
             focus_watch: None,
-            module: 0,
+            section: 0,
             recording: None,
             _search_events: search_events,
             _search_observation: search_observation,
@@ -782,12 +798,12 @@ impl Launcher {
         });
     }
 
-    /// Show another module on the commands page.
-    fn select_module(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.module == index {
+    /// Show another sub-module on the commands page.
+    fn select_section(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.section == index {
             return;
         }
-        self.module = index;
+        self.section = index;
         self.recording = None;
         cx.notify();
     }
@@ -1127,91 +1143,98 @@ impl Launcher {
             )
     }
 
-    /// The commands page: the modules on the left, the chosen module's commands
-    /// on the right.
+    /// The commands page: the settings sub-modules on the left, the commands of
+    /// the chosen one on the right.
     ///
     /// Everything on it comes from the catalogue and the per-command settings,
-    /// so a new module shows up here without touching this function.
+    /// so a command declared against a section shows up here without touching
+    /// this function.
     fn commands_page(&self, colors: RowColors, cx: &Context<Self>) -> impl IntoElement {
         let settings = stored_settings(cx);
-        let selected = self.module.min(catalogue::MODULES.len().saturating_sub(1));
+        let selected = self.section.min(catalogue::Section::ALL.len() - 1);
         let border = cx.theme().border;
 
-        let modules = v_flex()
+        let sections = v_flex()
             .w(px(MODULE_WIDTH))
             .flex_shrink_0()
             .gap_1()
             .pr_3()
             .border_r_1()
             .border_color(border)
-            .children(catalogue::MODULES.iter().enumerate().map(|(ix, module)| {
-                let current = ix == selected;
-                let shown = module
-                    .commands
+            .children(
+                catalogue::Section::ALL
                     .iter()
-                    .filter(|command| settings.command_enabled(command.id))
-                    .count();
-                h_flex()
-                    .id(SharedString::from(format!("module-{}", module.id)))
-                    .gap_2()
-                    .px_2()
-                    .py_1p5()
-                    .rounded(px(6.))
-                    .text_sm()
-                    .cursor_pointer()
-                    .text_color(if current {
-                        colors.accent_foreground
-                    } else {
-                        colors.foreground
-                    })
-                    .when(current, move |this| this.bg(colors.accent))
-                    .when(!current, move |this| {
-                        this.hover(move |style| style.bg(colors.muted_foreground.opacity(0.18)))
-                    })
-                    .on_click(cx.listener(move |launcher, _, _, cx| launcher.select_module(ix, cx)))
-                    .child(Icon::new(module.icon.clone()).size_4())
-                    .child(div().flex_1().min_w_0().text_ellipsis().child(module.name))
-                    .child(
-                        div()
-                            .text_xs()
+                    .enumerate()
+                    .map(|(ix, section)| {
+                        let current = ix == selected;
+                        let owned = catalogue::commands(*section).collect::<Vec<_>>();
+                        let shown = owned
+                            .iter()
+                            .filter(|command| settings.command_enabled(command.id))
+                            .count();
+                        h_flex()
+                            .id(SharedString::from(format!("section-{}", section.label())))
+                            .gap_2()
+                            .px_2()
+                            .py_1p5()
+                            .rounded(px(6.))
+                            .text_sm()
+                            .cursor_pointer()
                             .text_color(if current {
-                                colors.accent_foreground.opacity(0.7)
+                                colors.accent_foreground
                             } else {
-                                colors.muted_foreground
+                                colors.foreground
                             })
-                            .child(format!("{shown}/{}", module.commands.len())),
-                    )
-            }));
+                            .when(current, move |this| this.bg(colors.accent))
+                            .when(!current, move |this| {
+                                this.hover(move |style| {
+                                    style.bg(colors.muted_foreground.opacity(0.18))
+                                })
+                            })
+                            .on_click(cx.listener(move |launcher, _, _, cx| {
+                                launcher.select_section(ix, cx)
+                            }))
+                            .child(Icon::new(section.icon()).size_4())
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_ellipsis()
+                                    .child(section.label()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if current {
+                                        colors.accent_foreground.opacity(0.7)
+                                    } else {
+                                        colors.muted_foreground
+                                    })
+                                    .child(format!("{shown}/{}", owned.len())),
+                            )
+                    }),
+            );
 
-        let commands = catalogue::MODULES
-            .get(selected)
-            .map(|module| {
-                module
-                    .commands
-                    .iter()
-                    .map(|command| {
-                        command_row(
-                            command,
-                            &settings.command(command.id),
-                            self.recording == Some(command.id),
-                            colors,
-                            cx,
-                        )
-                        .into_any_element()
-                    })
-                    .collect::<Vec<_>>()
+        let section = catalogue::Section::ALL[selected];
+        let commands = catalogue::commands(section)
+            .map(|command| {
+                command_row(
+                    command,
+                    &settings.command(command.id),
+                    self.recording == Some(command.id),
+                    colors,
+                    cx,
+                )
+                .into_any_element()
             })
-            .unwrap_or_default();
-        let caption = catalogue::MODULES
-            .get(selected)
-            .map(|module| module.description);
+            .collect::<Vec<_>>();
 
         h_flex()
             .size_full()
             .min_w_0()
             .items_stretch()
             .overflow_hidden()
-            .child(modules)
+            .child(sections)
             .child(
                 v_flex()
                     .flex_1()
@@ -1219,14 +1242,22 @@ impl Launcher {
                     .overflow_hidden()
                     .pl_3()
                     .gap_1()
-                    .when_some(caption, |this, caption| {
+                    .child(
+                        div()
+                            .px_2()
+                            .pb_1()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(format!("{}的命令", section.label())),
+                    )
+                    .when(commands.is_empty(), |this| {
                         this.child(
                             div()
                                 .px_2()
-                                .pb_1()
+                                .py_2()
                                 .text_xs()
                                 .text_color(colors.muted_foreground)
-                                .child(caption),
+                                .child("这个子模块还没有命令"),
                         )
                     })
                     .children(commands),
@@ -1834,7 +1865,7 @@ fn launch() {
                                                 .find(|(hotkey, _)| hotkey.id() == event.id)
                                                 .map(|(_, id)| *id)
                                         });
-                                    if let Some((_, command)) = command.and_then(catalogue::find) {
+                                    if let Some(command) = command.and_then(catalogue::find) {
                                         run_command(command, cx);
                                     }
                                 });
@@ -1999,16 +2030,12 @@ fn open_program_folder(_cx: &mut App) {
 /// user leaving the launcher, so the panel hides behind it like any other
 /// focus loss.
 fn open_folder(dir: &std::path::Path) {
-    if !shell::open(dir) {
-        eprintln!("gpui-tools: could not open {}", dir.display());
-    }
+    shell::open(dir);
 }
 
 /// Open the project page in the user's default browser.
 fn open_repository(_cx: &mut App) {
-    if !shell::open(REPOSITORY_URL) {
-        eprintln!("gpui-tools: could not open {REPOSITORY_URL}");
-    }
+    shell::open(REPOSITORY_URL);
 }
 
 fn quit_launcher(cx: &mut App) {
@@ -2069,9 +2096,8 @@ impl gpui_kit::Global for Shortcuts {}
 /// does not cost the others.
 fn apply_command_shortcuts(cx: &mut App) {
     let settings = stored_settings(cx);
-    let wanted = catalogue::MODULES
+    let wanted = catalogue::COMMANDS
         .iter()
-        .flat_map(|module| module.commands)
         .filter_map(|command| {
             let chord = settings.command_shortcut(command.id)?;
             match parse_chord(chord) {

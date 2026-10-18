@@ -1,12 +1,13 @@
 [package]
 name = "gpui-tools"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 
 [dependencies]
 gpui-kit = "0.7.3"
 global-hotkey = "0.8"
 gpui-tray = { version = "0.1.4", default-features = false, features = ["gpui-kit"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 
@@ -15,6 +16,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_UI_Controls",
