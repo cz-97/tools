@@ -107,16 +107,18 @@ impl Default for CommandState {
 }
 
 /// The state of every command, read from the settings in one pass.
-fn command_states(settings: &Settings) -> BTreeMap<&'static str, CommandState> {
+fn command_states(settings: &Settings) -> CommandStates {
     catalogue::COMMANDS
         .iter()
         .map(|command| {
             (
-                command.id,
+                (command.section.key(), command.id),
                 CommandState {
-                    enabled: settings.command_enabled(command.id),
-                    uses: settings.command_uses(command.id),
-                    shortcut: settings.command_shortcut(command.id).map(str::to_string),
+                    enabled: settings.command_enabled(command.section.key(), command.id),
+                    uses: settings.command_uses(command.section.key(), command.id),
+                    shortcut: settings
+                        .command_shortcut(command.section.key(), command.id)
+                        .map(str::to_string),
                 },
             )
         })
@@ -264,19 +266,22 @@ impl RenderOnce for ToolRow {
     }
 }
 
+/// What the settings say about each command, keyed by its section and id.
+type CommandStates = BTreeMap<(&'static str, &'static str), CommandState>;
+
 /// The launcher list, backed by the command catalogue.
 struct ToolDelegate {
     query: String,
     selected: usize,
     /// What the settings say about each command, so filtering and drawing stay
     /// free of globals.
-    states: BTreeMap<&'static str, CommandState>,
+    states: CommandStates,
     /// Notified on every query change so the host chrome stays current.
     view: Option<WeakEntity<Launcher>>,
 }
 
 impl ToolDelegate {
-    fn new(states: BTreeMap<&'static str, CommandState>) -> Self {
+    fn new(states: CommandStates) -> Self {
         Self {
             query: String::new(),
             selected: 0,
@@ -289,18 +294,21 @@ impl ToolDelegate {
     fn visible(&self) -> Vec<&'static catalogue::Command> {
         catalogue::COMMANDS
             .iter()
-            .filter(|command| self.enabled(command.id) && self.matches(command))
+            .filter(|command| self.enabled(command) && self.matches(command))
             .collect()
     }
 
     /// Whether a command is allowed on the home list.
-    fn enabled(&self, id: &str) -> bool {
-        self.states.get(id).is_none_or(|state| state.enabled)
+    fn enabled(&self, command: &catalogue::Command) -> bool {
+        self.state(command).enabled
     }
 
     /// What is known about a command, or its defaults.
-    fn state(&self, id: &str) -> CommandState {
-        self.states.get(id).cloned().unwrap_or_default()
+    fn state(&self, command: &catalogue::Command) -> CommandState {
+        self.states
+            .get(&(command.section.key(), command.id))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Case-insensitive matching where every whitespace-separated token of the
@@ -367,7 +375,7 @@ impl ListDelegate for ToolDelegate {
         let command = *self.visible().get(row)?;
         Some(ToolRow {
             command,
-            state: self.state(command.id),
+            state: self.state(command),
             selected: row == self.selected,
         })
     }
@@ -493,7 +501,7 @@ struct Launcher {
     /// `catalogue::Section::ALL`.
     section: usize,
     /// The command whose shortcut is being captured, if any.
-    recording: Option<&'static str>,
+    recording: Option<&'static catalogue::Command>,
     /// Kept alive for as long as the launcher is: dropping either would stop
     /// the field from reporting what the user typed.
     _search_events: Subscription,
@@ -809,23 +817,32 @@ impl Launcher {
     }
 
     /// Take a command off the home list, or put it back.
-    fn set_command_enabled(&mut self, id: &'static str, enabled: bool, cx: &mut Context<Self>) {
+    fn set_command_enabled(
+        &mut self,
+        command: &'static catalogue::Command,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
         let mut settings = stored_settings(cx);
-        if settings.command_enabled(id) == enabled {
+        let (section, id) = (command.section.key(), command.id);
+        if settings.command_enabled(section, id) == enabled {
             return;
         }
-        settings.set_command_enabled(id, enabled);
+        settings.set_command_enabled(section, id, enabled);
         store_settings(settings, cx);
         self.refresh_catalogue(cx);
         cx.notify();
     }
 
-    /// Start listening for the chord that should run `id`, or stop listening.
-    fn toggle_recording(&mut self, id: &'static str, cx: &mut Context<Self>) {
-        self.recording = if self.recording == Some(id) {
+    /// Start listening for the chord that should run `command`, or stop.
+    fn toggle_recording(&mut self, command: &'static catalogue::Command, cx: &mut Context<Self>) {
+        self.recording = if self
+            .recording
+            .is_some_and(|current| std::ptr::eq(current, command))
+        {
             None
         } else {
-            Some(id)
+            Some(command)
         };
         cx.notify();
     }
@@ -835,13 +852,13 @@ impl Launcher {
     /// Only chords with a modifier are accepted: a bare letter would be captured
     /// from the panel itself and is useless as a global shortcut.
     fn capture_shortcut(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
-        let Some(id) = self.recording else {
+        let Some(command) = self.recording else {
             return;
         };
         match keystroke.key.as_str() {
             "escape" => self.recording = None,
             "backspace" | "delete" => {
-                self.set_shortcut(id, None, cx);
+                self.set_shortcut(command, None, cx);
                 self.recording = None;
             }
             _ => {
@@ -849,7 +866,7 @@ impl Launcher {
                     // Nothing usable: keep listening.
                     return;
                 };
-                self.set_shortcut(id, Some(chord), cx);
+                self.set_shortcut(command, Some(chord), cx);
                 self.recording = None;
             }
         }
@@ -857,12 +874,18 @@ impl Launcher {
     }
 
     /// Bind a command to a chord, or clear its binding.
-    fn set_shortcut(&mut self, id: &'static str, chord: Option<String>, cx: &mut Context<Self>) {
+    fn set_shortcut(
+        &mut self,
+        command: &'static catalogue::Command,
+        chord: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let mut settings = stored_settings(cx);
-        if settings.command_shortcut(id).map(str::to_string) == chord {
+        let (section, id) = (command.section.key(), command.id);
+        if settings.command_shortcut(section, id).map(str::to_string) == chord {
             return;
         }
-        settings.set_command_shortcut(id, chord);
+        settings.set_command_shortcut(section, id, chord);
         store_settings(settings, cx);
         apply_command_shortcuts(cx);
         self.refresh_catalogue(cx);
@@ -1170,7 +1193,9 @@ impl Launcher {
                         let owned = catalogue::commands(*section).collect::<Vec<_>>();
                         let shown = owned
                             .iter()
-                            .filter(|command| settings.command_enabled(command.id))
+                            .filter(|command| {
+                                settings.command_enabled(command.section.key(), command.id)
+                            })
                             .count();
                         h_flex()
                             .id(SharedString::from(format!("section-{}", section.label())))
@@ -1220,8 +1245,9 @@ impl Launcher {
             .map(|command| {
                 command_row(
                     command,
-                    &settings.command(command.id),
-                    self.recording == Some(command.id),
+                    &settings.command(command.section.key(), command.id),
+                    self.recording
+                        .is_some_and(|current| std::ptr::eq(current, command)),
                     colors,
                     cx,
                 )
@@ -1300,9 +1326,7 @@ fn command_row(
             .cursor_pointer()
             .text_color(colors.muted_foreground)
             .hover(move |style| style.bg(colors.muted_foreground.opacity(0.18)))
-            .on_click(
-                cx.listener(move |launcher, _, _, cx| launcher.toggle_recording(command.id, cx)),
-            )
+            .on_click(cx.listener(move |launcher, _, _, cx| launcher.toggle_recording(command, cx)))
             .child(label)
             .into_any_element()
     };
@@ -1363,7 +1387,7 @@ fn command_row(
                 Switch::new(SharedString::from(format!("enabled-{}", command.id)))
                     .checked(state.enabled)
                     .on_change(cx.listener(move |launcher, checked: &bool, _window, cx| {
-                        launcher.set_command_enabled(command.id, *checked, cx)
+                        launcher.set_command_enabled(command, *checked, cx)
                     })),
             ),
         )
@@ -1863,9 +1887,9 @@ fn launch() {
                                                 .borrow()
                                                 .iter()
                                                 .find(|(hotkey, _)| hotkey.id() == event.id)
-                                                .map(|(_, id)| *id)
+                                                .map(|(_, command)| *command)
                                         });
-                                    if let Some(command) = command.and_then(catalogue::find) {
+                                    if let Some(command) = command {
                                         run_command(command, cx);
                                     }
                                 });
@@ -1890,7 +1914,7 @@ actions!(gpui_tools, [ShowLauncher, QuitApplication]);
 ///
 /// The key interceptor has to decide synchronously whether to swallow a key, so
 /// it cannot go through the deferred hop the rest of the callbacks use.
-fn recording_command(cx: &App) -> Option<&'static str> {
+fn recording_command(cx: &App) -> Option<&'static catalogue::Command> {
     let handle = cx.try_global::<LauncherHandle>()?;
     handle
         .view
@@ -2084,7 +2108,7 @@ impl gpui_kit::Global for TrayRegistration {}
 struct Shortcuts {
     manager: GlobalHotKeyManager,
     /// The commands currently bound, with the chord that runs each.
-    commands: RefCell<Vec<(global_hotkey::hotkey::HotKey, &'static str)>>,
+    commands: RefCell<Vec<(global_hotkey::hotkey::HotKey, &'static catalogue::Command)>>,
 }
 impl gpui_kit::Global for Shortcuts {}
 
@@ -2099,9 +2123,9 @@ fn apply_command_shortcuts(cx: &mut App) {
     let wanted = catalogue::COMMANDS
         .iter()
         .filter_map(|command| {
-            let chord = settings.command_shortcut(command.id)?;
+            let chord = settings.command_shortcut(command.section.key(), command.id)?;
             match parse_chord(chord) {
-                Some(hotkey) => Some((command.id, hotkey)),
+                Some(hotkey) => Some((command, hotkey)),
                 None => {
                     eprintln!("gpui-tools: {chord} is not a shortcut this launcher understands");
                     None
@@ -2119,10 +2143,14 @@ fn apply_command_shortcuts(cx: &mut App) {
             eprintln!("gpui-tools: could not release a stale shortcut: {error}");
         }
     }
-    for (id, hotkey) in wanted {
+    for (command, hotkey) in wanted {
         match shortcuts.manager.register(hotkey) {
-            Ok(()) => held.push((hotkey, id)),
-            Err(error) => eprintln!("gpui-tools: could not bind the shortcut for {id}: {error}"),
+            Ok(()) => held.push((hotkey, command)),
+            Err(error) => eprintln!(
+                "gpui-tools: could not bind the shortcut for {}/{}: {error}",
+                command.section.key(),
+                command.id
+            ),
         }
     }
 }
@@ -2134,7 +2162,7 @@ fn apply_command_shortcuts(cx: &mut App) {
 /// would be the only disk traffic this program has.
 fn run_command(command: &'static catalogue::Command, cx: &mut App) {
     let mut settings = stored_settings(cx);
-    settings.count_use(command.id);
+    settings.count_use(command.section.key(), command.id);
     cx.set_global(SettingsStore(settings));
     (command.action)(cx);
 }

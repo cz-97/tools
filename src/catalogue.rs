@@ -39,6 +39,20 @@ impl Section {
         }
     }
 
+    /// The stable key the database files this section's commands under.
+    ///
+    /// It is half the primary key of every command row, and it is not the
+    /// label: renaming a section must not orphan the counters, shortcuts and
+    /// switches its commands already carry.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Commands => "commands",
+            Self::Appearance => "appearance",
+            Self::About => "about",
+        }
+    }
+
     /// The section's icon, shared by the settings tabs and the commands page.
     pub fn icon(self) -> IconName {
         match self {
@@ -106,12 +120,4 @@ pub fn commands(section: Section) -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
         .filter(move |command| command.section == section)
-}
-
-/// The command with this id, if the catalogue still has it.
-///
-/// A record written by an older build can name a command that has since gone;
-/// the caller is expected to shrug that off.
-pub fn find(id: &str) -> Option<&'static Command> {
-    COMMANDS.iter().find(|command| command.id == id)
 }

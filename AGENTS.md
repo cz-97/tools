@@ -113,18 +113,24 @@ Quit GPUI Tools）都是启动器自身的事，所以都属于「系统」。
 
 ```sql
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE commands (id TEXT PRIMARY KEY, enabled INTEGER NOT NULL,
-                       uses INTEGER NOT NULL, shortcut TEXT);
+CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
+                       enabled INTEGER NOT NULL, uses INTEGER NOT NULL,
+                       shortcut TEXT, PRIMARY KEY (section, id));
 ```
 
 - `settings` 里的键：`theme`(system/light/dark)、`window_y`（面板顶边物理像素，只记纵坐标）、
   `search_height`（24–56，页头高度 = 高度 + 26、最小 52）、`launch_at_login`（**注册表才是
   事实**，启动时覆盖）、`resume_seconds`（子页面保持秒数）。
-- `commands` 的 `id` = `Command::id`；**只有用户改过**的命令才有行（全默认的不写，和旧的
-  prune 等价），所以表不会随命令变多而膨胀。
+- **`commands` 的主键是 `(section, id)`**：`section` = `Section::key()`（`system` / `commands` /
+  `appearance` / `about`），两个子模块可以有同名的命令而互不干扰。`Section::key()` 与
+  `Command::id` 都是持久化主键的一半，**发布后都不要改**（改标签不影响，改 key 会丢数据）。
+- 表结构靠 `PRAGMA user_version` 演进：0 → 建表（=2）；1 → `MIGRATE_1_TO_2`（旧表只有 id 主键，
+  行全部搬进 `system` 段）。加新版本就加一条迁移，**不要**改 `SCHEMA` 去凑旧库。
+- **只有用户改过**的命令才有行（全默认的不写），所以表不会随命令变多而膨胀。
 - 读不出来（文件损坏 / 打不开）就退回默认并写 stderr，绝不让启动器起不来。
 - 首次运行（两张表都空）会从旧的 `settings.toml` → `settings.ini` 顺序**迁移一次**
-  （`adopt_legacy`），写完就不再理旧文件。TOML 的 `serde` 结构只服务于这次迁移。
+  （`adopt_legacy`），写完就不再理旧文件。`LegacySettings` 那套 `serde` 结构只服务于这次
+  迁移，命令一律落到 `system` 段。
 - `uses` 只在内存里累加，面板隐藏或退出时随整份记录落盘（`remember_window_position`）。
   所以那个函数**必须每次隐藏都写**，不能「window_y 没变就早退」，否则计数永远存不下来。
 - `shortcut` 存的是 `keyboard-types` 的键名（`KeyP` / `Digit1` / `F1` / `ArrowUp`），

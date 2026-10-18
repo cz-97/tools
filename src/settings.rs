@@ -4,6 +4,11 @@
 //! one `settings` table of named values, and one `commands` table holding what
 //! the user decided about each command together with its usage counter.
 //!
+//! A command is addressed by its section *and* its id, which is also the
+//! primary key of its row: two sections may both hold a command called `quit`,
+//! and they are different commands. The section comes from the catalogue, so
+//! this module only ever sees the section's stable key as a string.
+//!
 //! The record is small enough to be read and written whole, in a transaction,
 //! so an interrupted write leaves the previous state intact instead of half a
 //! file. Every value falls back to its default when missing or unreadable: a
@@ -13,10 +18,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use rusqlite::{Connection, params};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// The colour scheme the host draws with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
     /// Follow the operating system.
@@ -50,16 +55,18 @@ impl Theme {
 }
 
 /// What the user has decided about one command.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct CommandSettings {
     /// Whether the command shows up on the home list.
+    ///
+    /// Missing means the default, which is "shown": `Deserialize` fills it in
+    /// from `Default`, so the field can keep its plain `bool` type.
     pub enabled: bool,
     /// How many times the command has been run.
     pub uses: u64,
     /// The global shortcut that runs the command, as a chord such as
     /// `ctrl+alt+KeyP`, or nothing.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub shortcut: Option<String>,
 }
 
@@ -84,8 +91,7 @@ impl Default for CommandSettings {
 }
 
 /// Everything the host persists, in one record.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Which colour scheme to draw with.
     pub theme: Theme,
@@ -94,7 +100,6 @@ pub struct Settings {
     ///
     /// The horizontal position is deliberately not remembered: the panel is
     /// re-centred on its monitor on every run instead.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub window_y: Option<i32>,
     /// The height of the search field, in logical pixels.
     pub search_height: u32,
@@ -105,23 +110,44 @@ pub struct Settings {
     /// How long, in seconds, a hidden panel remembers the settings section it
     /// was showing. Zero always reopens on the command list.
     pub resume_seconds: u32,
-    /// Per-command state, keyed by the command's stable id.
-    pub commands: BTreeMap<String, CommandSettings>,
+    /// Per-command state, keyed by the section key and then the command id.
+    pub commands: BTreeMap<(String, String), CommandSettings>,
 }
 
-/// The tables the host needs, created on first use and left alone after that.
+/// The tables the host needs, for a database that does not exist yet.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY NOT NULL,
     value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS commands (
-    id       TEXT PRIMARY KEY NOT NULL,
+    section  TEXT NOT NULL,
+    id       TEXT NOT NULL,
     enabled  INTEGER NOT NULL,
     uses     INTEGER NOT NULL,
-    shortcut TEXT
+    shortcut TEXT,
+    PRIMARY KEY (section, id)
 );
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
+";
+
+/// Version 1 keyed commands by the bare id, so a second section reusing an id
+/// would have collided. Every command that existed under that schema belonged
+/// to the launcher's own section, which is where its rows go.
+const MIGRATE_1_TO_2: &str = "
+ALTER TABLE commands RENAME TO commands_v1;
+CREATE TABLE commands (
+    section  TEXT NOT NULL,
+    id       TEXT NOT NULL,
+    enabled  INTEGER NOT NULL,
+    uses     INTEGER NOT NULL,
+    shortcut TEXT,
+    PRIMARY KEY (section, id)
+);
+INSERT INTO commands (section, id, enabled, uses, shortcut)
+    SELECT 'system', id, enabled, uses, shortcut FROM commands_v1;
+DROP TABLE commands_v1;
+PRAGMA user_version = 2;
 ";
 
 impl Settings {
@@ -198,7 +224,7 @@ impl Settings {
         Some(PathBuf::from(profile).join("gpui-tools"))
     }
 
-    /// Open the database, creating the tables the first time.
+    /// Open the database, bringing its schema up to date.
     fn open() -> Option<Connection> {
         let path = Self::path()?;
         if let Some(parent) = path.parent()
@@ -213,11 +239,21 @@ impl Settings {
                 return None;
             }
         };
-        if let Err(error) = connection.execute_batch(SCHEMA) {
-            eprintln!("gpui-tools: could not prepare the settings table ({error})");
-            return None;
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or_default();
+        let upgrade = match version {
+            0 => SCHEMA,
+            1 => MIGRATE_1_TO_2,
+            _ => return Some(connection),
+        };
+        match connection.execute_batch(upgrade) {
+            Ok(()) => Some(connection),
+            Err(error) => {
+                eprintln!("gpui-tools: could not prepare the settings table ({error})");
+                None
+            }
         }
-        Some(connection)
     }
 
     /// Read every stored value, or `None` when the database is still empty.
@@ -259,17 +295,18 @@ impl Settings {
 
         {
             let mut statement =
-                connection.prepare("SELECT id, enabled, uses, shortcut FROM commands")?;
+                connection.prepare("SELECT section, id, enabled, uses, shortcut FROM commands")?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
                 found = true;
-                let id: String = row.get(0)?;
+                let section: String = row.get(0)?;
+                let id: String = row.get(1)?;
                 settings.commands.insert(
-                    id,
+                    (section, id),
                     CommandSettings {
-                        enabled: row.get::<_, i64>(1)? != 0,
-                        uses: row.get::<_, i64>(2)?.max(0) as u64,
-                        shortcut: row.get(3)?,
+                        enabled: row.get::<_, i64>(2)? != 0,
+                        uses: row.get::<_, i64>(3)?.max(0) as u64,
+                        shortcut: row.get(4)?,
                     },
                 );
             }
@@ -300,13 +337,15 @@ impl Settings {
         transaction.execute("DELETE FROM commands", [])?;
         {
             let mut insert = transaction.prepare(
-                "INSERT INTO commands (id, enabled, uses, shortcut) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO commands (section, id, enabled, uses, shortcut) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
-            for (id, state) in &self.commands {
+            for ((section, id), state) in &self.commands {
                 if state.is_default() {
                     continue;
                 }
                 insert.execute(params![
+                    section,
                     id,
                     i64::from(state.enabled),
                     state.uses as i64,
@@ -317,47 +356,57 @@ impl Settings {
         transaction.commit()
     }
 
-    /// What the user has decided about `command`, with its defaults filled in.
-    pub fn command(&self, id: &str) -> CommandSettings {
-        self.commands.get(id).cloned().unwrap_or_default()
-    }
-
-    /// Whether `command` belongs on the home list.
-    pub fn command_enabled(&self, id: &str) -> bool {
-        self.commands.get(id).is_none_or(|state| state.enabled)
-    }
-
-    /// How many times `command` has been run.
-    pub fn command_uses(&self, id: &str) -> u64 {
-        self.commands.get(id).map_or(0, |state| state.uses)
-    }
-
-    /// The global shortcut bound to `command`, if any.
-    pub fn command_shortcut(&self, id: &str) -> Option<&str> {
+    /// What the user has decided about `id` in `section`, with defaults filled
+    /// in.
+    pub fn command(&self, section: &str, id: &str) -> CommandSettings {
         self.commands
-            .get(id)
+            .get(&(section.to_string(), id.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Whether the command belongs on the home list.
+    pub fn command_enabled(&self, section: &str, id: &str) -> bool {
+        self.lookup(section, id).is_none_or(|state| state.enabled)
+    }
+
+    /// How many times the command has been run.
+    pub fn command_uses(&self, section: &str, id: &str) -> u64 {
+        self.lookup(section, id).map_or(0, |state| state.uses)
+    }
+
+    /// The global shortcut bound to the command, if any.
+    pub fn command_shortcut(&self, section: &str, id: &str) -> Option<&str> {
+        self.lookup(section, id)
             .and_then(|state| state.shortcut.as_deref())
     }
 
     /// Show or hide a command on the home list.
-    pub fn set_command_enabled(&mut self, id: &str, enabled: bool) {
-        self.state_mut(id).enabled = enabled;
+    pub fn set_command_enabled(&mut self, section: &str, id: &str, enabled: bool) {
+        self.state_mut(section, id).enabled = enabled;
     }
 
-    /// Count one run of `command`.
-    pub fn count_use(&mut self, id: &str) {
-        let state = self.state_mut(id);
+    /// Count one run of a command.
+    pub fn count_use(&mut self, section: &str, id: &str) {
+        let state = self.state_mut(section, id);
         state.uses = state.uses.saturating_add(1);
     }
 
     /// Bind a command to a global shortcut, or clear it.
-    pub fn set_command_shortcut(&mut self, id: &str, shortcut: Option<String>) {
-        self.state_mut(id).shortcut = shortcut;
+    pub fn set_command_shortcut(&mut self, section: &str, id: &str, shortcut: Option<String>) {
+        self.state_mut(section, id).shortcut = shortcut;
     }
 
-    /// The record for `command`, creating it if this is the first change.
-    fn state_mut(&mut self, id: &str) -> &mut CommandSettings {
-        self.commands.entry(id.to_string()).or_default()
+    /// The stored record for a command, if the user has ever touched it.
+    fn lookup(&self, section: &str, id: &str) -> Option<&CommandSettings> {
+        self.commands.get(&(section.to_string(), id.to_string()))
+    }
+
+    /// The record for a command, creating it if this is the first change.
+    fn state_mut(&mut self, section: &str, id: &str) -> &mut CommandSettings {
+        self.commands
+            .entry((section.to_string(), id.to_string()))
+            .or_default()
     }
 
     /// Bring a freshly read record back inside the ranges the pages offer, so a
@@ -376,8 +425,9 @@ impl Settings {
             return Self::default();
         };
         if let Ok(text) = std::fs::read_to_string(directory.join("settings.toml")) {
-            match toml::from_str::<Self>(&text) {
-                Ok(mut settings) => {
+            match toml::from_str::<LegacySettings>(&text) {
+                Ok(legacy) => {
+                    let mut settings = legacy.into_settings();
                     settings.tidy();
                     return settings;
                 }
@@ -442,6 +492,55 @@ impl Default for Settings {
     }
 }
 
+/// The TOML file version 0.4 wrote, for the one-time import.
+///
+/// Its `[commands.<id>]` blocks carry no section, so they all land in the
+/// launcher's own section — the only one that had commands then.
+#[derive(Deserialize)]
+#[serde(default)]
+struct LegacySettings {
+    theme: Theme,
+    window_y: Option<i32>,
+    search_height: u32,
+    launch_at_login: bool,
+    resume_seconds: u32,
+    commands: BTreeMap<String, CommandSettings>,
+}
+
+impl Default for LegacySettings {
+    fn default() -> Self {
+        Self {
+            theme: Theme::System,
+            window_y: None,
+            search_height: Settings::SEARCH_HEIGHT_DEFAULT,
+            launch_at_login: false,
+            resume_seconds: 0,
+            commands: BTreeMap::new(),
+        }
+    }
+}
+
+impl LegacySettings {
+    /// Fold the old shape into the current one.
+    fn into_settings(self) -> Settings {
+        Settings {
+            theme: self.theme,
+            window_y: self.window_y,
+            search_height: self.search_height,
+            launch_at_login: self.launch_at_login,
+            resume_seconds: self.resume_seconds,
+            commands: self
+                .commands
+                .into_iter()
+                .map(|(id, state)| ((SYSTEM_SECTION.to_string(), id), state))
+                .collect(),
+        }
+    }
+}
+
+/// The section key the commands of the legacy files belong to.
+const SYSTEM_SECTION: &str = "system";
+
 #[cfg(test)]
 mod tests {
     use super::{CommandSettings, SCHEMA, Settings, Theme};
@@ -462,10 +561,14 @@ mod tests {
             resume_seconds: 30,
             ..Settings::default()
         };
-        settings.set_command_enabled("repository", false);
-        settings.set_command_shortcut("program-folder", Some("ctrl+alt+KeyP".to_string()));
+        settings.set_command_enabled("system", "repository", false);
+        settings.set_command_shortcut(
+            "system",
+            "program-folder",
+            Some("ctrl+alt+KeyP".to_string()),
+        );
         for _ in 0..3 {
-            settings.count_use("program-folder");
+            settings.count_use("system", "program-folder");
         }
         settings
     }
@@ -499,13 +602,29 @@ mod tests {
     }
 
     #[test]
+    fn two_sections_may_hold_a_command_of_the_same_name() {
+        let mut settings = Settings::default();
+        settings.count_use("system", "quit");
+        settings.count_use("system", "quit");
+        settings.count_use("about", "quit");
+        let connection = database();
+        settings.write(&connection).expect("writes");
+        let read = Settings::read(&connection)
+            .expect("reads")
+            .expect("has rows");
+        assert_eq!(read.command_uses("system", "quit"), 2);
+        assert_eq!(read.command_uses("about", "quit"), 1);
+        assert_eq!(read.command_uses("appearance", "quit"), 0);
+    }
+
+    #[test]
     fn a_command_defaults_to_shown_and_unused() {
         let settings = Settings::default();
-        assert!(settings.command_enabled("program-folder"));
-        assert_eq!(settings.command_uses("program-folder"), 0);
-        assert_eq!(settings.command_shortcut("program-folder"), None);
+        assert!(settings.command_enabled("system", "program-folder"));
+        assert_eq!(settings.command_uses("system", "program-folder"), 0);
+        assert_eq!(settings.command_shortcut("system", "program-folder"), None);
         assert_eq!(
-            settings.command("program-folder"),
+            settings.command("system", "program-folder"),
             CommandSettings::default()
         );
     }
@@ -513,15 +632,56 @@ mod tests {
     #[test]
     fn untouched_commands_are_not_stored() {
         let mut settings = sample();
-        settings.set_command_enabled("quit", true);
+        settings.set_command_enabled("system", "quit", true);
         let connection = database();
         settings.write(&connection).expect("writes");
         let read = Settings::read(&connection)
             .expect("reads")
             .expect("has rows");
-        assert!(read.commands.contains_key("repository"));
-        assert!(read.commands.contains_key("program-folder"));
-        assert!(!read.commands.contains_key("quit"));
+        assert!(
+            read.commands
+                .contains_key(&("system".into(), "repository".into()))
+        );
+        assert!(
+            read.commands
+                .contains_key(&("system".into(), "program-folder".into()))
+        );
+        assert!(
+            !read
+                .commands
+                .contains_key(&("system".into(), "quit".into()))
+        );
+    }
+
+    #[test]
+    fn a_version_one_database_keeps_its_counters() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE settings (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+                CREATE TABLE commands (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    uses INTEGER NOT NULL,
+                    shortcut TEXT
+                );
+                INSERT INTO commands VALUES ('program-folder', 1, 4, 'ctrl+alt+KeyP');
+                PRAGMA user_version = 1;
+                ",
+            )
+            .expect("old schema");
+        connection
+            .execute_batch(super::MIGRATE_1_TO_2)
+            .expect("migrates");
+        let read = Settings::read(&connection)
+            .expect("reads")
+            .expect("has rows");
+        assert_eq!(read.command_uses("system", "program-folder"), 4);
+        assert_eq!(
+            read.command_shortcut("system", "program-folder"),
+            Some("ctrl+alt+KeyP")
+        );
     }
 
     #[test]
@@ -546,5 +706,15 @@ mod tests {
         assert_eq!(settings.theme, Theme::Dark);
         assert_eq!(settings.window_y, Some(118));
         assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
+    }
+
+    #[test]
+    fn the_old_toml_file_lands_in_the_system_section() {
+        let legacy: super::LegacySettings =
+            toml::from_str("theme = \"light\"\n\n[commands.program-folder]\nuses = 7\n")
+                .expect("parses");
+        let settings = legacy.into_settings();
+        assert_eq!(settings.theme, Theme::Light);
+        assert_eq!(settings.command_uses("system", "program-folder"), 7);
     }
 }
