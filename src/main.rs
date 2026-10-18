@@ -7,9 +7,13 @@
 //! The panel draws its own settings page rather than opening a second window,
 //! and its header doubles as the drag surface. That is why the launcher owns the
 //! text field instead of letting the list draw its own.
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use global_hotkey::GlobalHotKeyManager;
+use gpui_kit::Keystroke;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::{List, ListDelegate, ListState};
@@ -31,6 +35,8 @@ use gpui_tools::shell;
 use gpui_tools::window::NativeWindow;
 use gpui_tray::{Icon as TrayIcon, Tray};
 
+mod catalogue;
+
 const WINDOW_TITLE: &str = "GPUI Tools Launcher";
 const WINDOW_WIDTH: f32 = 720.;
 const WINDOW_HEIGHT: f32 = 464.;
@@ -49,6 +55,8 @@ const HEADER_MIN_HEIGHT: f32 = 52.;
 const HEADER_SLACK: f32 = 26.;
 /// The width of the settings page's section list.
 const SIDEBAR_WIDTH: f32 = 148.;
+/// The width of the module list inside the commands page.
+const MODULE_WIDTH: f32 = 124.;
 /// The padding the component draws inside the field, both sides together
 /// (`input_px` is 8 for its small size). The field has to pay for it to keep
 /// its text in view.
@@ -73,44 +81,47 @@ const SEARCH_FIELD_MAX: f32 = 560.;
 const SEARCH_TEXT_SIZE: f32 = 14.;
 const SEARCH_HINT: &str = "搜索命令\u{2026}";
 
-/// A command the launcher offers.
-struct Tool {
-    name: &'static str,
-    description: &'static str,
-    /// Extra words search matches on, so a command is findable by terms that
-    /// do not appear in its name.
-    keyword: &'static str,
-    icon: IconName,
-    action: fn(&mut App),
-}
-
-/// The launcher's commands, in the order shown when the query is empty.
-static TOOLS: &[Tool] = &[
-    Tool {
-        name: "Program Folder",
-        description: "打开启动器所在的文件夹",
-        keyword: "program folder directory explorer 程序 目录 文件夹 打开",
-        icon: IconName::FolderOpen,
-        action: open_program_folder,
-    },
-    Tool {
-        name: "Repository",
-        description: "在浏览器打开项目仓库",
-        keyword: "github repository source 仓库 源码 项目",
-        icon: IconName::Globe,
-        action: open_repository,
-    },
-    Tool {
-        name: "Quit GPUI Tools",
-        description: "退出启动器",
-        keyword: "quit exit close 退出 关闭",
-        icon: IconName::Close,
-        action: quit_launcher,
-    },
-];
-
 fn main() {
     launch();
+}
+
+/// What the list needs to know about one command, mirrored from the settings so
+/// the delegate can filter and draw without touching the global record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommandState {
+    /// Whether the command belongs on the home list.
+    enabled: bool,
+    uses: u64,
+    /// The global shortcut, as a chord such as `ctrl+alt+KeyP`.
+    shortcut: Option<String>,
+}
+
+impl Default for CommandState {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            uses: 0,
+            shortcut: None,
+        }
+    }
+}
+
+/// The state of every command, read from the settings in one pass.
+fn command_states(settings: &Settings) -> BTreeMap<&'static str, CommandState> {
+    catalogue::MODULES
+        .iter()
+        .flat_map(|module| module.commands)
+        .map(|command| {
+            (
+                command.id,
+                CommandState {
+                    enabled: settings.command_enabled(command.id),
+                    uses: settings.command_uses(command.id),
+                    shortcut: settings.command_shortcut(command.id).map(str::to_string),
+                },
+            )
+        })
+        .collect()
 }
 
 /// The directory the launcher runs from.
@@ -121,12 +132,12 @@ fn program_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// One command row: icon, name and description.
+/// One command row: icon, name and description, with what the settings add —
+/// how often it has run and the shortcut that runs it.
 #[derive(IntoElement)]
 struct ToolRow {
-    name: &'static str,
-    description: &'static str,
-    icon: IconName,
+    command: &'static catalogue::Command,
+    state: CommandState,
     selected: bool,
 }
 
@@ -167,6 +178,27 @@ impl RenderOnce for ToolRow {
             muted
         };
 
+        // The metadata sits to the right of the description, right-aligned, so
+        // every row lines up no matter how long the text is.
+        let uses = (self.state.uses > 0).then(|| {
+            div()
+                .text_xs()
+                .text_color(detail_color)
+                .child(format!("\u{00d7}{}", self.state.uses))
+                .into_any_element()
+        });
+        let shortcut = self.state.shortcut.clone().map(|chord| {
+            div()
+                .px_1p5()
+                .py_0p5()
+                .rounded(px(4.))
+                .bg(tile_bg)
+                .text_xs()
+                .text_color(detail_color)
+                .child(shortcut_label(&chord))
+                .into_any_element()
+        });
+
         h_flex()
             .w_full()
             .h(px(52.))
@@ -186,11 +218,11 @@ impl RenderOnce for ToolRow {
                     .justify_center()
                     .rounded(px(8.))
                     .bg(tile_bg)
-                    .child(Icon::new(self.icon).size_4().text_color(if selected {
-                        accent_fg
-                    } else {
-                        fg
-                    })),
+                    .child(
+                        Icon::new(self.command.icon.clone())
+                            .size_4()
+                            .text_color(if selected { accent_fg } else { fg }),
+                    ),
             )
             .child(
                 v_flex()
@@ -202,48 +234,75 @@ impl RenderOnce for ToolRow {
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(name_color)
-                            .child(self.name),
+                            .child(self.command.name),
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
                             .text_xs()
                             .text_color(detail_color)
-                            .child(self.description),
+                            .child(self.command.description),
                     ),
             )
+            .children(uses)
+            .children(shortcut)
     }
 }
 
-/// The launcher list, backed by the command table.
+/// The launcher list, backed by the command catalogue.
 struct ToolDelegate {
     query: String,
     selected: usize,
+    /// What the settings say about each command, so filtering and drawing stay
+    /// free of globals.
+    states: BTreeMap<&'static str, CommandState>,
     /// Notified on every query change so the host chrome stays current.
     view: Option<WeakEntity<Launcher>>,
 }
 
 impl ToolDelegate {
-    fn new() -> Self {
+    fn new(states: BTreeMap<&'static str, CommandState>) -> Self {
         Self {
             query: String::new(),
             selected: 0,
+            states,
             view: None,
         }
     }
 
-    fn visible(&self) -> Vec<&'static Tool> {
-        TOOLS.iter().filter(|tool| self.matches(tool)).collect()
+    /// Every command that the user kept on the home list and the query matches.
+    fn visible(&self) -> Vec<&'static catalogue::Command> {
+        catalogue::MODULES
+            .iter()
+            .flat_map(|module| module.commands)
+            .filter(|command| self.enabled(command.id) && self.matches(command))
+            .collect()
+    }
+
+    /// Whether a command is allowed on the home list.
+    fn enabled(&self, id: &str) -> bool {
+        self.states.get(id).is_none_or(|state| state.enabled)
+    }
+
+    /// What is known about a command, or its defaults.
+    fn state(&self, id: &str) -> CommandState {
+        self.states.get(id).cloned().unwrap_or_default()
     }
 
     /// Case-insensitive matching where every whitespace-separated token of the
     /// query must appear somewhere in the command's searchable text.
-    fn matches(&self, tool: &Tool) -> bool {
+    fn matches(&self, command: &catalogue::Command) -> bool {
         let query = self.query.trim();
         if query.is_empty() {
             return true;
         }
-        let haystack =
-            format!("{} {} {}", tool.name, tool.description, tool.keyword).to_lowercase();
+        let haystack = format!(
+            "{} {} {}",
+            command.name, command.description, command.keyword
+        )
+        .to_lowercase();
         query
             .split_whitespace()
             .all(|token| haystack.contains(&token.to_lowercase()))
@@ -253,7 +312,7 @@ impl ToolDelegate {
         self.visible().len()
     }
 
-    fn selected_tool(&self) -> Option<&'static Tool> {
+    fn selected_command(&self) -> Option<&'static catalogue::Command> {
         self.visible().get(self.selected).copied()
     }
 }
@@ -293,11 +352,10 @@ impl ListDelegate for ToolDelegate {
         _cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let row = ix.row;
-        let tool = *self.visible().get(row)?;
+        let command = *self.visible().get(row)?;
         Some(ToolRow {
-            name: tool.name,
-            description: tool.description,
-            icon: tool.icon.clone(),
+            command,
+            state: self.state(command.id),
             selected: row == self.selected,
         })
     }
@@ -318,10 +376,10 @@ impl ListDelegate for ToolDelegate {
         _window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) {
-        let Some(tool) = self.selected_tool() else {
+        let Some(command) = self.selected_command() else {
             return;
         };
-        (tool.action)(cx);
+        run_command(command, cx);
     }
 
     fn cancel(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
@@ -362,17 +420,19 @@ enum Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsTab {
     System,
+    Commands,
     Appearance,
     About,
 }
 
 impl SettingsTab {
     /// Every section, in the order the section list shows them.
-    const ALL: [Self; 3] = [Self::System, Self::Appearance, Self::About];
+    const ALL: [Self; 4] = [Self::System, Self::Commands, Self::Appearance, Self::About];
 
     fn label(self) -> &'static str {
         match self {
             Self::System => "系统",
+            Self::Commands => "命令",
             Self::Appearance => "外观",
             Self::About => "关于",
         }
@@ -381,6 +441,7 @@ impl SettingsTab {
     fn icon(self) -> IconName {
         match self {
             Self::System => IconName::Cpu,
+            Self::Commands => IconName::SquareTerminal,
             Self::Appearance => IconName::Palette,
             Self::About => IconName::Info,
         }
@@ -412,6 +473,11 @@ struct Launcher {
     /// The loop that hides the panel once another window takes the foreground.
     /// Restarted on every summon; the previous one has already ended by then.
     focus_watch: Option<Task<()>>,
+    /// Which module the commands page is showing, as an index into the
+    /// catalogue.
+    module: usize,
+    /// The command whose shortcut is being captured, if any.
+    recording: Option<&'static str>,
     /// Kept alive for as long as the launcher is: dropping either would stop
     /// the field from reporting what the user typed.
     _search_events: Subscription,
@@ -420,7 +486,8 @@ struct Launcher {
 
 impl Launcher {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let list = cx.new(|cx| ListState::new(ToolDelegate::new(), window, cx));
+        let states = command_states(&stored_settings(cx));
+        let list = cx.new(|cx| ListState::new(ToolDelegate::new(states), window, cx));
         let view = cx.weak_entity();
         list.update(cx, |state, _cx| {
             state.delegate_mut().view = Some(view);
@@ -453,6 +520,8 @@ impl Launcher {
             page: Page::Commands,
             last_section: None,
             focus_watch: None,
+            module: 0,
+            recording: None,
             _search_events: search_events,
             _search_observation: search_observation,
         };
@@ -527,6 +596,8 @@ impl Launcher {
                 .update(cx, |field, cx| field.set_value("", window, cx));
             self.query.clear();
         }
+        self.recording = None;
+        self.refresh_catalogue(cx);
         self.list
             .update(cx, |list, cx| list.set_query("", window, cx));
         self.page = match self.resumed_tab(cx) {
@@ -610,8 +681,8 @@ impl Launcher {
         if !matches!(self.page, Page::Commands) {
             return;
         }
-        if let Some(tool) = self.list.read(cx).delegate().selected_tool() {
-            (tool.action)(cx);
+        if let Some(command) = self.list.read(cx).delegate().selected_command() {
+            run_command(command, cx);
         }
     }
 
@@ -699,6 +770,86 @@ impl Launcher {
         let mut settings = stored_settings(cx);
         settings.launch_at_login = enabled;
         store_settings(settings, cx);
+        cx.notify();
+    }
+
+    /// Re-read what the settings say about every command.
+    fn refresh_catalogue(&mut self, cx: &mut Context<Self>) {
+        let states = command_states(&stored_settings(cx));
+        self.list.update(cx, |list, cx| {
+            list.delegate_mut().states = states;
+            cx.notify();
+        });
+    }
+
+    /// Show another module on the commands page.
+    fn select_module(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.module == index {
+            return;
+        }
+        self.module = index;
+        self.recording = None;
+        cx.notify();
+    }
+
+    /// Take a command off the home list, or put it back.
+    fn set_command_enabled(&mut self, id: &'static str, enabled: bool, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        if settings.command_enabled(id) == enabled {
+            return;
+        }
+        settings.set_command_enabled(id, enabled);
+        store_settings(settings, cx);
+        self.refresh_catalogue(cx);
+        cx.notify();
+    }
+
+    /// Start listening for the chord that should run `id`, or stop listening.
+    fn toggle_recording(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.recording = if self.recording == Some(id) {
+            None
+        } else {
+            Some(id)
+        };
+        cx.notify();
+    }
+
+    /// Take the next keystroke as the shortcut for the command being recorded.
+    ///
+    /// Only chords with a modifier are accepted: a bare letter would be captured
+    /// from the panel itself and is useless as a global shortcut.
+    fn capture_shortcut(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
+        let Some(id) = self.recording else {
+            return;
+        };
+        match keystroke.key.as_str() {
+            "escape" => self.recording = None,
+            "backspace" | "delete" => {
+                self.set_shortcut(id, None, cx);
+                self.recording = None;
+            }
+            _ => {
+                let Some(chord) = chord_from_keystroke(keystroke) else {
+                    // Nothing usable: keep listening.
+                    return;
+                };
+                self.set_shortcut(id, Some(chord), cx);
+                self.recording = None;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Bind a command to a chord, or clear its binding.
+    fn set_shortcut(&mut self, id: &'static str, chord: Option<String>, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        if settings.command_shortcut(id).map(str::to_string) == chord {
+            return;
+        }
+        settings.set_command_shortcut(id, chord);
+        store_settings(settings, cx);
+        apply_command_shortcuts(cx);
+        self.refresh_catalogue(cx);
         cx.notify();
     }
 
@@ -899,6 +1050,7 @@ impl Launcher {
                     cx.listener(|_, _, _, cx| quit_launcher(cx)),
                 ))
                 .into_any_element(),
+            SettingsTab::Commands => self.commands_page(colors, cx).into_any_element(),
             SettingsTab::Appearance => v_flex()
                 .gap_1()
                 .child(settings_row(
@@ -974,6 +1126,216 @@ impl Launcher {
                     .child(content),
             )
     }
+
+    /// The commands page: the modules on the left, the chosen module's commands
+    /// on the right.
+    ///
+    /// Everything on it comes from the catalogue and the per-command settings,
+    /// so a new module shows up here without touching this function.
+    fn commands_page(&self, colors: RowColors, cx: &Context<Self>) -> impl IntoElement {
+        let settings = stored_settings(cx);
+        let selected = self.module.min(catalogue::MODULES.len().saturating_sub(1));
+        let border = cx.theme().border;
+
+        let modules = v_flex()
+            .w(px(MODULE_WIDTH))
+            .flex_shrink_0()
+            .gap_1()
+            .pr_3()
+            .border_r_1()
+            .border_color(border)
+            .children(catalogue::MODULES.iter().enumerate().map(|(ix, module)| {
+                let current = ix == selected;
+                let shown = module
+                    .commands
+                    .iter()
+                    .filter(|command| settings.command_enabled(command.id))
+                    .count();
+                h_flex()
+                    .id(SharedString::from(format!("module-{}", module.id)))
+                    .gap_2()
+                    .px_2()
+                    .py_1p5()
+                    .rounded(px(6.))
+                    .text_sm()
+                    .cursor_pointer()
+                    .text_color(if current {
+                        colors.accent_foreground
+                    } else {
+                        colors.foreground
+                    })
+                    .when(current, move |this| this.bg(colors.accent))
+                    .when(!current, move |this| {
+                        this.hover(move |style| style.bg(colors.muted_foreground.opacity(0.18)))
+                    })
+                    .on_click(cx.listener(move |launcher, _, _, cx| launcher.select_module(ix, cx)))
+                    .child(Icon::new(module.icon.clone()).size_4())
+                    .child(div().flex_1().min_w_0().text_ellipsis().child(module.name))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if current {
+                                colors.accent_foreground.opacity(0.7)
+                            } else {
+                                colors.muted_foreground
+                            })
+                            .child(format!("{shown}/{}", module.commands.len())),
+                    )
+            }));
+
+        let commands = catalogue::MODULES
+            .get(selected)
+            .map(|module| {
+                module
+                    .commands
+                    .iter()
+                    .map(|command| {
+                        command_row(
+                            command,
+                            &settings.command(command.id),
+                            self.recording == Some(command.id),
+                            colors,
+                            cx,
+                        )
+                        .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let caption = catalogue::MODULES
+            .get(selected)
+            .map(|module| module.description);
+
+        h_flex()
+            .size_full()
+            .min_w_0()
+            .items_stretch()
+            .overflow_hidden()
+            .child(modules)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .pl_3()
+                    .gap_1()
+                    .when_some(caption, |this, caption| {
+                        this.child(
+                            div()
+                                .px_2()
+                                .pb_1()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child(caption),
+                        )
+                    })
+                    .children(commands),
+            )
+    }
+}
+
+/// One command on the commands page: its face, its counter, its shortcut and
+/// whether the home list shows it.
+fn command_row(
+    command: &'static catalogue::Command,
+    state: &gpui_tools::settings::CommandSettings,
+    recording: bool,
+    colors: RowColors,
+    cx: &Context<Launcher>,
+) -> impl IntoElement {
+    let shortcut = if recording {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(6.))
+            .bg(colors.accent)
+            .text_xs()
+            .text_color(colors.accent_foreground)
+            .child("按下组合键\u{2026}")
+            .into_any_element()
+    } else {
+        let label = match state.shortcut.as_deref() {
+            Some(chord) => shortcut_label(chord),
+            None => "快捷键".to_string(),
+        };
+        div()
+            .id(SharedString::from(format!("shortcut-{}", command.id)))
+            .px_2()
+            .py_1()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(colors.surface)
+            .text_xs()
+            .cursor_pointer()
+            .text_color(colors.muted_foreground)
+            .hover(move |style| style.bg(colors.muted_foreground.opacity(0.18)))
+            .on_click(
+                cx.listener(move |launcher, _, _, cx| launcher.toggle_recording(command.id, cx)),
+            )
+            .child(label)
+            .into_any_element()
+    };
+
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_2()
+        .px_2()
+        .py_2()
+        .rounded(px(6.))
+        .bg(colors.surface)
+        .child(
+            div()
+                .flex_shrink_0()
+                .size_6()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .child(
+                    Icon::new(command.icon.clone())
+                        .size_3()
+                        .text_color(colors.foreground),
+                ),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(colors.foreground)
+                        .child(command.name),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(command.description),
+                ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(colors.muted_foreground)
+                .child(format!("{} 次", state.uses)),
+        )
+        .child(div().flex_shrink_0().child(shortcut))
+        .child(
+            div().flex_shrink_0().child(
+                Switch::new(SharedString::from(format!("enabled-{}", command.id)))
+                    .checked(state.enabled)
+                    .on_change(cx.listener(move |launcher, checked: &bool, _window, cx| {
+                        launcher.set_command_enabled(command.id, *checked, cx)
+                    })),
+            ),
+        )
 }
 
 /// The folder the settings file lives in, for the row that opens it.
@@ -1316,7 +1678,7 @@ fn launch() {
             // starts at login: the user can remove the entry from Task Manager
             // without the host noticing.
             settings.launch_at_login = autostart::enabled();
-            cx.set_global(SettingsStore(settings));
+            cx.set_global(SettingsStore(settings.clone()));
 
             let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
             let (window_handle, launcher) = gpui_kit::open_window(
@@ -1383,6 +1745,16 @@ fn launch() {
                 if !owns_window(window, cx) {
                     return;
                 }
+                // Capturing a shortcut outranks every other key: the next chord
+                // is the answer to the row that is waiting for one.
+                if recording_command(cx).is_some() {
+                    let keystroke = event.keystroke.clone();
+                    with_launcher(cx, move |launcher, _window, cx| {
+                        launcher.capture_shortcut(&keystroke, cx)
+                    });
+                    cx.stop_propagation();
+                    return;
+                }
                 match event.keystroke.key.as_str() {
                     "enter" => {
                         with_launcher(cx, |launcher, _window, cx| launcher.activate_selected(cx));
@@ -1423,27 +1795,53 @@ fn launch() {
                 Err(error) => eprintln!("Could not create system tray icon: {error}"),
             }
 
-            if let Ok(manager) = global_hotkey::GlobalHotKeyManager::new() {
+            if let Ok(manager) = GlobalHotKeyManager::new() {
                 use global_hotkey::{
                     GlobalHotKeyEvent, HotKeyState,
                     hotkey::{Code, HotKey, Modifiers},
                 };
-                let hotkey = HotKey::new(Some(Modifiers::CONTROL), Code::Space);
-                if manager.register(hotkey).is_ok() {
+                let summon = HotKey::new(Some(Modifiers::CONTROL), Code::Space);
+                if manager.register(summon).is_ok() {
+                    let summon_id = summon.id();
+                    cx.set_global(Shortcuts {
+                        manager,
+                        commands: RefCell::new(Vec::new()),
+                    });
+                    // Whatever the settings already bind, registered before the
+                    // loop starts so the first press is not missed.
+                    apply_command_shortcuts(cx);
+
                     cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
                         loop {
                             cx.background_executor()
                                 .timer(Duration::from_millis(80))
                                 .await;
                             while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-                                if event.id == hotkey.id() && event.state == HotKeyState::Pressed {
-                                    cx.update(show_launcher);
+                                if event.state != HotKeyState::Pressed {
+                                    continue;
                                 }
+                                if event.id == summon_id {
+                                    cx.update(show_launcher);
+                                    continue;
+                                }
+                                cx.update(|cx| {
+                                    let command =
+                                        cx.try_global::<Shortcuts>().and_then(|shortcuts| {
+                                            shortcuts
+                                                .commands
+                                                .borrow()
+                                                .iter()
+                                                .find(|(hotkey, _)| hotkey.id() == event.id)
+                                                .map(|(_, id)| *id)
+                                        });
+                                    if let Some((_, command)) = command.and_then(catalogue::find) {
+                                        run_command(command, cx);
+                                    }
+                                });
                             }
                         }
                     })
                     .detach();
-                    cx.set_global(HotkeyRegistration { _manager: manager });
                 } else {
                     eprintln!(
                         "Could not register {HOTKEY_LABEL}; another application may already own it."
@@ -1456,6 +1854,18 @@ fn launch() {
 }
 
 actions!(gpui_tools, [ShowLauncher, QuitApplication]);
+
+/// The command whose shortcut is being captured, read straight from the panel.
+///
+/// The key interceptor has to decide synchronously whether to swallow a key, so
+/// it cannot go through the deferred hop the rest of the callbacks use.
+fn recording_command(cx: &App) -> Option<&'static str> {
+    let handle = cx.try_global::<LauncherHandle>()?;
+    handle
+        .view
+        .read_with(cx, |launcher, _| launcher.recording)
+        .unwrap_or(None)
+}
 
 fn launcher_tray_icon() -> TrayIcon {
     // The tray wants its own resolution: Windows hands the shell a bitmap and
@@ -1551,31 +1961,30 @@ fn apply_theme(choice: ColorScheme, window: Option<&mut Window>, cx: &mut App) {
 /// The settings currently in force.
 fn stored_settings(cx: &App) -> Settings {
     cx.try_global::<SettingsStore>()
-        .map_or_else(Settings::default, |store| store.0)
+        .map_or_else(Settings::default, |store| store.0.clone())
 }
 
 /// Store the settings in memory and on disk.
 fn store_settings(settings: Settings, cx: &mut App) {
-    cx.set_global(SettingsStore(settings));
     if !settings.save() {
         eprintln!("gpui-tools: could not store the settings");
     }
+    cx.set_global(SettingsStore(settings));
 }
 
 /// Remember where the panel sits, so the next run opens there.
 ///
 /// Only the top edge is kept: the horizontal position is re-derived by
 /// centring, so the panel never reappears against one edge of the screen.
+///
+/// This is also where the usage counters reach the file: they are kept in
+/// memory while the panel is up, and hiding is the moment the record is
+/// settled.
 fn remember_window_position(cx: &mut App) {
-    let Some(panel) = cx.try_global::<LauncherPanel>() else {
-        return;
-    };
-    let y = panel.window.position().1;
     let mut settings = stored_settings(cx);
-    if settings.window_y == Some(y) {
-        return;
+    if let Some(panel) = cx.try_global::<LauncherPanel>() {
+        settings.window_y = Some(panel.window.position().1);
     }
-    settings.window_y = Some(y);
     store_settings(settings, cx);
 }
 
@@ -1641,7 +2050,190 @@ struct TrayRegistration {
 }
 impl gpui_kit::Global for TrayRegistration {}
 
-struct HotkeyRegistration {
-    _manager: global_hotkey::GlobalHotKeyManager,
+/// The global shortcuts this process holds.
+///
+/// The summon chord is registered once and never moves; command shortcuts are
+/// rebuilt from the settings whenever the user changes one.
+struct Shortcuts {
+    manager: GlobalHotKeyManager,
+    /// The commands currently bound, with the chord that runs each.
+    commands: RefCell<Vec<(global_hotkey::hotkey::HotKey, &'static str)>>,
 }
-impl gpui_kit::Global for HotkeyRegistration {}
+impl gpui_kit::Global for Shortcuts {}
+
+/// Rebuild the registered command shortcuts from the settings.
+///
+/// Every binding is dropped and re-registered: the set is tiny, and a partial
+/// update would have to track which chord belonged to which command after an
+/// edit. A chord the system refuses is reported and skipped, so one collision
+/// does not cost the others.
+fn apply_command_shortcuts(cx: &mut App) {
+    let settings = stored_settings(cx);
+    let wanted = catalogue::MODULES
+        .iter()
+        .flat_map(|module| module.commands)
+        .filter_map(|command| {
+            let chord = settings.command_shortcut(command.id)?;
+            match parse_chord(chord) {
+                Some(hotkey) => Some((command.id, hotkey)),
+                None => {
+                    eprintln!("gpui-tools: {chord} is not a shortcut this launcher understands");
+                    None
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let Some(shortcuts) = cx.try_global::<Shortcuts>() else {
+        return;
+    };
+    let mut held = shortcuts.commands.borrow_mut();
+    for (hotkey, _) in held.drain(..) {
+        if let Err(error) = shortcuts.manager.unregister(hotkey) {
+            eprintln!("gpui-tools: could not release a stale shortcut: {error}");
+        }
+    }
+    for (id, hotkey) in wanted {
+        match shortcuts.manager.register(hotkey) {
+            Ok(()) => held.push((hotkey, id)),
+            Err(error) => eprintln!("gpui-tools: could not bind the shortcut for {id}: {error}"),
+        }
+    }
+}
+
+/// Run a command and count the run.
+///
+/// The counter is kept in memory and reaches the file the next time the panel
+/// hides or the application quits; a write on every keystroke-triggered command
+/// would be the only disk traffic this program has.
+fn run_command(command: &'static catalogue::Command, cx: &mut App) {
+    let mut settings = stored_settings(cx);
+    settings.count_use(command.id);
+    cx.set_global(SettingsStore(settings));
+    (command.action)(cx);
+}
+
+/// The chord a keystroke stands for, or nothing when it carries no modifier.
+///
+/// A chord without a modifier would be captured from the panel's own input and
+/// could never be a global shortcut, so those are refused rather than stored.
+fn chord_from_keystroke(keystroke: &Keystroke) -> Option<String> {
+    let mut parts = Vec::new();
+    if keystroke.modifiers.control {
+        parts.push("ctrl".to_string());
+    }
+    if keystroke.modifiers.alt {
+        parts.push("alt".to_string());
+    }
+    if keystroke.modifiers.shift {
+        parts.push("shift".to_string());
+    }
+    if keystroke.modifiers.platform {
+        parts.push("super".to_string());
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.push(code_name(&keystroke.key)?);
+    Some(parts.join("+"))
+}
+
+/// The `keyboard-types` name of the key a GPUI keystroke reports.
+fn code_name(key: &str) -> Option<String> {
+    let mut characters = key.chars();
+    if let (Some(character), None) = (characters.next(), characters.next()) {
+        if character.is_ascii_alphabetic() {
+            return Some(format!("Key{}", character.to_ascii_uppercase()));
+        }
+        if character.is_ascii_digit() {
+            return Some(format!("Digit{character}"));
+        }
+    }
+    if let Some(number) = key.strip_prefix('f')
+        && number.parse::<u8>().is_ok_and(|n| (1..=24).contains(&n))
+    {
+        return Some(format!("F{number}"));
+    }
+    let named = match key {
+        "space" => "Space",
+        "tab" => "Tab",
+        "comma" => "Comma",
+        "period" => "Period",
+        "slash" => "Slash",
+        "semicolon" => "Semicolon",
+        "quote" => "Quote",
+        "backquote" => "Backquote",
+        "backslash" => "Backslash",
+        "minus" => "Minus",
+        "equal" => "Equal",
+        "bracketleft" => "BracketLeft",
+        "bracketright" => "BracketRight",
+        "insert" => "Insert",
+        "delete" => "Delete",
+        "home" => "Home",
+        "end" => "End",
+        "pageup" => "PageUp",
+        "pagedown" => "PageDown",
+        "left" => "ArrowLeft",
+        "right" => "ArrowRight",
+        "up" => "ArrowUp",
+        "down" => "ArrowDown",
+        _ => return None,
+    };
+    Some(named.to_string())
+}
+
+/// Parse a stored chord into a shortcut the system can register.
+fn parse_chord(chord: &str) -> Option<global_hotkey::hotkey::HotKey> {
+    use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+
+    let mut modifiers = Modifiers::empty();
+    let mut code = None;
+    for part in chord.split('+') {
+        match part.trim() {
+            "ctrl" => modifiers |= Modifiers::CONTROL,
+            "alt" => modifiers |= Modifiers::ALT,
+            "shift" => modifiers |= Modifiers::SHIFT,
+            "super" => modifiers |= Modifiers::SUPER,
+            other => code = Some(other.parse::<Code>().ok()?),
+        }
+    }
+    let code = code?;
+    Some(HotKey::new(
+        (!modifiers.is_empty()).then_some(modifiers),
+        code,
+    ))
+}
+
+/// How a chord reads to the user: `ctrl+alt+KeyP` becomes `Ctrl + Alt + P`.
+fn shortcut_label(chord: &str) -> String {
+    chord
+        .split('+')
+        .map(|part| match part {
+            "ctrl" => "Ctrl".to_string(),
+            "alt" => "Alt".to_string(),
+            "shift" => "Shift".to_string(),
+            "super" => "Win".to_string(),
+            other => part_label(other),
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// The face of one key: the letters and digits drop their `keyboard-types`
+/// prefix, the arrows become the arrows they draw.
+fn part_label(code: &str) -> String {
+    if let Some(rest) = code.strip_prefix("Key") {
+        return rest.to_string();
+    }
+    if let Some(rest) = code.strip_prefix("Digit") {
+        return rest.to_string();
+    }
+    match code {
+        "ArrowLeft" => "\u{2190}".to_string(),
+        "ArrowRight" => "\u{2192}".to_string(),
+        "ArrowUp" => "\u{2191}".to_string(),
+        "ArrowDown" => "\u{2193}".to_string(),
+        other => other.to_string(),
+    }
+}

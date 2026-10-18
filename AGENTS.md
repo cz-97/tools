@@ -13,7 +13,7 @@
 5. Esc 隐藏窗口；在设置页里 Esc 先返回命令列表。
 6. 面板失去前台（点了别的窗口）后自动收起。
 7. 拖动搜索栏空白处移动面板（纵坐标会被记住）。
-8. 搜索栏右侧的齿轮图标打开面板内设置页（系统 / 外观 / 关于三个标签）。
+8. 搜索栏右侧的齿轮图标打开面板内设置页（系统 / 命令 / 外观 / 关于四个标签）。
 
 不追求成为通用启动器框架，也不做插件扩展体系。命令是编译进主程序的静态表。
 
@@ -31,20 +31,27 @@
 - 窗口外壳：无边框、精确客户区尺寸、按显示器工作区居中（`src/window.rs`）。
 - 命令列表的过滤、渲染与键盘导航。
 - 命令的执行。
-- 设置页（面板内的 `Page::Settings`）与设置持久化（`src/settings.rs`）。
+- 设置页（面板内的 `Page::Settings`）与设置持久化（`src/settings.rs`，TOML）。
+- 命令目录（`src/catalogue.rs`）：模块、命令、搜索词与动作都声明在那里。
+- 每个命令的启用状态、调用次数与全局快捷键（`src/main.rs` 的 `Shortcuts` 全局）。
 - 登录启动项的读写（`src/autostart.rs`，HKCU 下的 Run 键，无需提权）。
 - 应用图标：`src/logo.rs` 画，`build.rs` 嵌进 exe（见 5.4）。
 - 系统托盘。
 
 ## 4. 命令
 
-命令定义在 `src/main.rs` 的 `TOOLS` 表里。每条包含名称、描述、搜索关键词、图标和一个
+命令全部声明在 `src/catalogue.rs`：`MODULES` 是模块（如「文件」「链接」「应用」）的数组，
+每个模块带自己的 `commands`。一条 `Command` = `id` + 名称 + 描述 + 搜索词 + 图标 +
 `fn(&mut App)` 动作。
 
-新增命令 = 往表里加一项 + 写一个动作函数。不要为此引入注册机制、清单文件或外部进程。
+新增命令 = 往某个模块的 `commands` 里加一项；新增模块 = 加一个 `Module`。
+**不需要动设置页、主页列表或存储代码**：搜索、列表渲染、命令页、启用开关、调用次数、
+全局快捷键全部由 `id` 派生。
 
-需要窗口的命令走 `with_launcher`。它把跳转延迟到当前 effect 周期之后，避免在按键分发
-过程中重入窗口。
+- `Command::id` 是持久化主键（设置文件、计数、快捷键都按它存），一旦发布就**不要改**，
+  改名只动 `name`。id 必须全表唯一。
+- 不想出现在主页的命令不删代码，而是在命令页关掉（`enabled = false`）。
+- 需要窗口的命令走 `with_launcher`，避免在按键分发过程中重入窗口。
 
 ## 5. 列表 UI 约定
 
@@ -85,7 +92,7 @@
 ## 5.3 设置页
 
 设置是面板内的一个页面（`Page::Settings(SettingsTab)`），不是独立窗口：左侧
-系统 / 外观 / 关于三个标签（`SettingsTab`），右侧内容，页头是同一个拖动区。`h_flex`
+系统 / 命令 / 外观 / 关于四个标签（`SettingsTab`），右侧内容，页头是同一个拖动区。`h_flex`
 默认在交叉轴居中，设置页的骨架要显式 `.items_stretch()`，否则内容会悬在面板中间。
 
 每一项都是同一副骨架（`settings_row`）：**左侧是名称和它的描述（两行），右侧是控件**
@@ -97,20 +104,34 @@
 
 ## 5.3 设置
 
-设置存在 `%APPDATA%\gpui-tools\settings.ini`（`src/settings.rs`，`key = value` 文本，
-坏行忽略、缺失取默认）：
+设置存在 `%APPDATA%\gpui-tools\settings.toml`（`src/settings.rs`，`serde` + `toml`）。
+缺字段取默认、未知字段忽略、坏文件整体回退默认；老的 `settings.ini` 只在第一次读到
+TOML 之前迁移一次（`Settings::adopt_legacy`），之后不再看它。
 
-- `theme` = `system` / `light` / `dark`。设置页改主题后立刻 `Theme::change` 并落盘。
-- `window_y` = 面板顶边的物理像素。**只记纵坐标**，横坐标每次启动重新居中；恢复时按显示器
-  工作区夹紧（`NativeWindow::center_x_at`）。写入时机：面板隐藏、退出命令、托盘退出。
-- `search_height` = 搜索框高度（逻辑像素，24–56，步进 4，默认 26）。页头高度跟着它走
-  （`header_height` = 高度 + 26，最小 52），所以调高时列表会被顶下去，这是预期的。
-- `launch_at_login` = 是否写入登录启动项。**注册表才是事实**：启动时用
-  `autostart::enabled()` 覆盖这一项，用户在任务管理器里删掉后不会被悄悄重建。
-- `resume_seconds` = 子页面保持秒数（0 / 15 / 30 / 60 / 300）。`Launcher::remember_section`
-  在**离开设置页时**（Esc 返回命令页、或面板隐藏）记下 `(时刻, 标签)`，
-  `reset` 在窗口内重新唤起时回到那一页；超时就回命令页。Esc 在设置页是先返回命令页，
-  所以离开的两条路径都要记，只记「隐藏」的话永远记不到设置页。
+```toml
+theme = "system"          # system / light / dark
+window_y = 422            # 面板顶边物理像素，只记纵坐标
+search_height = 26        # 24–56，页头高度 = 高度 + 26（最小 52）
+launch_at_login = false   # 注册表才是事实，启动时覆盖
+resume_seconds = 0        # 子页面保持秒数
+
+[commands.program-folder] # key = Command::id
+enabled = false           # 是否出现在主页
+uses = 3                  # 调用次数
+shortcut = "ctrl+alt+KeyP" # 可选，全局快捷键
+```
+
+- 只有**用户改过**的命令才写进文件：全默认的记录在保存时被 `prune` 掉，所以文件不会随着
+  命令变多而膨胀。
+- `uses` 只在内存里累加，面板隐藏或退出时随整份记录落盘（`remember_window_position`）。
+  所以那个函数**必须每次隐藏都写**，不能再「window_y 没变就早退」，否则计数永远存不下来。
+- `shortcut` 存的是 `keyboard-types` 的键名（`KeyP` / `Digit1` / `F1` / `ArrowUp`），
+  显示时才转成 `Ctrl + Alt + P`。解析失败只影响那一条绑定。
+- `window_y` 写入时机：面板隐藏、退出命令、托盘退出；恢复时按显示器工作区夹紧
+  （`NativeWindow::center_x_at`）。
+- `resume_seconds`：`Launcher::remember_section` 在**离开设置页时**（Esc 返回命令页、
+  或面板隐藏）记下 `(时刻, 标签)`，`reset` 在窗口内重新唤起时回到那一页；超时回命令页。
+  Esc 在设置页是先返回命令页，所以两条离开路径都要记，只记「隐藏」永远记不到设置页。
 
 ## 5.4 图标
 
@@ -123,7 +144,23 @@
 `LoadImageW` 从 exe 的资源 id 1 取，失败写 stderr。改图形只动 `logo.rs`，
 可执行文件、托盘、窗口三处一起变。
 
-## 5.5 失焦隐藏
+## 5.5 命令页
+
+「命令」标签里再分左右：左侧是模块（`catalogue::MODULES`），右侧是选中模块的命令行。
+每行：图标 + 名称/描述 + 调用次数 + 快捷键按钮 + 启用开关。模块列的右侧显示
+「启用数/总数」，右侧列表上方是模块的 `description`。
+
+- 点快捷键按钮进入**录制**状态（`Launcher::recording`），下一组按键就是答案：
+  `Esc` 取消、`Backspace`/`Delete` 清除、没有修饰键的组合被忽略（否则会把面板里打字的
+  按键当成全局快捷键）。录制期间 `intercept_keystrokes` **吞掉所有按键**，否则字符会漏进
+  隐藏着的搜索框。
+- 键名用 `keyboard-types` 的 `Code`（`KeyP`），显示时才友好化。`chord_from_keystroke`
+  只认字母、数字、`f1..f24` 和一张命名键表，其它键直接不响应。
+- 改快捷键后 `apply_command_shortcuts` **全部注销再全量注册**：集合很小，局部更新反而要
+  记「哪个键属于哪条命令」，注册失败的只跳过那一条。
+- 快捷键命中后走 `run_command`（计数 + 执行），和列表里按 Enter 是同一条路径。
+
+## 5.6 失焦隐藏
 
 面板一旦被别的窗口抢走前台就收起（设置页也一样，它只是面板内的一页）。**GPUI 不给窗口
 激活事件**，`Window::is_window_active` 也没有订阅口，所以 `Launcher::watch_focus` 用
@@ -145,7 +182,7 @@
 - **打开文件夹 / 链接一律走 `gpui_tools::shell::open`**（`ShellExecuteW`，verb `open`）：
   由 shell 解析关联，用户把默认文件管理器或浏览器换成别的也照样生效。**不要写
   `explorer.exe`、`cmd /c start`、`cx.open_url`**，那等于把用户的选择钉死在某一个程序上。
-- 打开外部目标会让对方抢走前台，面板因此自动隐藏（见 5.5），这是预期行为，不要
+- 打开外部目标会让对方抢走前台，面板因此自动隐藏（见 5.6），这是预期行为，不要
   `cx.activate(true)` 把面板抢回来。
 
 ## 7. 异步与性能

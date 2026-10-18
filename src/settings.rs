@@ -1,13 +1,21 @@
 //! The settings the host remembers between runs.
 //!
-//! The file is a flat `key = value` list so a damaged or hand-edited file is
-//! never fatal: an unreadable key falls back to its default and the rest of the
-//! record is still used.
+//! Stored as TOML at `%APPDATA%\gpui-tools\settings.toml`. Every field falls
+//! back to its default when missing, so a file written by an older build still
+//! loads, and a hand-edited file only loses the entry it got wrong.
+//!
+//! Per-command state is keyed by the command's stable id, not by position:
+//! adding or reordering commands leaves what the user already decided about the
+//! others alone.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 /// The colour scheme the host draws with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Theme {
     /// Follow the operating system.
     #[default]
@@ -28,35 +36,45 @@ impl Theme {
             Self::Dark => "深色",
         }
     }
+}
 
-    /// The value this choice is stored as.
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::Light => "light",
-            Self::Dark => "dark",
-        }
-    }
+/// What the user has decided about one command.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CommandSettings {
+    /// Whether the command shows up on the home list.
+    pub enabled: bool,
+    /// How many times the command has been run.
+    pub uses: u64,
+    /// The global shortcut that runs the command, as a chord such as
+    /// `ctrl+alt+KeyP`, or nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcut: Option<String>,
+}
 
-    /// The choice stored under `key`, if any.
-    fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|theme| theme.key() == key)
+impl CommandSettings {
+    /// Whether this record states anything of its own.
+    ///
+    /// A command the user never touched is left out of the file rather than
+    /// written as a block of defaults.
+    fn is_default(&self) -> bool {
+        self.enabled && self.uses == 0 && self.shortcut.is_none()
     }
 }
 
-/// The key the colour scheme is stored under.
-const THEME_KEY: &str = "theme";
-/// The key the remembered panel position is stored under.
-const WINDOW_Y_KEY: &str = "window_y";
-/// The key the search field's height is stored under.
-const SEARCH_HEIGHT_KEY: &str = "search_height";
-/// The key the login startup entry is mirrored under.
-const LAUNCH_AT_LOGIN_KEY: &str = "launch_at_login";
-/// The key the sub-page retention window is stored under.
-const RESUME_SECONDS_KEY: &str = "resume_seconds";
+impl Default for CommandSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            uses: 0,
+            shortcut: None,
+        }
+    }
+}
 
 /// Everything the host persists, in one record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     /// Which colour scheme to draw with.
     pub theme: Theme,
@@ -65,6 +83,7 @@ pub struct Settings {
     ///
     /// The horizontal position is deliberately not remembered: the panel is
     /// re-centred on its monitor on every run instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub window_y: Option<i32>,
     /// The height of the search field, in logical pixels.
     pub search_height: u32,
@@ -75,6 +94,9 @@ pub struct Settings {
     /// How long, in seconds, a hidden panel remembers the settings section it
     /// was showing. Zero always reopens on the command list.
     pub resume_seconds: u32,
+    /// Per-command state, keyed by the command's stable id.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub commands: BTreeMap<String, CommandSettings>,
 }
 
 impl Settings {
@@ -101,10 +123,19 @@ impl Settings {
         let Some(path) = Self::path() else {
             return Self::default();
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        Self::parse(&text)
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            match toml::from_str::<Self>(&text) {
+                Ok(mut settings) => {
+                    settings.tidy();
+                    return settings;
+                }
+                Err(error) => eprintln!(
+                    "gpui-tools: {} is damaged ({error}); falling back to its defaults",
+                    path.display()
+                ),
+            }
+        }
+        Settings::adopt_legacy()
     }
 
     /// Store the settings, reporting whether they were written.
@@ -117,17 +148,21 @@ impl Settings {
         {
             return false;
         }
-        std::fs::write(&path, self.render()).is_ok()
+        let mut record = self.clone();
+        record.prune();
+        let rendered = match toml::to_string_pretty(&record) {
+            Ok(rendered) => rendered,
+            Err(error) => {
+                eprintln!("gpui-tools: could not render the settings: {error}");
+                return false;
+            }
+        };
+        std::fs::write(&path, rendered).is_ok()
     }
 
     /// The file the settings live in, inside the user's profile.
     fn path() -> Option<PathBuf> {
-        let profile = std::env::var_os("APPDATA")?;
-        Some(
-            PathBuf::from(profile)
-                .join("gpui-tools")
-                .join("settings.ini"),
-        )
+        Some(Self::directory()?.join("settings.toml"))
     }
 
     /// The folder the settings live in, for the host to point the user at.
@@ -135,11 +170,78 @@ impl Settings {
     /// The folder is not created on demand: a first run with no settings has
     /// nothing worth showing, and the caller decides what to do about that.
     pub fn directory() -> Option<PathBuf> {
-        Self::path()?.parent().map(std::path::Path::to_path_buf)
+        let profile = std::env::var_os("APPDATA")?;
+        Some(PathBuf::from(profile).join("gpui-tools"))
     }
 
-    /// Parse a stored record. Unknown keys and unusable values are ignored.
-    fn parse(text: &str) -> Self {
+    /// What the user has decided about `command`, with its defaults filled in.
+    pub fn command(&self, id: &str) -> CommandSettings {
+        self.commands.get(id).cloned().unwrap_or_default()
+    }
+
+    /// Whether `command` belongs on the home list.
+    pub fn command_enabled(&self, id: &str) -> bool {
+        self.commands.get(id).is_none_or(|state| state.enabled)
+    }
+
+    /// How many times `command` has been run.
+    pub fn command_uses(&self, id: &str) -> u64 {
+        self.commands.get(id).map_or(0, |state| state.uses)
+    }
+
+    /// The global shortcut bound to `command`, if any.
+    pub fn command_shortcut(&self, id: &str) -> Option<&str> {
+        self.commands
+            .get(id)
+            .and_then(|state| state.shortcut.as_deref())
+    }
+
+    /// Show or hide a command on the home list.
+    pub fn set_command_enabled(&mut self, id: &str, enabled: bool) {
+        self.state_mut(id).enabled = enabled;
+    }
+
+    /// Count one run of `command`.
+    pub fn count_use(&mut self, id: &str) {
+        let state = self.state_mut(id);
+        state.uses = state.uses.saturating_add(1);
+    }
+
+    /// Bind a command to a global shortcut, or clear it.
+    pub fn set_command_shortcut(&mut self, id: &str, shortcut: Option<String>) {
+        self.state_mut(id).shortcut = shortcut;
+    }
+
+    /// The record for `command`, creating it if this is the first change.
+    fn state_mut(&mut self, id: &str) -> &mut CommandSettings {
+        self.commands.entry(id.to_string()).or_default()
+    }
+
+    /// Bring a freshly read record back inside the ranges the pages offer, so a
+    /// hand-edited file cannot produce an unusable layout.
+    fn tidy(&mut self) {
+        self.search_height = self
+            .search_height
+            .clamp(Self::SEARCH_HEIGHT_MIN, Self::SEARCH_HEIGHT_MAX);
+    }
+
+    /// Drop records that say nothing, so the file only holds real choices.
+    fn prune(&mut self) {
+        self.commands.retain(|_, state| !state.is_default());
+    }
+
+    /// Take over the `key = value` file earlier versions wrote.
+    ///
+    /// Read once: the reworked file is written straight back, so the old one is
+    /// never consulted again.
+    fn adopt_legacy() -> Self {
+        let Some(directory) = Self::directory() else {
+            return Self::default();
+        };
+        let Ok(text) = std::fs::read_to_string(directory.join("settings.ini")) else {
+            return Self::default();
+        };
+
         let mut settings = Self::default();
         for line in text.lines() {
             let Some((key, value)) = line.split_once('=') else {
@@ -147,20 +249,24 @@ impl Settings {
             };
             let value = value.trim();
             match key.trim() {
-                THEME_KEY => {
-                    if let Some(theme) = Theme::from_key(value) {
-                        settings.theme = theme;
-                    }
+                "theme" => {
+                    settings.theme = match value {
+                        "light" => Theme::Light,
+                        "dark" => Theme::Dark,
+                        _ => Theme::System,
+                    };
                 }
-                WINDOW_Y_KEY => settings.window_y = value.parse().ok(),
-                SEARCH_HEIGHT_KEY => {
+                "window_y" => settings.window_y = value.parse().ok(),
+                "search_height" => {
                     if let Ok(height) = value.parse::<u32>() {
-                        settings.search_height =
-                            height.clamp(Self::SEARCH_HEIGHT_MIN, Self::SEARCH_HEIGHT_MAX);
+                        settings.search_height = height;
                     }
                 }
-                LAUNCH_AT_LOGIN_KEY => settings.launch_at_login = Self::parse_flag(value),
-                RESUME_SECONDS_KEY => {
+                "launch_at_login" => {
+                    settings.launch_at_login =
+                        matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "on");
+                }
+                "resume_seconds" => {
                     if let Ok(seconds) = value.parse::<u32>() {
                         settings.resume_seconds = seconds;
                     }
@@ -168,30 +274,11 @@ impl Settings {
                 _ => {}
             }
         }
-        settings
-    }
-
-    /// Render the record the way it is stored.
-    fn render(&self) -> String {
-        let mut text = format!("{THEME_KEY}={}\n", self.theme.key());
-        text.push_str(&format!("{SEARCH_HEIGHT_KEY}={}\n", self.search_height));
-        text.push_str(&format!(
-            "{LAUNCH_AT_LOGIN_KEY}={}\n",
-            u8::from(self.launch_at_login)
-        ));
-        text.push_str(&format!("{RESUME_SECONDS_KEY}={}\n", self.resume_seconds));
-        if let Some(y) = self.window_y {
-            text.push_str(&format!("{WINDOW_Y_KEY}={y}\n"));
+        settings.tidy();
+        if !settings.save() {
+            eprintln!("gpui-tools: could not move the old settings to TOML");
         }
-        text
-    }
-
-    /// Read a boolean written as either a number or a word.
-    fn parse_flag(value: &str) -> bool {
-        matches!(
-            value.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
+        settings
     }
 }
 
@@ -203,72 +290,100 @@ impl Default for Settings {
             search_height: Self::SEARCH_HEIGHT_DEFAULT,
             launch_at_login: false,
             resume_seconds: 0,
+            commands: BTreeMap::new(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Settings, Theme};
+    use super::{CommandSettings, Settings, Theme};
 
-    #[test]
-    fn a_record_survives_a_round_trip() {
-        let settings = Settings {
+    fn sample() -> Settings {
+        let mut settings = Settings {
             theme: Theme::Dark,
             window_y: Some(-120),
             search_height: 34,
             launch_at_login: true,
             resume_seconds: 30,
+            ..Settings::default()
         };
-        assert_eq!(Settings::parse(&settings.render()), settings);
+        settings.set_command_enabled("repository", false);
+        settings.set_command_shortcut("program-folder", Some("ctrl+alt+KeyP".to_string()));
+        for _ in 0..3 {
+            settings.count_use("program-folder");
+        }
+        settings
+    }
+
+    #[test]
+    fn a_record_survives_a_round_trip() {
+        let settings = sample();
+        let text = toml::to_string_pretty(&settings).expect("renders");
+        let read: Settings = toml::from_str(&text).expect("parses");
+        assert_eq!(read, settings);
     }
 
     #[test]
     fn a_record_without_a_position_survives_a_round_trip() {
         let settings = Settings::default();
-        assert_eq!(Settings::parse(&settings.render()), settings);
+        let text = toml::to_string_pretty(&settings).expect("renders");
+        let read: Settings = toml::from_str(&text).expect("parses");
+        assert_eq!(read, settings);
     }
 
     #[test]
-    fn every_theme_survives_a_round_trip() {
-        for theme in Theme::ALL {
-            let settings = Settings {
-                theme,
-                ..Settings::default()
-            };
-            assert_eq!(Settings::parse(&settings.render()).theme, theme);
-        }
+    fn missing_keys_fall_back_to_their_defaults() {
+        let read: Settings = toml::from_str("theme = \"light\"\n").expect("parses");
+        assert_eq!(read.theme, Theme::Light);
+        assert_eq!(read.search_height, Settings::SEARCH_HEIGHT_DEFAULT);
+        assert!(!read.launch_at_login);
+        assert!(read.command_enabled("anything"));
     }
 
     #[test]
-    fn damaged_lines_are_ignored_rather_than_fatal() {
-        let settings = Settings::parse(
-            "theme=purple\nwindow_y=not a number\nnonsense\n\nwindow_y=42\ntheme=light\n",
+    fn unknown_keys_do_not_sink_the_file() {
+        let read: Settings = toml::from_str("theme = \"dark\"\nmystery = 1\n").expect("parses");
+        assert_eq!(read.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn a_stored_field_height_is_pulled_back_into_range() {
+        let mut read: Settings = toml::from_str("search_height = 400\n").expect("parses");
+        read.tidy();
+        assert_eq!(read.search_height, Settings::SEARCH_HEIGHT_MAX);
+    }
+
+    #[test]
+    fn a_command_defaults_to_shown_and_unused() {
+        let settings = Settings::default();
+        assert!(settings.command_enabled("program-folder"));
+        assert_eq!(settings.command_uses("program-folder"), 0);
+        assert_eq!(settings.command_shortcut("program-folder"), None);
+        assert_eq!(
+            settings.command("program-folder"),
+            CommandSettings::default()
         );
-        assert_eq!(settings.theme, Theme::Light);
-        assert_eq!(settings.window_y, Some(42));
     }
 
     #[test]
-    fn spacing_around_an_entry_does_not_matter() {
-        let settings = Settings::parse("  theme = dark \n window_y = 300 \n");
-        assert_eq!(settings.theme, Theme::Dark);
-        assert_eq!(settings.window_y, Some(300));
+    fn pruning_leaves_only_records_that_say_something() {
+        let mut settings = sample();
+        settings.set_command_enabled("quit", true);
+        settings.prune();
+        assert!(settings.commands.contains_key("repository"));
+        assert!(settings.commands.contains_key("program-folder"));
+        assert!(!settings.commands.contains_key("quit"));
     }
 
     #[test]
-    fn a_field_height_stays_within_what_the_page_offers() {
-        let settings = Settings::parse("search_height=400\n");
-        assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
-        let settings = Settings::parse("search_height=1\n");
-        assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MIN);
-    }
-
-    #[test]
-    fn a_flag_reads_as_either_a_number_or_a_word() {
-        assert!(Settings::parse("launch_at_login=1\n").launch_at_login);
-        assert!(Settings::parse("launch_at_login=true\n").launch_at_login);
-        assert!(!Settings::parse("launch_at_login=0\n").launch_at_login);
-        assert!(!Settings::parse("launch_at_login=maybe\n").launch_at_login);
+    fn the_record_written_out_carries_every_choice() {
+        let settings = sample();
+        let text = toml::to_string_pretty(&settings).expect("renders");
+        assert!(text.contains("theme = \"dark\""), "{text}");
+        assert!(text.contains("[commands.repository]"), "{text}");
+        assert!(text.contains("enabled = false"), "{text}");
+        assert!(text.contains("uses = 3"), "{text}");
+        assert!(text.contains("shortcut = \"ctrl+alt+KeyP\""), "{text}");
     }
 }
