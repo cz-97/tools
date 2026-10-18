@@ -1,27 +1,28 @@
-//! The application's mark: an art-deco "T" in white on a black plate.
+//! 应用标志：黑底白字的花体「T」。
 //!
-//! The mark is drawn here rather than shipped as an image so that the tray
-//! icon, the window icon and the executable's own icon all come from one
-//! description, at whatever size the caller needs, with no image decoder in the
-//! binary. `build.rs` includes this file to write the `.ico` that resource
-//! compiler embeds.
+//! 图形是算出来的，不随包附带图片：托盘图标、窗口图标、exe 自己的图标都来自这一份
+//! 描述，需要多大就画多大，二进制里也不用带图片解码器。`build.rs` 会包含本文件，
+//! 用它写出交给资源编译器的 `.ico`。
 
-/// The squares the executable's icon carries, in pixels.
+/// exe 图标里带的尺寸，单位像素。
 pub const ICO_SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 128];
 
-/// The colour of the plate the letter sits on.
-const PLATE: [f32; 3] = [11., 11., 12.];
-/// The colour of the letter.
-const LETTER: [f32; 3] = [255., 255., 255.];
-/// The corner radius of the plate, as a fraction of the mark's width.
+/// 深色版本：底板的颜色。
+const PLATE_DARK: [f32; 3] = [11., 11., 12.];
+/// 深色版本：字的颜色。
+const LETTER_DARK: [f32; 3] = [255., 255., 255.];
+/// 浅色版本：底板的颜色。
+const PLATE_LIGHT: [f32; 3] = [244., 244., 246.];
+/// 浅色版本：字的颜色。
+const LETTER_LIGHT: [f32; 3] = [17., 17., 20.];
+
+/// 底板圆角，按标志宽度的比例算。
 const PLATE_RADIUS: f32 = 0.2;
 
-/// Samples taken per axis in each pixel. Four is enough for the diagonals to
-/// read as edges rather than as stairs, at every size the icon ships in.
+/// 每个像素在两个方向上的采样数。4 已经够斜边看着像边、而不像台阶，所有尺寸都适用。
 const SAMPLES: u32 = 4;
 
-/// The bar of the letter: square at the left, bevelled at the outer top corner
-/// so the arm ends in a diagonal rather than a block.
+/// 字的横杠：左端是直角，外上方切一刀，让这一臂收成斜口而不是方块。
 const BAR: [(f32, f32); 5] = [
     (0.150, 0.250),
     (0.735, 0.250),
@@ -30,7 +31,7 @@ const BAR: [(f32, f32); 5] = [
     (0.150, 0.415),
 ];
 
-/// The stem: joined square to the bar, bevelled at the foot, mirroring the bar.
+/// 字的竖杆：与横杠平接，脚部切一刀，与横杠呼应。
 const STEM: [(f32, f32); 5] = [
     (0.405, 0.415),
     (0.585, 0.415),
@@ -39,8 +40,24 @@ const STEM: [(f32, f32); 5] = [
     (0.405, 0.735),
 ];
 
-/// The mark as straight-alpha RGBA, row by row from the top.
+/// 深色版本，直通 alpha 的 RGBA，从顶行开始逐行排列。
 pub fn rgba(size: u32) -> Vec<u8> {
+    mark(size, PLATE_DARK, LETTER_DARK)
+}
+
+/// 托盘用的版本：深色主题配深底白字，浅色主题配浅底黑字。
+///
+/// 任务栏的底色跟着主题走，图标只有跟着反过来才在两个主题里都清楚。
+pub fn tray_rgba(size: u32, dark: bool) -> Vec<u8> {
+    if dark {
+        mark(size, PLATE_DARK, LETTER_DARK)
+    } else {
+        mark(size, PLATE_LIGHT, LETTER_LIGHT)
+    }
+}
+
+/// 按给定的底板与字色，把标志画成直通 alpha 的 RGBA。
+fn mark(size: u32, plate_color: [f32; 3], letter_color: [f32; 3]) -> Vec<u8> {
     let mut pixels = vec![0; (size as usize) * (size as usize) * 4];
     if size == 0 {
         return pixels;
@@ -54,7 +71,7 @@ pub fn rgba(size: u32) -> Vec<u8> {
             let mut letter = 0u32;
             for sy in 0..SAMPLES {
                 for sx in 0..SAMPLES {
-                    // Sample at the centre of each sub-cell.
+                    // 取每个子格的中心采样。
                     let u = (x as f32 + (sx as f32 + 0.5) / SAMPLES as f32) / edge;
                     let v = (y as f32 + (sy as f32 + 0.5) / SAMPLES as f32) / edge;
                     if !inside_plate(u, v) {
@@ -69,14 +86,13 @@ pub fn rgba(size: u32) -> Vec<u8> {
             if plate == 0 {
                 continue;
             }
-            // The plate is opaque where it covers, and the letter is opaque on
-            // top of it, so the stored colour is the coverage-weighted mix.
+            // 底板盖住的像素是不透明的，字压在底板之上，所以存的是按覆盖率加权后的颜色。
             let alpha = plate as f32 / samples;
             let ink = letter as f32 / samples;
             let base = alpha - ink;
             let at = ((y as usize * size as usize) + x as usize) * 4;
             for channel in 0..3 {
-                let colour = (LETTER[channel] * ink + PLATE[channel] * base) / alpha;
+                let colour = (letter_color[channel] * ink + plate_color[channel] * base) / alpha;
                 pixels[at + channel] = colour.round().clamp(0.0, 255.0) as u8;
             }
             pixels[at + 3] = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
@@ -85,13 +101,12 @@ pub fn rgba(size: u32) -> Vec<u8> {
     pixels
 }
 
-/// Whether a point in unit coordinates falls inside the rounded plate.
+/// 单位坐标下的点是否落在圆角底板内。
 fn inside_plate(u: f32, v: f32) -> bool {
     if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
         return false;
     }
-    // Clamping to the inner rect turns the test into "within the radius of the
-    // nearest corner centre", which also covers the straight edges.
+    // 先夹到内矩形，判定就变成「离最近的圆角圆心不超过半径」，直边也一并覆盖。
     let cu = u.clamp(PLATE_RADIUS, 1.0 - PLATE_RADIUS);
     let cv = v.clamp(PLATE_RADIUS, 1.0 - PLATE_RADIUS);
     let du = u - cu;
@@ -99,7 +114,7 @@ fn inside_plate(u: f32, v: f32) -> bool {
     du * du + dv * dv <= PLATE_RADIUS * PLATE_RADIUS
 }
 
-/// Whether a point falls inside a convex polygon, by the crossing count.
+/// 用交点计数法判断点是否落在凸多边形内。
 fn inside(polygon: &[(f32, f32)], u: f32, v: f32) -> bool {
     let mut inside = false;
     let mut previous = polygon.len() - 1;
@@ -114,25 +129,25 @@ fn inside(polygon: &[(f32, f32)], u: f32, v: f32) -> bool {
     inside
 }
 
-/// The mark packed as a multi-size Windows icon file.
+/// 把标志打包成多尺寸的 Windows 图标文件。
 pub fn ico() -> Vec<u8> {
     let images: Vec<(u32, Vec<u8>)> = ICO_SIZES.iter().map(|&size| (size, dib(size))).collect();
 
     let mut icon = Vec::new();
-    icon.extend_from_slice(&0u16.to_le_bytes()); // reserved
-    icon.extend_from_slice(&1u16.to_le_bytes()); // type: icon
+    icon.extend_from_slice(&0u16.to_le_bytes()); // 保留字节
+    icon.extend_from_slice(&1u16.to_le_bytes()); // 类型：图标
     icon.extend_from_slice(&(images.len() as u16).to_le_bytes());
 
     let mut offset = 6 + 16 * images.len() as u32;
     for (size, data) in &images {
-        // A stored 256 would not fit the byte, and is written as zero.
+        // 256 塞不进一个字节，按规范写成 0。
         let edge = if *size >= 256 { 0 } else { *size as u8 };
         icon.push(edge);
         icon.push(edge);
-        icon.push(0); // palette entries
-        icon.push(0); // reserved
-        icon.extend_from_slice(&1u16.to_le_bytes()); // colour planes
-        icon.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
+        icon.push(0); // 调色板项数
+        icon.push(0); // 保留字节
+        icon.extend_from_slice(&1u16.to_le_bytes()); // 色彩平面
+        icon.extend_from_slice(&32u16.to_le_bytes()); // 每像素位数
         icon.extend_from_slice(&(data.len() as u32).to_le_bytes());
         icon.extend_from_slice(&offset.to_le_bytes());
         offset += data.len() as u32;
@@ -143,20 +158,20 @@ pub fn ico() -> Vec<u8> {
     icon
 }
 
-/// One icon image as a 32-bit bottom-up DIB, the way an `.ico` stores it.
+/// 单个尺寸的图像，按 `.ico` 的存法编成 32 位自下而上的 DIB。
 fn dib(size: u32) -> Vec<u8> {
     let rgba = rgba(size);
     let stride = mask_row(size);
     let mut image = Vec::with_capacity((40 + size * size * 4 + size * stride) as usize);
 
-    image.extend_from_slice(&40u32.to_le_bytes()); // header size
-    image.extend_from_slice(&(size as i32).to_le_bytes()); // width
-    image.extend_from_slice(&((size * 2) as i32).to_le_bytes()); // colour + mask
-    image.extend_from_slice(&1u16.to_le_bytes()); // planes
-    image.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
-    image.extend_from_slice(&0u32.to_le_bytes()); // no compression
-    image.extend_from_slice(&(size * size * 4).to_le_bytes()); // image size
-    image.extend_from_slice(&[0; 16]); // resolution, palette counts
+    image.extend_from_slice(&40u32.to_le_bytes()); // 头长度
+    image.extend_from_slice(&(size as i32).to_le_bytes()); // 宽
+    image.extend_from_slice(&((size * 2) as i32).to_le_bytes()); // 彩色 + 掩码
+    image.extend_from_slice(&1u16.to_le_bytes()); // 平面数
+    image.extend_from_slice(&32u16.to_le_bytes()); // 每像素位数
+    image.extend_from_slice(&0u32.to_le_bytes()); // 不压缩
+    image.extend_from_slice(&(size * size * 4).to_le_bytes()); // 图像长度
+    image.extend_from_slice(&[0; 16]); // 分辨率、调色板数
 
     for y in (0..size).rev() {
         for x in 0..size {
@@ -164,19 +179,19 @@ fn dib(size: u32) -> Vec<u8> {
             image.extend_from_slice(&[rgba[at + 2], rgba[at + 1], rgba[at], rgba[at + 3]]);
         }
     }
-    // The alpha channel carries the shape, so the mask only has to exist.
+    // 形状由 alpha 通道承担，掩码只要存在即可。
     image.extend(std::iter::repeat_n(0u8, (size * stride) as usize));
     image
 }
 
-/// The width of one AND-mask row: one bit per pixel, padded to four bytes.
+/// 一行 AND 掩码的宽度：每像素一位，补齐到四字节。
 fn mask_row(size: u32) -> u32 {
     size.div_ceil(32) * 4
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ICO_SIZES, dib, ico, rgba};
+    use super::{ICO_SIZES, dib, ico, rgba, tray_rgba};
 
     #[test]
     fn the_letter_is_white_in_the_middle_of_the_mark() {
@@ -185,6 +200,34 @@ mod tests {
         let at = ((size / 2 * size + size / 2) * 4) as usize;
         assert_eq!(&pixels[at..at + 3], &[255, 255, 255]);
         assert_eq!(pixels[at + 3], 255);
+    }
+
+    #[test]
+    fn the_light_variant_puts_a_dark_letter_on_a_light_plate() {
+        let size = 32;
+        let pixels = tray_rgba(size, false);
+        let at = ((size / 2 * size + size / 2) * 4) as usize;
+        assert!(pixels[at] < 40, "浅色版本的字应该是深色：{}", pixels[at]);
+        let plate = ((28 * size + 6) * 4) as usize;
+        assert!(
+            pixels[plate] > 200,
+            "浅色版本的底应该是浅色：{}",
+            pixels[plate]
+        );
+    }
+
+    #[test]
+    fn the_dark_variant_stays_white_on_black() {
+        let size = 32;
+        let pixels = tray_rgba(size, true);
+        let at = ((size / 2 * size + size / 2) * 4) as usize;
+        assert_eq!(&pixels[at..at + 3], &[255, 255, 255]);
+        let plate = ((28 * size + 6) * 4) as usize;
+        assert!(
+            pixels[plate] < 20,
+            "深色版本的底应该接近黑色：{}",
+            pixels[plate]
+        );
     }
 
     #[test]
@@ -198,10 +241,10 @@ mod tests {
     fn the_plate_is_black_away_from_the_letter() {
         let size = 32;
         let pixels = rgba(size);
-        // A point on the plate, left of the stem and below the bar.
+        // 底板上的一个点：竖杆左边、横杠下方。
         let at = ((28 * size + 6) * 4) as usize;
         assert_eq!(pixels[at + 3], 255);
-        assert!(pixels[at] < 20, "plate is near black: {}", pixels[at]);
+        assert!(pixels[at] < 20, "底板接近黑色：{}", pixels[at]);
     }
 
     #[test]
@@ -212,7 +255,7 @@ mod tests {
             assert_eq!(
                 data.len() as u32,
                 40 + size * size * 4 + size * stride,
-                "size {size}"
+                "尺寸 {size}"
             );
         }
     }
@@ -220,7 +263,7 @@ mod tests {
     #[test]
     fn the_icon_file_lists_every_size() {
         let icon = ico();
-        // reserved, type, count, then one 16-byte entry per image
+        // 保留、类型、数量，之后每张图一条 16 字节的目录项
         assert_eq!(u16::from_le_bytes([icon[2], icon[3]]), 1);
         assert_eq!(
             u16::from_le_bytes([icon[4], icon[5]]),

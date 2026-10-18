@@ -251,4 +251,4 @@ updated`）。跨实体通知必须 `app.defer(...)`。
 1. 保持现有架构的一致性，不引入当前用不到的抽象。
 2. 只引入完成需求所必需的依赖。
 3. 完成修改后执行 `cargo fmt --check`、`cargo clippy --all-targets`（退出码 0 不代表零
-   warning，要读日志）、`cargo test`，并确认 release 构建通过。
+   warning，要读日志）、`cargo test`。

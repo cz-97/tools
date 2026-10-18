@@ -1,6 +1,6 @@
-//! Host-side services shared by the launcher's own windows.
+//! 启动器各个窗口共用的宿主侧服务。
 //!
-//! Normative project guidance: `AGENTS.md` at the repository root.
+//! 规范以仓库根目录的 `AGENTS.md` 为准。
 
 pub mod autostart;
 pub mod logo;

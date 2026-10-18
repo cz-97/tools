@@ -1,163 +1,151 @@
-//! Native window chrome for host-owned windows.
+//! 自家窗口的原生外壳。
 //!
-//! GPUI exposes neither a frameless frame, an exact client size, nor window
-//! placement, so the host does that work itself through Win32. Every top-level
-//! window the host owns — the launcher panel and the settings window — places
-//! itself through these methods instead of writing Win32 in its own binary.
+//! GPUI 既不给无边框，也不给精确的客户区尺寸，更不负责窗口位置，所以这些活由宿主
+//! 自己用 Win32 干。宿主持有的每个顶层窗口都通过这些方法摆放自己，不在业务代码里
+//! 直接写 Win32。
 //!
-//! Every method is safe to call with a stale handle: it reports `false` (or an
-//! empty size) instead of panicking. On non-Windows targets the whole module
-//! degrades to no-ops, so callers stay platform-agnostic.
+//! 每个方法拿一个失效句柄调用都是安全的：返回 `false`（或空尺寸），不会 panic。
+//! 非 Windows 目标上整个模块退化成空操作，调用方不必分平台写代码。
 
-/// An opaque top-level window handle.
+/// 顶层窗口的不透明句柄。
 ///
-/// Kept as an integer rather than the platform pointer so it can be stored in
-/// GPUI globals and passed between modules without carrying a lifetime.
+/// 存成整数而不是平台指针，这样能塞进 GPUI 的全局值、在模块之间传递，也不带生命周期。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowHandle(usize);
 
 impl WindowHandle {
-    /// A handle that never refers to a window.
+    /// 永远不指向任何窗口的句柄。
     pub const INVALID: Self = Self(0);
 
-    /// Whether this handle was ever produced by a real window.
+    /// 这个句柄是不是由真实窗口产生过。
     ///
-    /// This is a cheap check: it does not ask the window manager whether the
-    /// window still exists. Use [`NativeWindow::is_open`] for that.
+    /// 只是便宜的判断：不会去问窗口管理器窗口还在不在，那个用
+    /// [`NativeWindow::is_open`]。
     pub fn is_valid(self) -> bool {
         self != Self::INVALID
     }
 }
 
-/// A host-owned top-level window, addressed by handle.
+/// 宿主持有的顶层窗口，按句柄寻址。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeWindow {
     handle: WindowHandle,
 }
 
 impl NativeWindow {
-    /// Look up the top-level window whose title matches exactly.
+    /// 按标题精确查找顶层窗口。
     ///
-    /// Titles are how the host re-acquires its own windows: GPUI does not hand
-    /// out the native handle, but it does let the host set the title.
+    /// 宿主就是这样重新拿到自己的窗口的：GPUI 不把原生句柄交出来，但允许设标题。
     pub fn find(title: &str) -> Option<Self> {
         sys::find(title).map(|handle| Self { handle })
     }
 
-    /// Wrap a handle, returning `None` unless the window still exists.
+    /// 包一个句柄，窗口已经不在就返回 `None`。
     pub fn from_handle(handle: WindowHandle) -> Option<Self> {
         (handle.is_valid() && sys::is_open(handle)).then_some(Self { handle })
     }
 
-    /// The raw handle, for handing to other Win32 code.
+    /// 原始句柄，转交给别的 Win32 代码用。
     pub fn handle(self) -> WindowHandle {
         self.handle
     }
 
-    /// Whether the window still exists.
+    /// 窗口还在不在。
     pub fn is_open(self) -> bool {
         sys::is_open(self.handle)
     }
 
-    /// Whether the window is currently shown.
+    /// 窗口当前是不是显示着。
     pub fn is_visible(self) -> bool {
         sys::is_visible(self.handle)
     }
 
-    /// Show the window. Returns `false` if it no longer exists.
+    /// 显示窗口；窗口不在了返回 `false`。
     pub fn show(self) -> bool {
         sys::show(self.handle)
     }
 
-    /// Hide the window without destroying it. Returns `false` if it no longer exists.
+    /// 收起窗口但不销毁；窗口不在了返回 `false`。
     pub fn hide(self) -> bool {
         sys::hide(self.handle)
     }
 
-    /// Raise the window and give it keyboard focus.
+    /// 把窗口抬到前面并给它键盘焦点。
     ///
-    /// Windows may refuse the foreground change when another application owns
-    /// it; callers should treat `false` as "raise was ignored", not as an error.
+    /// 别的程序占着前台时 Windows 可能拒绝这次切换；调用方应把 `false` 当成
+    /// 「抬到前面这件事被忽略了」，而不是错误。
     pub fn focus(self) -> bool {
         sys::focus(self.handle)
     }
 
-    /// Whether this window is the one the user is working in.
+    /// 这个窗口是不是用户正在用的那个。
     ///
-    /// A launcher hides itself when another window takes over, and GPUI reports
-    /// no activation event, so the host asks the window manager instead.
+    /// 启动器在别的窗口抢走前台时收起，而 GPUI 不报激活事件，所以直接问窗口管理器。
     pub fn is_foreground(self) -> bool {
         sys::is_foreground(self.handle)
     }
 
-    /// Physical pixels per logical UI unit on the monitor this window is on.
+    /// 窗口所在显示器上，一个逻辑单位等于多少物理像素。
     pub fn scale_factor(self) -> f32 {
         sys::scale_factor(self.handle)
     }
 
-    /// The client area in physical pixels.
+    /// 客户区尺寸，物理像素。
     pub fn client_size(self) -> (i32, i32) {
         sys::client_size(self.handle)
     }
 
-    /// The outer window rect in physical pixels, title bar and border included.
+    /// 窗口外框尺寸，物理像素，含标题栏和边框。
     pub fn outer_size(self) -> (i32, i32) {
         sys::outer_size(self.handle)
     }
 
-    /// The window's top-left corner in physical pixels.
+    /// 窗口左上角位置，物理像素。
     pub fn position(self) -> (i32, i32) {
         sys::position(self.handle)
     }
 
-    /// Remove the native title bar and frame, or restore them.
+    /// 去掉原生标题栏和边框，或者恢复它们。
     ///
-    /// Removing the chrome also removes the caption the user would drag to move
-    /// the window and the border they would drag to resize it, so the window
-    /// becomes a fixed panel. The host is expected to place it explicitly
-    /// (see [`Self::apply_panel_chrome`]) and to offer its own way out.
+    /// 去掉之后用户没有可拖动的标题栏，也没有可拉伸的边框，窗口就变成一块固定面板。
+    /// 宿主需要自己摆放它（见 [`Self::apply_panel_chrome`]），并自己给出关闭的方式。
     pub fn set_borderless(self, borderless: bool) -> bool {
         sys::set_borderless(self.handle, borderless)
     }
 
-    /// Resize so the client area measures `width` x `height` logical units.
+    /// 调整尺寸，让客户区是 `width` x `height` 个逻辑单位。
     ///
-    /// Logical units are what the UI is authored in; the conversion to physical
-    /// pixels uses this window's own scale factor, so the panel keeps its
-    /// apparent size when it opens on a different monitor.
+    /// 界面是按逻辑单位写的；换算成物理像素用的是这个窗口自己的缩放比例，所以换一台
+    /// 显示器打开时面板看起来还是同样大。
     pub fn set_client_size(self, width: f32, height: f32) -> bool {
         sys::set_client_size(self.handle, width, height)
     }
 
-    /// Centre the window on the monitor it currently sits on, respecting the
-    /// monitor's work area so the panel never lands under the taskbar.
+    /// 居中到当前所在显示器，按工作区算，面板因此不会跑到任务栏底下。
     pub fn center_on_monitor(self) -> bool {
         sys::center_on_monitor(self.handle)
     }
 
-    /// Put the window's top edge at `y` physical pixels, centred horizontally
-    /// on the monitor it currently sits on.
+    /// 把窗口顶边放到物理像素 `y`，横向在所在显示器上居中。
     ///
-    /// `y` is clamped into the monitor's work area, so a remembered position
-    /// still lands somewhere visible after the taskbar moves or the display
-    /// it was measured on is gone.
+    /// `y` 会被夹进显示器工作区：任务栏挪了位置、或者当初量它的那块屏已经不在了，
+    /// 记住的位置也仍然落在看得见的地方。
     pub fn center_x_at(self, y: i32) -> bool {
         sys::center_x_at(self.handle, y)
     }
 
-    /// Adopt the icon the executable carries as resource `id`.
+    /// 采用可执行文件里 id 为 `id` 的图标资源。
     ///
-    /// The icon resource is what the shell shows in the task bar and in
-    /// Alt-Tab; GPUI does not set one, so the host has to. A build without the
-    /// resource reports `false` rather than failing.
+    /// 任务栏和 Alt-Tab 显示的图标来自窗口；GPUI 不设，只能宿主来。没有这个资源
+    /// 的构建返回 `false`，不会失败。
     pub fn set_icon(self, id: u16) -> bool {
         sys::set_icon(self.handle, id)
     }
 
-    /// The chrome every host panel wants: frameless, exact client size, centred.
+    /// 每块面板都想要的外壳：无边框、精确客户区、居中。
     ///
-    /// Returns whether all three steps succeeded; a partially applied panel is
-    /// still usable, so callers may log a failure and continue.
+    /// 返回三步是不是都成了；只成一部分的面板照样能用，所以调用方可以记一笔日志
+    /// 继续往下走。
     pub fn apply_panel_chrome(self, width: f32, height: f32) -> bool {
         let borderless = self.set_borderless(true);
         let sized = self.set_client_size(width, height);
@@ -172,12 +160,14 @@ mod sys {
     use std::mem::size_of;
     use std::ptr;
     use windows_sys::Win32::Foundation::{HWND, RECT};
-    use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMNCRP_DISABLED, DWMNCRP_USEWINDOWSTYLE, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT,
+        DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DwmSetWindowAttribute,
+    };
     use windows_sys::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::UI::Controls::MARGINS;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, GWL_STYLE, GetClientRect, GetForegroundWindow, GetSystemMetrics,
@@ -188,12 +178,11 @@ mod sys {
         WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
 
-    /// The styles that make up the native title bar, its buttons and the
-    /// resize border. Clearing all of them leaves a bare client area.
+    /// 构成原生标题栏、它那几个按钮和可拉伸边框的样式位。全清掉就只剩客户区。
     const CHROME_STYLES: u32 =
         WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
 
-    /// The 96 DPI baseline Windows reports for unscaled displays.
+    /// 不缩放时 Windows 报的 96 DPI 基准。
     const BASE_DPI: f32 = 96.0;
 
     fn hwnd(handle: WindowHandle) -> HWND {
@@ -285,10 +274,9 @@ mod sys {
         }
     }
 
-    /// The window rect paired with the work area of the monitor it sits on.
+    /// 窗口矩形，连同它所在显示器的工作区。
     ///
-    /// Placement is always relative to the work area rather than the full
-    /// screen, otherwise a centred window ends up under the taskbar.
+    /// 摆放一律相对工作区而不是整块屏，否则居中的窗口会压到任务栏下面。
     fn rect_and_work(handle: WindowHandle) -> Option<(RECT, RECT)> {
         if !is_open(handle) {
             return None;
@@ -322,36 +310,53 @@ mod sys {
         } else {
             current | CHROME_STYLES
         };
-        if wanted != current {
+        let resized = if wanted != current {
             unsafe { SetWindowLongPtrW(window, GWL_STYLE, wanted as isize) };
-        }
 
-        // Without extending the DWM frame, a caption-less window still draws a
-        // 1px system border and square corners over the client area.
-        let margins = if borderless {
-            MARGINS {
-                cxLeftWidth: -1,
-                cxRightWidth: -1,
-                cyTopHeight: -1,
-                cyBottomHeight: -1,
+            // 只有样式真的变化时才让系统重算边框。Popup 本身已无边框，
+            // 对它额外发送 SWP_FRAMECHANGED 会触发一次多余的 DWM frame 重建。
+            unsafe {
+                SetWindowPos(
+                    window,
+                    ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
             }
         } else {
-            MARGINS::default()
+            1
         };
-        unsafe { DwmExtendFrameIntoClientArea(window, &margins) };
-
-        // Styles only take effect once the frame is recalculated.
-        let resized = unsafe {
-            SetWindowPos(
-                window,
-                ptr::null_mut(),
-                0,
-                0,
-                0,
-                0,
-                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            )
-        };
+        if resized != 0 {
+            // 与喝水提醒的透明浮层一致：禁用非客户区绘制并清除系统边框。
+            // 整个客户区留给 GPUI 的预乘 alpha 合成，不再通过 ExtendFrame 改写 DWM 表面。
+            let policy = if borderless {
+                DWMNCRP_DISABLED
+            } else {
+                DWMNCRP_USEWINDOWSTYLE
+            };
+            let border_color = if borderless {
+                DWMWA_COLOR_NONE
+            } else {
+                DWMWA_COLOR_DEFAULT
+            };
+            unsafe {
+                let _ = DwmSetWindowAttribute(
+                    window,
+                    DWMWA_NCRENDERING_POLICY as u32,
+                    &policy as *const _ as _,
+                    size_of::<i32>() as u32,
+                );
+                let _ = DwmSetWindowAttribute(
+                    window,
+                    DWMWA_BORDER_COLOR as u32,
+                    &border_color as *const _ as _,
+                    size_of::<u32>() as u32,
+                );
+            }
+        }
         resized != 0
     }
 
@@ -364,8 +369,8 @@ mod sys {
         let target_width = (width * scale).round() as i32;
         let target_height = (height * scale).round() as i32;
 
-        // A borderless window keeps an invisible frame that still counts towards
-        // the outer rect, so request the client size plus the current delta.
+        // 无边框窗口仍留着一圈看不见的框，它对「外框尺寸」是有贡献的，所以请求的
+        // 尺寸要在客户区之上加上这个差值。
         let (outer_width, outer_height) = outer_size(handle);
         let (client_width, client_height) = client_size(handle);
         let frame_width = (outer_width - client_width).max(0);
@@ -414,8 +419,7 @@ mod sys {
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
         let x = work.left + (work.right - work.left - width) / 2;
-        // A work area shorter than the window leaves no room to clamp towards,
-        // so the top edge is the only sensible answer.
+        // 工作区比窗口还矮时没有可夹的余地，顶边对齐是唯一合理的答案。
         let lowest = (work.bottom - height).max(work.top);
         let y = y.clamp(work.top, lowest);
 
@@ -441,8 +445,7 @@ mod sys {
         if module.is_null() {
             return false;
         }
-        // The resource id travels as a pointer-sized integer, the way the
-        // MAKEINTRESOURCE macro spells it.
+        // 资源 id 以指针宽度的整数传递，就是 MAKEINTRESOURCE 宏拼出来的写法。
         let name = id as usize as *const u16;
         let mut applied = true;
         for (metric, kind) in [(SM_CXICON, ICON_BIG), (SM_CXSMICON, ICON_SMALL)] {
@@ -550,8 +553,7 @@ mod tests {
 
     #[test]
     fn operations_on_a_stale_window_report_failure() {
-        // A handle that is well-formed but refers to nothing must stay inert
-        // rather than reaching into the window manager.
+        // 格式合法但不指向任何窗口的句柄必须保持安静，不能拿去调窗口管理器。
         let window = NativeWindow {
             handle: WindowHandle(0xdead_beef),
         };

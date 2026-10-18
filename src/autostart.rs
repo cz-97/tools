@@ -1,24 +1,20 @@
-//! The login startup entry.
+//! 开机启动项。
 //!
-//! Windows starts an application at login by way of a value under
-//! `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which needs no
-//! elevation and is visible to the user in Task Manager's startup tab. The
-//! registry is the source of truth: [`enabled`] reads it back, so an entry the
-//! user removed elsewhere is not silently re-created.
+//! Windows 靠 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的一个值
+//! 在登录时启动程序：不需要提权，用户在任务管理器的启动页里也看得见。**注册表才是
+//! 事实**：[`enabled`] 每次都去读它，所以用户在别处删掉的那一项不会被悄悄重建。
 //!
-//! On other platforms every call is a no-op that reports failure, so callers
-//! stay platform-agnostic.
+//! 别的平台上每个调用都是「失败的空操作」，调用方因此不必关心平台差异。
 
-/// The name the startup entry is filed under, which is what the user sees in
-/// Task Manager.
+/// 启动项的名字，也是用户在任务管理器里看到的那一行。
 const ENTRY_NAME: &str = "GPUI Tools";
 
-/// Whether an entry that starts this executable is in place.
+/// 有没有一项在登录时启动这个可执行文件。
 pub fn enabled() -> bool {
     sys::enabled(ENTRY_NAME)
 }
 
-/// Add or remove the startup entry, reporting whether it took effect.
+/// 加上或删掉启动项，返回是否生效。
 pub fn set_enabled(enabled: bool) -> bool {
     sys::set_enabled(ENTRY_NAME, enabled)
 }
@@ -31,13 +27,13 @@ mod sys {
         RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     };
 
-    /// The key Windows reads startup entries from.
+    /// Windows 读启动项的那个键。
     const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
-    /// The command line a startup entry should run.
+    /// 启动项该跑的命令行。
     fn command() -> String {
         let exe = std::env::current_exe().unwrap_or_default();
-        // Quoted, so a path containing spaces still runs as one argument.
+        // 带引号，路径里有空格时也能当成一个参数跑起来。
         format!("\"{}\"", exe.display())
     }
 
@@ -60,8 +56,7 @@ mod sys {
         let name = wide(name);
         let mut kind = 0u32;
         let mut bytes = 0u32;
-        // Asking for the size first keeps the read independent of how long the
-        // command line of some other installation might be.
+        // 先问长度再读，读出来的东西就不受别的安装写多长的命令行影响。
         let status = unsafe {
             RegQueryValueExW(
                 key,
@@ -98,7 +93,7 @@ mod sys {
             unsafe { RegDeleteValueW(key, name.as_ptr()) }
         };
         unsafe { RegCloseKey(key) };
-        // Removing an entry that was never there is a success, not a failure.
+        // 删一个本来就不存在的项算成功，不算失败。
         status == 0 || (!enabled && status == 2)
     }
 

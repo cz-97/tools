@@ -1,7 +1,11 @@
 [package]
 name = "gpui-tools"
-version = "0.5.2"
+version = "0.7.0"
 edition = "2024"
+
+[[bin]]
+name = "gpui-transparency-probe"
+path = "src/bin/transparency_probe.rs"
 
 [dependencies]
 gpui-kit = "0.7.3"

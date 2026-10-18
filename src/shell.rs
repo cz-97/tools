@@ -1,23 +1,19 @@
-//! Opening folders and links the way the user's own settings say to.
+//! 按用户自己的设置去打开文件夹和链接。
 //!
-//! Naming a program — `explorer.exe`, a browser — would pin the host to one
-//! choice the user can change at any time. `ShellExecuteW` asks the shell to
-//! resolve the association instead, so a folder opens in whatever file manager
-//! is registered as the default and a link opens in the default browser.
+//! 点名某个程序——`explorer.exe`、某个浏览器——等于把用户随时能改的选择钉死。
+//! 这里改用 `ShellExecuteW` 让 shell 去解析关联：文件夹用系统登记的文件管理器打开，
+//! 链接用默认浏览器打开。
 //!
-//! The call happens on a thread of its own. `ShellExecuteW` runs the shell's
-//! message pump, and starting that pump while GPUI holds its application borrow
-//! lets the shell deliver events straight back into the launcher, which panics
-//! with "RefCell already borrowed" and aborts the process. The call also blocks
-//! until the handler takes over. A short-lived thread with COM initialised keeps
-//! both off the UI thread.
+//! 这一步放在单独的线程里。`ShellExecuteW` 会跑 shell 自己的消息泵，而这个泵在 GPUI
+//! 还持着 App 借用的时候把事件送回面板，就会 `RefCell already borrowed`，进而
+//! `panic in a function that cannot unwind`，进程直接 abort。这个调用还会一直阻塞到
+//! 处理器接手。开一个初始化过 COM 的短命线程，两件事都离开了 UI 线程。
 
 use std::ffi::OsStr;
 
-/// Ask the shell to open `target` with its default handler.
+/// 让 shell 用默认处理器打开 `target`。
 ///
-/// Returns immediately; a failure is reported on standard error from the thread
-/// that attempted the open.
+/// 立刻返回；失败由那个尝试打开的线程写到标准错误。
 pub fn open(target: impl AsRef<OsStr>) {
     let target = target.as_ref().to_owned();
     std::thread::spawn(move || {
@@ -39,14 +35,12 @@ mod sys {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    /// `ShellExecuteW` reports success as anything above 32; the smaller values
-    /// are its own error codes.
+    /// `ShellExecuteW` 用「大于 32」表示成功；更小的值是它自己的错误码。
     const SHELL_SUCCESS: isize = 32;
 
-    /// Give this thread the apartment the shell expects.
+    /// 把这个线程设成 shell 期待的单线程套间。
     ///
-    /// A failure is not fatal: the open still runs, it only loses the shell
-    /// extensions that need COM.
+    /// 失败也不致命：照样能打开，只是少了需要 COM 的那些 shell 扩展。
     pub fn prepare() {
         unsafe {
             CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32);
