@@ -113,12 +113,10 @@ impl RenderOnce for ToolRow {
         // 「一次没跑过」「没绑键」也照实写，行不会因为计数从此有了值就换一副样子。
         let section = div()
             .text_xs()
-            .font_weight(FontWeight::MEDIUM)
             .text_color(detail_color)
             .child(self.command.section.label());
         let uses = div()
             .text_xs()
-            .font_weight(FontWeight::MEDIUM)
             .text_color(detail_color)
             .child(strings::launcher::uses(self.state.uses));
         let shortcut = match self.state.shortcut.clone() {
@@ -128,13 +126,11 @@ impl RenderOnce for ToolRow {
                 .rounded(px(4.))
                 .bg(tile_bg)
                 .text_xs()
-                .font_weight(FontWeight::MEDIUM)
                 .text_color(chip_color)
                 .child(shortcut_label(&chord))
                 .into_any_element(),
             None => div()
                 .text_xs()
-                .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.faint)
                 .child(strings::launcher::NO_SHORTCUT)
                 .into_any_element(),
@@ -188,7 +184,6 @@ impl RenderOnce for ToolRow {
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .text_xs()
-                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(detail_color)
                                 .child(self.command.description),
                         ),

@@ -3,8 +3,8 @@
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::{
-    App, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, SharedString,
-    Window, div, prelude::*, px,
+    App, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, SharedString, Window, div,
+    prelude::*, px,
 };
 use gpui_tools::settings::CommandSettings;
 
@@ -79,7 +79,6 @@ pub(crate) fn render(
                         .child(
                             div()
                                 .text_xs()
-                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(if current {
                                     colors.on_accent_muted
                                 } else {
@@ -122,7 +121,6 @@ pub(crate) fn render(
                         .px_2()
                         .pb_1()
                         .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.muted_foreground)
                         .child(strings::commands_page::caption(section.label())),
                 )
@@ -132,7 +130,6 @@ pub(crate) fn render(
                             .px_2()
                             .py_2()
                             .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.muted_foreground)
                             .child(strings::commands_page::EMPTY),
                     )
@@ -216,7 +213,6 @@ fn command_row(
                         .overflow_hidden()
                         .text_ellipsis()
                         .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.on_surface_muted)
                         .child(command.description),
                 ),
@@ -225,7 +221,6 @@ fn command_row(
             div()
                 .flex_shrink_0()
                 .text_xs()
-                .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.on_surface_muted)
                 .child(strings::commands_page::uses(state.uses)),
         )
@@ -261,7 +256,6 @@ pub(crate) fn shortcut_button(
         .border_1()
         .border_color(colors.surface)
         .text_xs()
-        .font_weight(FontWeight::MEDIUM)
         .max_w(px(240.))
         .overflow_hidden()
         .text_ellipsis()

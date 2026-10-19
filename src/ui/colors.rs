@@ -7,10 +7,16 @@
 //!    [`apply`] 会在每次换主题后把这套值写进当前主题，于是组件（开关、滑动条、按钮）
 //!    和自绘视图读到的都是同一份。
 //! 2. **派生色**（[`UiColors`]）：在基础色上按固定比例调出来的（悬停、选中行的图标
-//!    底、次要文字……），比例就是下面的那些 `*_OPACITY` 常量。
+//!    底、次要文字……），比例就是下面的那些 `*_OPACITY` / `*_VEIL` 常量。
+//!    半透明时「深色块」（卡片、选中行、控件底座）换成固定浓度的**纱**，
+//!    亚克力从块里透上来；弱文字则按壁纸的两种极端底色校验对比度，不够就调亮度。
 //! 3. **半透明染色**（`panel`）：亚克力之上的那层底色，深浅由外观页的「透明度」档控制。
 //!
 //! 绘制代码只从 `UiColors` 取色，不直接读主题、也不写透明度字面量。
+//!
+//! 半透明下唯一算不准的是「壁纸到底什么颜色」，所以弱文字按纯白 / 纯黑两种极端
+//! 分别校验；两种极端要求打架时（面板正好夹在中灰）取两边对比度相等的点，
+//! 那是这种情况下能做到的最好结果。
 
 use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::{App, Hsla, Rgba, rgb};
@@ -146,9 +152,26 @@ pub(crate) const DISABLED_OPACITY: f32 = 0.3;
 
 /// 次要文字的醒目下限（WCAG 对比度）。半透明面板背后的壁纸颜色不可知，
 /// 弱文字按纯白、纯黑两种极端底色校验，达不到就调。
-const MUTED_MIN_CONTRAST: f32 = 3.0;
+///
+/// 3.0 是「看得见」，4.0 会让字几乎和标题一样白、层次全丢；3.8 是实测下来的
+/// 平衡点：12px 中文在半透明面板上不再发虚，又还认得出是辅助信息。
+const MUTED_MIN_CONTRAST: f32 = 3.8;
 /// 占位性文字的醒目下限，比次要文字松一档，保住「更弱一档」的层次。
-const FAINT_MIN_CONTRAST: f32 = 2.2;
+const FAINT_MIN_CONTRAST: f32 = 3.0;
+/// 画在 `surface`（图标小块、卡片、页脚按键块）上的次要文字的下限。
+const SURFACE_MUTED_MIN_CONTRAST: f32 = 3.5;
+
+// 半透明面板上的「深色块」不该是实心的：实心块在一块半透明面板上就是一块黑补丁。
+// 下面几个 alpha 让它们变成压在半透明面板上的「纱」，亚克力仍然从块里透上来。
+// 100% 不透明度时算出来和原来几乎一样，所以只在半透明时才用。
+/// 行的底色块（图标小块、卡片、页脚按键块）叠多少实色。
+const SURFACE_VEIL: f32 = 0.45;
+/// 选中高亮叠多少实色。比 `SURFACE_VEIL` 重，选中行才压得住没选中的。
+const ACCENT_VEIL: f32 = 0.65;
+/// 控件底座（胶囊选择器、步进器）叠多少实色。
+const CONTROL_VEIL: f32 = 0.35;
+/// 分隔线剩下的实色比例。
+const BORDER_VEIL: f32 = 0.7;
 
 /// 壁纸的两种极端假设，醒目度校验用。
 const WALLPAPER_WHITE: Rgba = Rgba {
@@ -258,7 +281,11 @@ fn readable_luminance(current: f32, extremes: &[Rgba; 2], min: f32) -> f32 {
         }
     }
     if lo > hi {
-        ((lo + hi) / 2.0).clamp(0.0, 1.0)
+        // 两种底色的要求打架（面板正好夹在白底和黑底中间）：目标亮度不存在，
+        // 只能取两边对比度相等的那个点——也就是能给出的最大最小值。
+        let light = luminance(extremes[0]) + 0.05;
+        let dark = luminance(extremes[1]) + 0.05;
+        ((light * dark).sqrt() - 0.05).clamp(0.0, 1.0)
     } else {
         current.clamp(lo, hi)
     }
@@ -294,12 +321,13 @@ fn readable_on_panel(text: Hsla, panel: Hsla, extremes: &[Rgba; 2], min: f32) ->
 /// 面板自定义视图共用的调色板。
 #[derive(Clone, Copy)]
 pub(crate) struct UiColors {
-    /// 行的底色（命令页的卡片）。
+    /// 行的底色（命令页的卡片）。半透明时是固定浓度的纱，不跟面板透明度走。
     pub(crate) surface: Hsla,
     /// 面板自己的底色：半透明时留出空隙给亚克力。
     pub(crate) panel: Hsla,
     /// 行内控件的底色，让它和整行读成一体。
     pub(crate) control: Hsla,
+    /// 分隔线。半透明时也留一点余量，免得在中灰面板上变成黑线。
     pub(crate) border: Hsla,
     pub(crate) foreground: Hsla,
     pub(crate) muted_foreground: Hsla,
@@ -307,6 +335,7 @@ pub(crate) struct UiColors {
     /// 半透明时卡片本身是深色半透明、再叠一层半透明面板，有效底色比裸面板更暗，
     /// 所以这套文字按「卡片叠面板叠壁纸」的堆叠底色校验，通常不用调亮。
     pub(crate) on_surface_muted: Hsla,
+    /// 选中高亮。半透明时同样是固定浓度的纱，比 `surface` 重一档才压得住未选中的行。
     pub(crate) accent: Hsla,
     pub(crate) accent_foreground: Hsla,
     /// 悬停的淡色叠加。刻意比选中的高亮弱一档。
@@ -336,26 +365,57 @@ impl UiColors {
 
     fn from_theme(theme: &Theme, translucent: bool, panel_opacity: u32) -> Self {
         let opacity = panel_opacity as f32 / 100.0;
+        // 半透明时面板只是一层染色，模糊交给 DWM 的亚克力，见
+        // `app::apply_panel_appearance`。染色深浅就是「透明度」那一档；
+        // 不半透明时这一层就是实色，极端底色自然也只有一种。
+        let tint = Rgba::from(theme.background).alpha(if translucent { opacity } else { 1.0 });
+        let panel_extremes = [
+            Self::stack(WALLPAPER_WHITE, &[tint]),
+            Self::stack(WALLPAPER_BLACK, &[tint]),
+        ];
 
-        // 半透明时面板底色、卡片底色都留出空隙给亚克力，文字醒目度按
-        // 「染色叠壁纸极端色」校验；不透明主题底色就是主题底色，天然协调。
+        // 面板上的「深色块」不跟随面板透明度，而是自己固定浓度的纱：
+        // 跟着面板走的话，用户把透明度拉低时块会一起变淡、选中胶囊和底座糊成一片；
+        // 固定浓度则无论在哪个档位都读得出一层块，同时亚克力仍从块里透上来。
+        //
+        // 只对暗色主题且面板真的半透明时才换纱：浅色主题的卡片本来就只比面板深
+        // 一点点（#f5f5f5 对 #ffffff），掺一半透明度就直接看不见了；面板全实
+        // （100%）时也没有亚克力可透，照旧用主题色。
+        let veiled = translucent && theme.is_dark() && panel_opacity < 100;
+        let surface_color = if veiled {
+            theme.muted.opacity(SURFACE_VEIL)
+        } else {
+            theme.muted
+        };
+        let panel = if translucent {
+            Hsla::from(tint)
+        } else {
+            theme.background
+        };
+        let surface = surface_color;
+        let accent = if veiled {
+            theme.accent.opacity(ACCENT_VEIL)
+        } else {
+            theme.accent
+        };
+        let control = if veiled {
+            theme.background.opacity(CONTROL_VEIL)
+        } else {
+            theme.background
+        };
+        let border = if veiled {
+            theme.border.opacity(BORDER_VEIL)
+        } else {
+            theme.border
+        };
+
+        // 卡片的有效底色 = 卡片（纱或实色）叠在「面板染色叠壁纸」之上。
+        let card_extremes = [
+            Self::stack(WALLPAPER_WHITE, &[tint, Rgba::from(surface)]),
+            Self::stack(WALLPAPER_BLACK, &[tint, Rgba::from(surface)]),
+        ];
+
         let (muted_foreground, faint, on_surface_muted) = if translucent {
-            // 面板染色叠在壁纸上的两种极端底色。
-            let tint = Rgba::from(theme.background).alpha(opacity);
-            let panel = Hsla::from(tint);
-            let panel_extremes = [
-                Self::stack(WALLPAPER_WHITE, &[tint]),
-                Self::stack(WALLPAPER_BLACK, &[tint]),
-            ];
-
-            // 卡片（行底色 / 控件底色）是半透明深色，再叠一层半透明面板，
-            // 所以卡片的有效底色 = 卡片色叠在「面板染色叠壁纸」之上。
-            let surface = Rgba::from(theme.muted).alpha(opacity);
-            let card_extremes = [
-                Self::stack(WALLPAPER_WHITE, &[tint, surface]),
-                Self::stack(WALLPAPER_BLACK, &[tint, surface]),
-            ];
-
             (
                 readable_on_panel(
                     theme.muted_foreground,
@@ -369,13 +429,13 @@ impl UiColors {
                     &panel_extremes,
                     FAINT_MIN_CONTRAST,
                 ),
-                // 画在卡片上的次要文字：卡片比面板更暗（两层深色叠起来），
-                // 反而不容易被壁纸冲淡，所以按卡片自己的堆叠底色校验。
+                // 画在卡片上的次要文字按卡片自己的堆叠底色校验，
+                // 别跟着裸面板一起被调亮。
                 readable_on_panel(
                     theme.muted_foreground,
-                    Hsla::from(surface),
+                    surface,
                     &card_extremes,
-                    MUTED_MIN_CONTRAST,
+                    SURFACE_MUTED_MIN_CONTRAST,
                 ),
             )
         } else {
@@ -387,30 +447,14 @@ impl UiColors {
         };
 
         Self {
-            // 半透明时卡片也留出空隙给亚克力，和面板一样只是染色的一层。
-            surface: if translucent {
-                theme.muted.opacity(opacity)
-            } else {
-                theme.muted
-            },
-            // 半透明时这一层只负责染色：模糊交给 DWM 的亚克力，见
-            // `app::apply_panel_appearance`。染色深浅就是「透明度」那一档。
-            panel: if translucent {
-                theme.background.opacity(opacity)
-            } else {
-                theme.background
-            },
-            // 控件底色同卡片：半透明时一起透出亚克力。
-            control: if translucent {
-                theme.background.opacity(opacity)
-            } else {
-                theme.background
-            },
-            border: theme.border,
+            surface,
+            panel,
+            control,
+            border,
             foreground: theme.foreground,
             muted_foreground,
             on_surface_muted,
-            accent: theme.accent,
+            accent,
             accent_foreground: theme.accent_foreground,
             hover: theme.foreground.opacity(HOVER_OPACITY),
             accent_tile: theme.accent_foreground.opacity(ACCENT_TILE_OPACITY),
@@ -425,31 +469,80 @@ impl UiColors {
 mod tests {
     use super::*;
 
-    /// 校验 `readable_on_panel` 的产出在 30% 暗色面板 + 两种极端壁纸下都醒目。
-    fn assert_readable(text: Hsla, min: f32) {
-        let tint = Rgba::from(hex(0x0a0a0a)).alpha(0.3);
-        let extremes = [WALLPAPER_WHITE.blend(tint), WALLPAPER_BLACK.blend(tint)];
-        let out = readable_on_panel(text, Hsla::from(tint), &extremes, min);
-        // 调整过的产出是不透明的，盖住面板后看到的就是它本身；
-        // 没调整时原样返回半透明色，要按原路叠出实际看到的颜色。
-        let seen = if Rgba::from(out).a >= 1.0 {
-            Rgba::from(out)
-        } else {
-            WALLPAPER_WHITE.blend(flatten_over_panel(Rgba::from(out), tint))
-        };
+    /// 校验 `readable_on_panel` 的产出在给定的底色堆叠下都够醒目。
+    ///
+    /// `panel` 是文字紧贴的那一层，`extremes` 是壁纸取纯白 / 纯黑时的整摞合成色。
+    fn assert_readable(text: Hsla, panel: Rgba, extremes: &[Rgba; 2], min: f32) {
+        let out = Rgba::from(readable_on_panel(text, Hsla::from(panel), extremes, min));
         for wp in extremes {
+            // 调整过的产出是不透明的，盖住面板后看到的就是它本身；
+            // 没调整时原样返回半透明色，要按原路叠出实际看到的颜色。
+            let seen = if out.a >= 1.0 {
+                out
+            } else {
+                wp.blend(flatten_over_panel(out, panel))
+            };
             assert!(
-                contrast(wp.blend(seen), wp) + 1e-3 >= min,
+                contrast(seen, *wp) + 1e-3 >= min,
                 "contrast {wp:?} vs {seen:?} below {min}"
             );
         }
     }
 
+    /// 半透明暗色面板叠在壁纸两种极端上的合成底色。
+    fn panel_extremes(opacity: f32) -> (Rgba, [Rgba; 2]) {
+        let tint = Rgba::from(hex(0x0a0a0a)).alpha(opacity);
+        (
+            tint,
+            [
+                UiColors::stack(WALLPAPER_WHITE, &[tint]),
+                UiColors::stack(WALLPAPER_BLACK, &[tint]),
+            ],
+        )
+    }
+
     #[test]
     fn translucent_dark_theme_strengthens_weak_text() {
-        // 30% 暗色面板叠白壁纸：次要文字 #a3a3a3 糊进底色，必须被调到醒目。
-        assert_readable(hex(0xa3a3a3), MUTED_MIN_CONTRAST);
-        assert_readable(hex(0xa3a3a3).opacity(FAINT_OPACITY), FAINT_MIN_CONTRAST);
+        // 60% 暗色面板叠白壁纸：次要文字 #a3a3a3 会糊进底色，必须被提到目标对比度。
+        let (tint, extremes) = panel_extremes(0.6);
+        assert_readable(hex(0xa3a3a3), tint, &extremes, MUTED_MIN_CONTRAST);
+        assert_readable(
+            hex(0xa3a3a3).opacity(FAINT_OPACITY),
+            tint,
+            &extremes,
+            FAINT_MIN_CONTRAST,
+        );
+
+        // 30% 时面板正好夹在白底和黑底中间：白底要求字更黑、黑底要求字更亮，
+        // 目标值在数学上不存在，只能取两者均衡点（约 3.1 倍）。守一个下界即可，
+        // 原来的 #a3a3a3 在那儿只有 1.2 倍。
+        let (tint, extremes) = panel_extremes(0.3);
+        assert_readable(hex(0xa3a3a3), tint, &extremes, 3.0);
+        assert_readable(
+            hex(0xa3a3a3).opacity(FAINT_OPACITY),
+            tint,
+            &extremes,
+            FAINT_MIN_CONTRAST,
+        );
+    }
+
+    #[test]
+    fn muted_text_on_veiled_cards_stays_readable() {
+        // 卡片是固定浓度的纱：任何面板透明度下，卡片上的次要文字都得读得清。
+        for opacity in [0.3, 0.6, 0.78, 1.0] {
+            let (tint, _) = panel_extremes(opacity);
+            let surface = Rgba::from(hex(0x262626)).alpha(SURFACE_VEIL);
+            let extremes = [
+                UiColors::stack(WALLPAPER_WHITE, &[tint, surface]),
+                UiColors::stack(WALLPAPER_BLACK, &[tint, surface]),
+            ];
+            assert_readable(
+                hex(0xa3a3a3),
+                surface,
+                &extremes,
+                SURFACE_MUTED_MIN_CONTRAST,
+            );
+        }
     }
 
     #[test]
@@ -462,25 +555,6 @@ mod tests {
             Rgba::from(readable_on_panel(text, bg, &extremes, MUTED_MIN_CONTRAST)),
             Rgba::from(text)
         );
-    }
-
-    #[test]
-    fn translucent_dark_card_keeps_muted_text() {
-        // 60% 暗色面板：卡片（surface 叠面板）的有效底色比裸面板更暗，
-        // 次要文字 #a3a3a3 叠上去对比度本来够，不该被调亮成发白的灰。
-        let tint = Rgba::from(hex(0x0a0a0a)).alpha(0.6);
-        let surface = Rgba::from(hex(0x262626)).alpha(0.6);
-        let card_extremes = [
-            UiColors::stack(WALLPAPER_WHITE, &[tint, surface]),
-            UiColors::stack(WALLPAPER_BLACK, &[tint, surface]),
-        ];
-        let out = readable_on_panel(
-            hex(0xa3a3a3),
-            Hsla::from(surface),
-            &card_extremes,
-            MUTED_MIN_CONTRAST,
-        );
-        assert_eq!(Rgba::from(out), Rgba::from(hex(0xa3a3a3)));
     }
 
     #[test]
