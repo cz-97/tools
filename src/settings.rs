@@ -88,6 +88,8 @@ pub struct Settings {
     pub launch_at_login: bool,
     /// 收起面板后还能记住原页面多少秒。0 表示每次都回命令列表。
     pub resume_seconds: u32,
+    /// 唤出面板的全局快捷键，形如 `ctrl+Space`；`None` 表示不绑，只能从托盘打开。
+    pub summon_shortcut: Option<String>,
     /// 每条命令的状态，键是（子模块键, 命令 id）。
     pub commands: BTreeMap<(String, String), CommandSettings>,
 }
@@ -108,7 +110,14 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 ";
 
+/// 「唤出热键不绑」在数据库里写成的值。
+///
+/// 不能写空串：设置行不存在时读的是默认值，存的这一行必须在两种意思之间分得清。
+const SUMMON_NONE: &str = "none";
+
 impl Settings {
+    /// 全新安装时唤出面板用的快捷键。
+    pub const SUMMON_DEFAULT: &str = "ctrl+Space";
     /// 外观页能给的搜索框最低高度。
     pub const SEARCH_HEIGHT_MIN: u32 = 24;
     /// 外观页能给的搜索框最高高度。
@@ -250,6 +259,10 @@ impl Settings {
                             settings.resume_seconds = seconds;
                         }
                     }
+                    // 空值写成 "none"：这一行是「用户明确不绑」，不能读成默认值。
+                    "summon_shortcut" => {
+                        settings.summon_shortcut = (value != SUMMON_NONE).then_some(value);
+                    }
                     _ => {}
                 }
             }
@@ -296,6 +309,10 @@ impl Settings {
                 u8::from(self.launch_at_login).to_string()
             ])?;
             insert.execute(params!["resume_seconds", self.resume_seconds.to_string()])?;
+            insert.execute(params![
+                "summon_shortcut",
+                self.summon_shortcut.as_deref().unwrap_or(SUMMON_NONE)
+            ])?;
             if let Some(y) = self.window_y {
                 insert.execute(params!["window_y", y.to_string()])?;
             }
@@ -363,6 +380,11 @@ impl Settings {
         self.state_mut(section, id).shortcut = shortcut;
     }
 
+    /// 改唤出面板的热键；`None` 表示以后不绑。
+    pub fn set_summon_shortcut(&mut self, shortcut: Option<String>) {
+        self.summon_shortcut = shortcut;
+    }
+
     /// 这条命令存下来的记录——用户动过才有。
     fn lookup(&self, section: &str, id: &str) -> Option<&CommandSettings> {
         self.commands.get(&(section.to_string(), id.to_string()))
@@ -396,6 +418,7 @@ impl Default for Settings {
             search_height: Self::SEARCH_HEIGHT_DEFAULT,
             launch_at_login: false,
             resume_seconds: 0,
+            summon_shortcut: Some(Settings::SUMMON_DEFAULT.to_string()),
             commands: BTreeMap::new(),
         }
     }
@@ -428,6 +451,7 @@ mod tests {
             "program-folder",
             Some("ctrl+alt+KeyP".to_string()),
         );
+        settings.set_summon_shortcut(Some("ctrl+alt+Space".to_string()));
         for _ in 0..3 {
             settings.count_use("system", "program-folder");
         }
@@ -535,5 +559,32 @@ mod tests {
         let mut settings = Settings::read(&connection).expect("读取").expect("有数据");
         settings.tidy();
         assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
+    }
+
+    #[test]
+    fn an_unbound_summon_shortcut_stays_unbound_across_a_round_trip() {
+        let mut settings = Settings::default();
+        settings.set_summon_shortcut(None);
+        let connection = database();
+        settings.write(&connection).expect("写入");
+        let read = Settings::read(&connection).expect("读取").expect("有数据");
+        assert_eq!(read.summon_shortcut, None);
+    }
+
+    #[test]
+    fn a_database_without_a_summon_line_reads_the_default() {
+        // 老库没有这一行：应当读成默认的 Ctrl + Space，而不是「不绑」。
+        let connection = database();
+        connection
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('theme', 'dark')",
+                [],
+            )
+            .expect("插入");
+        let settings = Settings::read(&connection).expect("读取").expect("有数据");
+        assert_eq!(
+            settings.summon_shortcut.as_deref(),
+            Some(Settings::SUMMON_DEFAULT)
+        );
     }
 }

@@ -55,9 +55,10 @@ pub mod launcher {
 
 /// 命令页（设置里的「命令」标签）。
 pub mod commands_page {
-    /// 右侧列表上方的一行标题。
+    /// 右侧列表上方的一行标题。顺带把快捷键按钮的两个操作说清楚：
+    /// 右键没有提示、也没有别的入口，不写在明处就只能靠猜。
     pub fn caption(section: &str) -> String {
-        format!("{section}的命令")
+        format!("{section}的命令\u{2002}\u{00b7}\u{2002}左键录制，右键清除")
     }
     /// 该子模块下没有任何命令时的一行字。
     pub const EMPTY: &str = "这个子模块还没有命令";
@@ -73,6 +74,10 @@ pub mod commands_page {
     pub const SHORTCUT_EMPTY: &str = "快捷键";
     /// 录制快捷键时按钮上显示的字。
     pub const RECORDING: &str = "按下组合键\u{2026}";
+    /// 录制时按到一组已经被占用的键：按钮上换成这句话。
+    pub fn conflict(owner: &str) -> String {
+        format!("已被\u{201c}{owner}\u{201d}占用")
+    }
 }
 
 /// 设置页里的各项文案。
@@ -80,7 +85,9 @@ pub mod settings_page {
     /// 系统页：全局快捷键的标题。
     pub const HOTKEY_NAME: &str = "全局快捷键";
     /// 系统页：全局快捷键的说明。
-    pub const HOTKEY_DESCRIPTION: &str = "在任意窗口唤出面板";
+    pub const HOTKEY_DESCRIPTION: &str = "在任意窗口唤出面板；左键录制，右键清除";
+    /// 系统页：唤出热键没绑时按钮上的字。
+    pub const HOTKEY_UNBOUND: &str = "未绑定";
     /// 系统页：开机启动的标题。
     pub const AUTOSTART_NAME: &str = "开机启动";
     /// 系统页：开机启动的说明。

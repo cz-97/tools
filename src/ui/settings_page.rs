@@ -4,16 +4,19 @@ use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, IntoElement, SharedString, Window, div, prelude::*, px,
+    AnyElement, App, ClickEvent, Context, IntoElement, MouseDownEvent, SharedString, Window, div,
+    prelude::*, px,
 };
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
 
 use crate::actions;
 use crate::app::stored_settings;
+use crate::shortcuts::shortcut_label;
 use crate::strings;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_page;
-use crate::ui::launcher::{Launcher, SIDEBAR_WIDTH, SettingsTab};
+use crate::ui::commands_page::shortcut_button;
+use crate::ui::launcher::{Launcher, RecordTarget, SIDEBAR_WIDTH, SettingsTab};
 
 /// 画出整个设置页。
 pub(crate) fn render(
@@ -61,7 +64,7 @@ pub(crate) fn render(
         }));
 
     let content = match tab {
-        SettingsTab::System => system_page(settings, colors, cx),
+        SettingsTab::System => system_page(launcher, settings, colors, cx),
         SettingsTab::Commands => commands_page::render(launcher, colors, cx).into_any_element(),
         SettingsTab::Appearance => appearance_page(launcher, settings, colors, cx),
         SettingsTab::About => about_page(colors, cx),
@@ -86,14 +89,19 @@ pub(crate) fn render(
 }
 
 /// 系统页。
-fn system_page(settings: Settings, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
+fn system_page(
+    launcher: &Launcher,
+    settings: Settings,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> AnyElement {
     v_flex()
         .gap_1()
         .child(settings_row(
             strings::settings_page::HOTKEY_NAME,
             strings::settings_page::HOTKEY_DESCRIPTION,
             colors,
-            value_label(crate::shortcuts::SUMMON_LABEL, colors),
+            summon_button(launcher, settings.summon_shortcut.as_deref(), colors, cx),
         ))
         .child(settings_row(
             strings::settings_page::AUTOSTART_NAME,
@@ -137,6 +145,42 @@ fn system_page(settings: Settings, colors: UiColors, cx: &Context<Launcher>) -> 
             cx.listener(|_, _, _, cx| actions::quit_launcher(cx)),
         ))
         .into_any_element()
+}
+
+/// 唤出面板的那个热键：和命令页的快捷键按钮一模一样，只是记到唤出热键上。
+fn summon_button(
+    launcher: &Launcher,
+    chord: Option<&str>,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> impl IntoElement {
+    let recording = launcher.recording_summon();
+    let label: SharedString = if recording {
+        launcher
+            .recording_conflict()
+            .map_or_else(
+                || strings::commands_page::RECORDING.to_string(),
+                str::to_string,
+            )
+            .into()
+    } else {
+        chord
+            .map_or_else(
+                || strings::settings_page::HOTKEY_UNBOUND.to_string(),
+                shortcut_label,
+            )
+            .into()
+    };
+    shortcut_button(
+        SharedString::from("summon-shortcut"),
+        label,
+        recording,
+        colors,
+        cx.listener(|launcher, _, _, cx| launcher.toggle_summon_recording(cx)),
+        cx.listener(|launcher, _: &MouseDownEvent, _, cx| {
+            launcher.clear_shortcut(RecordTarget::Summon, cx)
+        }),
+    )
 }
 
 /// 外观页。

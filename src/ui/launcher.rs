@@ -19,7 +19,9 @@ use crate::app::{
     with_launcher,
 };
 use crate::catalogue;
-use crate::shortcuts::{apply_command_shortcuts, chord_from_keystroke};
+use crate::shortcuts::{
+    ShortcutOwner, apply_command_shortcuts, apply_summon_shortcut, chord_from_keystroke,
+};
 use crate::strings;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_list::{ToolDelegate, command_states};
@@ -103,6 +105,35 @@ impl SettingsTab {
     }
 }
 
+/// 录制时按下来的那组键该记到谁头上。
+#[derive(Clone, Copy)]
+pub(crate) enum RecordTarget {
+    /// 唤出面板的全局热键。
+    Summon,
+    /// 某一条命令。
+    Command(&'static catalogue::Command),
+}
+
+impl RecordTarget {
+    /// 两个录制目标是不是同一项。
+    pub(crate) fn same(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Summon, Self::Summon) => true,
+            (Self::Command(a), Self::Command(b)) => std::ptr::eq(a, b),
+            _ => false,
+        }
+    }
+
+    /// 热键现在归的那个对象，是不是就是录制目标本身。
+    fn is_owner(self, owner: ShortcutOwner) -> bool {
+        match (self, owner) {
+            (Self::Summon, ShortcutOwner::Summon) => true,
+            (Self::Command(a), ShortcutOwner::Command(b)) => std::ptr::eq(a, b),
+            _ => false,
+        }
+    }
+}
+
 /// 面板视图。
 pub struct Launcher {
     pub(crate) list: Entity<ListState<ToolDelegate>>,
@@ -122,8 +153,10 @@ pub struct Launcher {
     pub(crate) section: usize,
     /// 透明度滑动条。滑动的过程只改内存，库在面板收起时统一落盘。
     pub(crate) opacity: Entity<SliderState>,
-    /// 正在录制的命令。
-    recording: Option<&'static catalogue::Command>,
+    /// 正在录制的目标。
+    recording: Option<RecordTarget>,
+    /// 录制期间被拒绝的原因（那个键已经被谁占了）。按键换一组就清掉。
+    conflict: Option<String>,
     /// 跟着视图活着的订阅，丢了输入框就不再上报用户敲了什么。
     _search_events: Subscription,
     _opacity_events: Subscription,
@@ -181,6 +214,7 @@ impl Launcher {
             section: 0,
             opacity,
             recording: None,
+            conflict: None,
             _search_events: search_events,
             _opacity_events: opacity_events,
             _search_observation: search_observation,
@@ -191,9 +225,27 @@ impl Launcher {
         launcher
     }
 
-    /// 正在录制的命令。
-    pub(crate) fn recording(&self) -> Option<&'static catalogue::Command> {
+    /// 正在录制的目标。
+    pub(crate) fn recording(&self) -> Option<RecordTarget> {
         self.recording
+    }
+
+    /// 正在录制的命令；录的是唤出热键时为 `None`。
+    pub(crate) fn recording_command(&self) -> Option<&'static catalogue::Command> {
+        match self.recording {
+            Some(RecordTarget::Command(command)) => Some(command),
+            _ => None,
+        }
+    }
+
+    /// 是不是正在录唤出热键。
+    pub(crate) fn recording_summon(&self) -> bool {
+        matches!(self.recording, Some(RecordTarget::Summon))
+    }
+
+    /// 录制被拒绝的原因（「已被 X 占用」），没冲突时为 `None`。
+    pub(crate) fn recording_conflict(&self) -> Option<&str> {
+        self.conflict.as_deref()
     }
 
     /// 把焦点给搜索框，按键才能进去。
@@ -259,6 +311,7 @@ impl Launcher {
             self.query.clear();
         }
         self.recording = None;
+        self.conflict = None;
         self.refresh_catalogue(cx);
         self.list
             .update(cx, |list, cx| list.set_query("", window, cx));
@@ -331,6 +384,17 @@ impl Launcher {
         if let Page::Settings(tab) = self.page {
             self.last_section = Some((Instant::now(), tab));
         }
+    }
+
+    /// 收起面板前收拾现场：记下停在哪一页，并结束录制。
+    ///
+    /// **录制不能跟着面板一起藏起来**：全局热键分发是按「有没有在录制」决定执行还是
+    /// 报冲突的，面板藏了但录制还在，所有热键都会静默失效——连唤出面板的那一个都
+    /// 按不回来，而按钮早就看不见了。
+    pub(crate) fn leave(&mut self) {
+        self.recording = None;
+        self.conflict = None;
+        self.remember_section();
     }
 
     /// 执行高亮的那条命令。
@@ -474,6 +538,7 @@ impl Launcher {
         }
         self.section = index;
         self.recording = None;
+        self.conflict = None;
         cx.notify();
     }
 
@@ -496,67 +561,134 @@ impl Launcher {
     }
 
     /// 开始听下一组按键，作为这条命令的快捷键；再点一次取消。
-    pub(crate) fn toggle_recording(
+    pub(crate) fn toggle_command_recording(
         &mut self,
         command: &'static catalogue::Command,
         cx: &mut Context<Self>,
     ) {
-        self.recording = if self
-            .recording
-            .is_some_and(|current| std::ptr::eq(current, command))
-        {
+        self.toggle_recording(RecordTarget::Command(command), cx);
+    }
+
+    /// 开始听下一组按键，作为唤出面板的热键；再点一次取消。
+    pub(crate) fn toggle_summon_recording(&mut self, cx: &mut Context<Self>) {
+        self.toggle_recording(RecordTarget::Summon, cx);
+    }
+
+    fn toggle_recording(&mut self, target: RecordTarget, cx: &mut Context<Self>) {
+        self.recording = if self.recording.is_some_and(|current| current.same(target)) {
             None
         } else {
-            Some(command)
+            Some(target)
         };
+        self.conflict = None;
         cx.notify();
     }
 
-    /// 把接下来这一下按键当成正在录制的那条命令的快捷键。
+    /// 把接下来这一下按键当成正在录制的那一项的组合键。
     ///
     /// 只收带修饰键的组合：没有修饰键的会被面板自己吃掉，做全局快捷键没有意义。
+    ///
+    /// **绑之前先查冲突**：这组键要是已经归别的命令（或者唤出热键），就不绑，
+    /// 只在按钮上写一句「已被 X 占用」，录制继续等下一组键。
     pub(crate) fn capture_shortcut(
         &mut self,
         keystroke: &gpui_kit::Keystroke,
         cx: &mut Context<Self>,
     ) {
-        let Some(command) = self.recording else {
+        let Some(target) = self.recording else {
             return;
         };
         match keystroke.key.as_str() {
-            "escape" => self.recording = None,
-            "backspace" | "delete" => {
-                self.set_shortcut(command, None, cx);
+            "escape" => {
                 self.recording = None;
+                self.conflict = None;
+            }
+            "backspace" | "delete" => {
+                self.clear_shortcut(target, cx);
+                self.recording = None;
+                self.conflict = None;
             }
             _ => {
                 let Some(chord) = chord_from_keystroke(keystroke) else {
                     // 这个键用不了，继续等下一组。
                     return;
                 };
-                self.set_shortcut(command, Some(chord), cx);
+                if let Some(owner) = crate::shortcuts::owner_of_chord(&chord, cx) {
+                    self.report_conflict(Some(owner), cx);
+                    return;
+                }
+                self.store_shortcut(target, Some(chord), cx);
                 self.recording = None;
+                self.conflict = None;
             }
         }
         cx.notify();
     }
 
-    /// 给命令绑一个组合键，或者解绑。
-    fn set_shortcut(
+    /// 录制期间按到一组已经被占用的键。
+    ///
+    /// 注册过的全局热键会被系统从焦点窗口那里截走，按键根本到不了 `capture_shortcut`，
+    /// 冲突是从热键事件那条路上报回来的。按的正好是录制目标自己那组键时不算冲突：
+    /// 当作再确认一次，直接收工。
+    pub(crate) fn report_conflict(&mut self, owner: Option<ShortcutOwner>, cx: &mut Context<Self>) {
+        let Some(target) = self.recording else {
+            return;
+        };
+        let Some(owner) = owner else {
+            return;
+        };
+        if target.is_owner(owner) {
+            self.recording = None;
+            self.conflict = None;
+        } else {
+            self.conflict = Some(strings::commands_page::conflict(owner.label()));
+        }
+        cx.notify();
+    }
+
+    /// 清掉一项的快捷键（右键按钮，或者录制中按 Backspace 都走这儿）。
+    ///
+    /// 清的就是正在录的那一项时，录制也一起结束：按钮上不该再挂着「按下组合键…」。
+    pub(crate) fn clear_shortcut(&mut self, target: RecordTarget, cx: &mut Context<Self>) {
+        self.store_shortcut(target, None, cx);
+        if self.recording.is_some_and(|current| current.same(target)) {
+            self.recording = None;
+            self.conflict = None;
+            cx.notify();
+        }
+    }
+
+    /// 存一组组合键，或者清空，并让全局热键跟着变。
+    fn store_shortcut(
         &mut self,
-        command: &'static catalogue::Command,
+        target: RecordTarget,
         chord: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let mut settings = stored_settings(cx);
-        let (section, id) = (command.section.key(), command.id);
-        if settings.command_shortcut(section, id).map(str::to_string) == chord {
-            return;
+        match target {
+            RecordTarget::Summon => {
+                if settings.summon_shortcut == chord {
+                    return;
+                }
+                settings.set_summon_shortcut(chord);
+                store_settings(settings, cx);
+                if !apply_summon_shortcut(cx) {
+                    eprintln!("gpui-tools: 唤出热键这次没能绑定，要等下次启动再试");
+                }
+            }
+            RecordTarget::Command(command) => {
+                let (section, id) = (command.section.key(), command.id);
+                if settings.command_shortcut(section, id).map(str::to_string) == chord {
+                    return;
+                }
+                settings.set_command_shortcut(section, id, chord);
+                store_settings(settings, cx);
+                apply_command_shortcuts(cx);
+                self.refresh_catalogue(cx);
+            }
         }
-        settings.set_command_shortcut(section, id, chord);
-        store_settings(settings, cx);
-        apply_command_shortcuts(cx);
-        self.refresh_catalogue(cx);
+        self.conflict = None;
         cx.notify();
     }
 

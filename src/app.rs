@@ -213,7 +213,7 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
         return;
     }
     // 录制快捷键时所有按键都归录制：否则字符会漏进藏着的搜索框。
-    if recording_command(cx).is_some() {
+    if recording_target(cx).is_some() {
         let keystroke = event.keystroke.clone();
         with_launcher(cx, move |launcher, _window, cx| {
             launcher.capture_shortcut(&keystroke, cx)
@@ -241,15 +241,20 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
     }
 }
 
-/// 正在录制的那个命令，直接从面板上读。
+/// 正在录制的目标，直接从面板上读。
 ///
 /// 按键拦截要当场决定收不收这个键，走不了其余回调那套延后一跳。
-fn recording_command(cx: &App) -> Option<&'static crate::catalogue::Command> {
+fn recording_target(cx: &App) -> Option<crate::ui::launcher::RecordTarget> {
     let handle = cx.try_global::<LauncherHandle>()?;
     handle
         .view
         .read_with(cx, |launcher, _| launcher.recording())
         .unwrap_or(None)
+}
+
+/// 面板是不是正在录快捷键。全局热键分发靠它决定「执行」还是「报冲突」。
+pub(crate) fn recording_shortcut(cx: &App) -> bool {
+    recording_target(cx).is_some()
 }
 
 /// `window` 是不是面板，而不是别的窗口。
@@ -306,8 +311,8 @@ pub fn show_launcher(cx: &mut App) {
 
 /// 收起面板，但不销毁。
 pub fn hide_launcher(cx: &mut App) {
-    // 窗口收起来之前先记下离开的是哪一页，保留期内再唤出要回到那儿。
-    with_launcher(cx, |launcher, _window, _cx| launcher.remember_section());
+    // 窗口收起来之前先记下离开的是哪一页，并结束还在进行的录制。
+    with_launcher(cx, |launcher, _window, _cx| launcher.leave());
     if let Some(panel) = cx.try_global::<LauncherPanel>() {
         panel.window.hide();
     }

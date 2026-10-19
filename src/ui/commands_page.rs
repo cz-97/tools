@@ -2,7 +2,10 @@
 
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, h_flex, v_flex};
-use gpui_kit::{Context, IntoElement, SharedString, div, prelude::*, px};
+use gpui_kit::{
+    App, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, SharedString, Window, div,
+    prelude::*, px,
+};
 use gpui_tools::settings::CommandSettings;
 
 use crate::app::stored_settings;
@@ -10,7 +13,7 @@ use crate::catalogue;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
 use crate::ui::colors::UiColors;
-use crate::ui::launcher::{Launcher, MODULE_WIDTH};
+use crate::ui::launcher::{Launcher, MODULE_WIDTH, RecordTarget};
 
 /// 画出整个命令页。
 ///
@@ -92,9 +95,7 @@ pub(crate) fn render(
             command_row(
                 command,
                 &settings.command(command.section.key(), command.id),
-                launcher
-                    .recording()
-                    .is_some_and(|current| std::ptr::eq(current, command)),
+                launcher,
                 colors,
                 cx,
             )
@@ -141,40 +142,37 @@ pub(crate) fn render(
 fn command_row(
     command: &'static catalogue::Command,
     state: &CommandSettings,
-    recording: bool,
+    launcher: &Launcher,
     colors: UiColors,
     cx: &Context<Launcher>,
 ) -> impl IntoElement {
-    let shortcut = if recording {
-        div()
-            .px_2()
-            .py_1()
-            .rounded(px(6.))
-            .bg(colors.accent)
-            .text_xs()
-            .text_color(colors.accent_foreground)
-            .child(strings::commands_page::RECORDING)
-            .into_any_element()
+    let recording = launcher
+        .recording_command()
+        .is_some_and(|current| std::ptr::eq(current, command));
+    let label: SharedString = if recording {
+        launcher
+            .recording_conflict()
+            .map_or_else(
+                || strings::commands_page::RECORDING.to_string(),
+                str::to_string,
+            )
+            .into()
     } else {
-        let label = match state.shortcut.as_deref() {
-            Some(chord) => shortcut_label(chord),
-            None => strings::commands_page::SHORTCUT_EMPTY.to_string(),
-        };
-        div()
-            .id(SharedString::from(format!("shortcut-{}", command.id)))
-            .px_2()
-            .py_1()
-            .rounded(px(6.))
-            .border_1()
-            .border_color(colors.surface)
-            .text_xs()
-            .cursor_pointer()
-            .text_color(colors.on_surface_muted)
-            .hover(move |style| style.bg(colors.hover))
-            .on_click(cx.listener(move |launcher, _, _, cx| launcher.toggle_recording(command, cx)))
-            .child(label)
-            .into_any_element()
+        match state.shortcut.as_deref() {
+            Some(chord) => shortcut_label(chord).into(),
+            None => strings::commands_page::SHORTCUT_EMPTY.into(),
+        }
     };
+    let shortcut = shortcut_button(
+        SharedString::from(format!("shortcut-{}", command.id)),
+        label,
+        recording,
+        colors,
+        cx.listener(move |launcher, _, _, cx| launcher.toggle_command_recording(command, cx)),
+        cx.listener(move |launcher, _: &MouseDownEvent, _, cx| {
+            launcher.clear_shortcut(RecordTarget::Command(command), cx)
+        }),
+    );
 
     h_flex()
         .w_full()
@@ -236,4 +234,42 @@ fn command_row(
                     })),
             ),
         )
+}
+
+/// 快捷键按钮：左键开始/取消录制，右键清空。
+///
+/// 命令页和系统页的「全局快捷键」共用这一个：两处交互必须一模一样，
+/// 不然用户得记两套规矩。
+pub(crate) fn shortcut_button(
+    id: SharedString,
+    label: SharedString,
+    recording: bool,
+    colors: UiColors,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_clear: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .px_2()
+        .py_1()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(colors.surface)
+        .text_xs()
+        .max_w(px(240.))
+        .overflow_hidden()
+        .text_ellipsis()
+        .cursor_pointer()
+        .text_color(if recording {
+            colors.accent_foreground
+        } else {
+            colors.on_surface_muted
+        })
+        .when(recording, move |this| this.bg(colors.accent))
+        .when(!recording, move |this| {
+            this.hover(move |style| style.bg(colors.hover))
+        })
+        .on_click(on_click)
+        .on_mouse_down(MouseButton::Right, on_clear)
+        .child(label)
 }

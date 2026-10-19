@@ -2,6 +2,9 @@
 //!
 //! 按键组合在文件里存成 `keyboard-types` 的键名（`ctrl+alt+KeyP`），界面显示时才
 //! 转成人读的样子（`Ctrl + Alt + P`）。
+//!
+//! 唤出热键和命令热键平起平坐：都可以改、都可以不绑，冲突也只认一份设置
+//! （`owner_of_chord`）。
 
 use std::cell::RefCell;
 use std::str::FromStr as _;
@@ -11,11 +14,9 @@ use global_hotkey::GlobalHotKeyManager;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use gpui_kit::{App, Keystroke};
 
-use crate::app::{run_command, stored_settings};
+use crate::app::{run_command, stored_settings, with_launcher};
 use crate::catalogue;
-
-/// 唤出面板的热键，设置页里按这个字符串显示。
-pub const SUMMON_LABEL: &str = "Ctrl + Space";
+use crate::strings;
 
 /// 轮询全局热键事件的间隔。
 const EVENT_POLL: Duration = Duration::from_millis(80);
@@ -23,16 +24,40 @@ const EVENT_POLL: Duration = Duration::from_millis(80);
 const SUMMON_RETRIES: u8 = 15;
 const SUMMON_RETRY_DELAY: Duration = Duration::from_millis(200);
 
+/// 一个热键现在归谁。录制时拿它判断「这组键已经被占了」。
+#[derive(Clone, Copy)]
+pub(crate) enum ShortcutOwner {
+    /// 唤出面板的那个热键。
+    Summon,
+    /// 某一条命令。
+    Command(&'static catalogue::Command),
+}
+
+impl ShortcutOwner {
+    /// 界面上怎么称呼这个占用者。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Summon => strings::settings_page::HOTKEY_NAME,
+            Self::Command(command) => command.name,
+        }
+    }
+}
+
 /// 本进程占着的全局热键。
 pub struct Shortcuts {
     manager: GlobalHotKeyManager,
+    /// 唤出面板的热键，以及它对应的组合键。
+    ///
+    /// 存一份组合键是为了判断「要不要重绑」：`HotKey` 反解不回字符串，而重绑要先注销
+    /// 旧的，判断错了就会把好好的热键弄丢。
+    summon: RefCell<Option<(String, HotKey)>>,
     /// 各命令当前绑定的组合键，以及它驱动的命令。
     pub(crate) commands: RefCell<Vec<(HotKey, &'static catalogue::Command)>>,
 }
 
 impl gpui_kit::Global for Shortcuts {}
 
-/// 注册唤出热键，然后开始收全局热键事件。
+/// 按设置注册唤出热键，然后开始收全局热键事件。
 ///
 /// 注册可能被拒（同一个键被别的程序占着，或者「重启」时旧的进程还没退干净），
 /// 所以失败会等一会儿重试，重试期间面板仍然能从托盘打开。
@@ -45,31 +70,26 @@ pub fn install(cx: &mut App) {
         }
     };
 
-    let summon = HotKey::new(Some(Modifiers::CONTROL), Code::Space);
-    let summon_id = summon.id();
-    let registered = manager.register(summon).is_ok();
     cx.set_global(Shortcuts {
         manager,
+        summon: RefCell::new(None),
         commands: RefCell::new(Vec::new()),
     });
-    // 先按当前的设置绑一遍命令快捷键，免得第一下按键落空。
+    // 先按当前的设置绑一遍，免得第一下按键落空。
+    let summon_ready = apply_summon_shortcut(cx);
     apply_command_shortcuts(cx);
 
     cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
-        let mut attempts = u8::from(!registered);
+        let mut attempts = u8::from(!summon_ready);
         while attempts > 0 && attempts < SUMMON_RETRIES {
             cx.background_executor().timer(SUMMON_RETRY_DELAY).await;
             attempts += 1;
-            let taken = cx.update(|cx| {
-                cx.try_global::<Shortcuts>()
-                    .is_some_and(|shortcuts| shortcuts.manager.register(summon).is_ok())
-            });
-            if taken {
+            if cx.update(apply_summon_shortcut) {
                 break;
             }
         }
         if attempts >= SUMMON_RETRIES {
-            eprintln!("gpui-tools: {SUMMON_LABEL} 注册失败，可能被别的程序占用了");
+            eprintln!("gpui-tools: 唤出热键注册失败，可能被别的程序占用了");
         }
 
         loop {
@@ -78,27 +98,118 @@ pub fn install(cx: &mut App) {
                 if event.state != global_hotkey::HotKeyState::Pressed {
                     continue;
                 }
-                if event.id == summon_id {
-                    cx.update(crate::app::show_launcher);
-                    continue;
-                }
-                cx.update(|cx| {
-                    let command = cx.try_global::<Shortcuts>().and_then(|shortcuts| {
-                        shortcuts
-                            .commands
-                            .borrow()
-                            .iter()
-                            .find(|(hotkey, _)| hotkey.id() == event.id)
-                            .map(|(_, command)| *command)
-                    });
-                    if let Some(command) = command {
-                        run_command(command, cx);
-                    }
-                });
+                cx.update(|cx| dispatch_hotkey(event.id, cx));
             }
         }
     })
     .detach();
+}
+
+/// 一个热键落到了谁身上：执行它，或者（录制中）报一声冲突。
+fn dispatch_hotkey(id: u32, cx: &mut App) {
+    let owner = hotkey_owner(id, cx);
+    // 录制期间一个热键都不许落地：系统把已注册的组合键从焦点窗口那里截走了，
+    // 真执行起来就是「想录的键跑去执行了别人的命令」，面板还可能被它关掉。
+    // 所以这里只把占用者报回去，录制继续，等用户换一组键。
+    if crate::app::recording_shortcut(cx) {
+        with_launcher(cx, move |launcher, _window, cx| {
+            launcher.report_conflict(owner, cx);
+        });
+        return;
+    }
+    match owner {
+        Some(ShortcutOwner::Summon) => crate::app::show_launcher(cx),
+        Some(ShortcutOwner::Command(command)) => run_command(command, cx),
+        None => {}
+    }
+}
+
+/// 这个热键 id 现在由谁占着。
+fn hotkey_owner(id: u32, cx: &App) -> Option<ShortcutOwner> {
+    let shortcuts = cx.try_global::<Shortcuts>()?;
+    if shortcuts
+        .summon
+        .borrow()
+        .as_ref()
+        .is_some_and(|(_, hotkey)| hotkey.id() == id)
+    {
+        return Some(ShortcutOwner::Summon);
+    }
+    shortcuts
+        .commands
+        .borrow()
+        .iter()
+        .find(|(hotkey, _)| hotkey.id() == id)
+        .map(|(_, command)| ShortcutOwner::Command(command))
+}
+
+/// 设置里这组组合键归谁——录制时先查冲突，别等绑定完才发现键被占了。
+///
+/// 只看设置、不看注册结果：热键被系统拒绝时注册表里没有它，但用户的意图仍然是
+/// 「这组键属于那条命令」。
+pub(crate) fn owner_of_chord(chord: &str, cx: &App) -> Option<ShortcutOwner> {
+    let settings = stored_settings(cx);
+    find_owner(
+        chord,
+        settings.summon_shortcut.as_deref(),
+        catalogue::COMMANDS.iter().map(|command| {
+            (
+                command,
+                settings.command_shortcut(command.section.key(), command.id),
+            )
+        }),
+    )
+}
+
+/// `find_owner` 的纯逻辑部分，不碰 App，好在测试里直接喂数据。
+fn find_owner<'a>(
+    chord: &str,
+    summon: Option<&str>,
+    commands: impl Iterator<Item = (&'static catalogue::Command, Option<&'a str>)>,
+) -> Option<ShortcutOwner> {
+    if summon == Some(chord) {
+        return Some(ShortcutOwner::Summon);
+    }
+    commands
+        .into_iter()
+        .find(|(_, shortcut)| *shortcut == Some(chord))
+        .map(|(command, _)| ShortcutOwner::Command(command))
+}
+
+/// 按设置重新绑定唤出热键，返回「当前状态是否已经就位」。
+///
+/// 不绑（`None`）也算就位：那种情况下托盘才是入口。
+pub fn apply_summon_shortcut(cx: &mut App) -> bool {
+    let wanted = stored_settings(cx).summon_shortcut;
+    let Some(shortcuts) = cx.try_global::<Shortcuts>() else {
+        return false;
+    };
+    let mut summon = shortcuts.summon.borrow_mut();
+    if summon.as_ref().map(|(chord, _)| chord.as_str()) == wanted.as_deref() {
+        return true;
+    }
+    if let Some((_, hotkey)) = summon.take()
+        && let Err(error) = shortcuts.manager.unregister(hotkey)
+    {
+        eprintln!("gpui-tools: 释放旧唤出热键失败：{error}");
+    }
+    let Some(chord) = wanted else {
+        return true;
+    };
+    let Some(hotkey) = parse_chord(&chord) else {
+        eprintln!("gpui-tools: 认不出唤出热键 {chord}");
+        return false;
+    };
+    match shortcuts.manager.register(hotkey) {
+        Ok(()) => {
+            *summon = Some((chord, hotkey));
+            true
+        }
+        Err(error) => {
+            eprintln!("gpui-tools: 唤出热键 {chord} 注册失败：{error}");
+            false
+        }
+    }
 }
 
 /// 按设置重建命令快捷键。
@@ -259,5 +370,38 @@ fn part_label(code: &str) -> String {
         "ArrowUp" => "\u{2191}".to_string(),
         "ArrowDown" => "\u{2193}".to_string(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalogue;
+
+    #[test]
+    fn a_chord_belongs_to_the_first_claimant() {
+        let first = &catalogue::COMMANDS[0];
+        let second = &catalogue::COMMANDS[1];
+        let owners = [(first, Some("ctrl+KeyP")), (second, Some("ctrl+KeyP"))];
+        match find_owner("ctrl+KeyP", None, owners.into_iter()) {
+            Some(ShortcutOwner::Command(command)) => assert_eq!(command.id, first.id),
+            _ => panic!("这组键应该归先占住的那条命令"),
+        }
+    }
+
+    #[test]
+    fn the_summon_hotkey_claims_its_chord_before_commands() {
+        let owners = [(&catalogue::COMMANDS[0], Some("ctrl+Space"))];
+        assert!(matches!(
+            find_owner("ctrl+Space", Some("ctrl+Space"), owners.into_iter()),
+            Some(ShortcutOwner::Summon)
+        ));
+    }
+
+    #[test]
+    fn a_free_chord_has_no_owner() {
+        let owners = [(&catalogue::COMMANDS[0], None)];
+        assert!(find_owner("ctrl+KeyP", None, owners.into_iter()).is_none());
+        assert!(find_owner("ctrl+KeyP", Some("ctrl+Space"), owners.into_iter()).is_none());
     }
 }

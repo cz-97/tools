@@ -33,7 +33,8 @@
 - 命令的执行。
 - 设置页（面板内的 `Page::Settings`）与设置持久化（`src/settings.rs`，TOML）。
 - 命令目录（`src/catalogue.rs`）：模块、命令、搜索词与动作都声明在那里。
-- 每个命令的启用状态、调用次数与全局快捷键（`src/main.rs` 的 `Shortcuts` 全局）。
+- 每个命令的启用状态、调用次数与全局快捷键，以及唤出面板的热键（`src/shortcuts.rs` 的
+  `Shortcuts` 全局）。
 - 登录启动项的读写（`src/autostart.rs`，HKCU 下的 Run 键，无需提权）。
 - 应用图标：`src/logo.rs` 画，`build.rs` 嵌进 exe（见 5.4）。
 - 系统托盘。
@@ -142,7 +143,9 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
 
 - `settings` 里的键：`theme`(system/light/dark)、`window_y`（面板顶边物理像素，只记纵坐标）、
   `search_height`（24–56，页头高度 = 高度 + 26、最小 52）、`launch_at_login`（**注册表才是
-  事实**，启动时覆盖）、`resume_seconds`（子页面保持秒数）。
+  事实**，启动时覆盖）、`resume_seconds`（子页面保持秒数）、`summon_shortcut`（唤出面板的
+  热键，值同下面的 `shortcut`；写 `none` 表示**用户明确不绑**，只能从托盘打开——这一行
+  不能读成默认值）。
 - **`commands` 的主键是 `(section, id)`**：`section` = `Section::key()`（`system` / `commands` /
   `appearance` / `about`），两个子模块可以有同名的命令而互不干扰。`Section::key()` 与
   `Command::id` 都是持久化主键的一半，**发布后都不要改**（改标签不影响，改 key 会丢数据）。
@@ -180,10 +183,20 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
 每行：图标 + 名称/描述 + 调用次数 + 快捷键按钮 + 启用开关。左侧每项右侧显示
 「启用数/总数」。
 
-- 点快捷键按钮进入**录制**状态（`Launcher::recording`），下一组按键就是答案：
-  `Esc` 取消、`Backspace`/`Delete` 清除、没有修饰键的组合被忽略（否则会把面板里打字的
-  按键当成全局快捷键）。录制期间 `intercept_keystrokes` **吞掉所有按键**，否则字符会漏进
-  隐藏着的搜索框。
+- 点快捷键按钮进入**录制**状态（`Launcher::recording`，类型是 `RecordTarget`：某条命令，
+  或者唤出面板的那个热键），下一组按键就是答案：`Esc` 取消、`Backspace`/`Delete` 清除、
+  没有修饰键的组合被忽略（否则会把面板里打字的按键当成全局快捷键）。**右键按钮直接清除**
+  （命令页和系统页的「全局快捷键」共用 `commands_page::shortcut_button`，两处交互必须一致）。
+  录制期间 `intercept_keystrokes` **吞掉所有按键**，否则字符会漏进隐藏着的搜索框。
+- **绑之前先查冲突**（`shortcuts::owner_of_chord`，唤出热键 + 所有命令的设置值一起看）：
+  这组键已经归别人就不绑、不覆盖，按钮上写「已被 X 占用」，录制继续等下一组键。
+- **录制期间全局热键一律不执行**（`app::recording_shortcut`）：注册过的键会被系统从焦点
+  窗口截走，按键到不了 `capture_shortcut`，冲突是从热键事件那条路上报回来的
+  （`Launcher::report_conflict`）。不拦住的话，想录的键会跑去执行别人的命令。
+- **面板隐藏时必须结束录制**（`Launcher::leave`）：录制状态留着的话，热键分发会一直当
+  「在录制」而全部静默失效，连唤出面板的那一个都按不回来。
+- 唤出热键和命令热键同源：`settings.summon_shortcut` + `apply_summon_shortcut`，可以改、
+  可以不绑（托盘兜底）；`HotKey` 反解不回字符串，所以 `Shortcuts` 里连组合键一起存。
 - 键名用 `keyboard-types` 的 `Code`（`KeyP`），显示时才友好化。`chord_from_keystroke`
   只认字母、数字、`f1..f24` 和一张命名键表，其它键直接不响应。
 - 改快捷键后 `apply_command_shortcuts` **全部注销再全量注册**：集合很小，局部更新反而要
