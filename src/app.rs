@@ -317,9 +317,12 @@ pub fn apply_theme(choice: ColorScheme, window: Option<&mut Window>, cx: &mut Ap
         ColorScheme::Light => Theme::change(ThemeMode::Light, window, cx),
         ColorScheme::Dark => Theme::change(ThemeMode::Dark, window, cx),
     }
+    // 换主题会按内置主题重建颜色，我们自己的基础色得再盖一遍。
+    crate::ui::colors::apply(cx);
     crate::tray_theme::apply(choice);
     refresh_tray_icon(cx);
     refresh_tray_menu(cx);
+    apply_root_background(cx);
 }
 
 /// 当前生效的设置。
@@ -396,6 +399,7 @@ fn refresh_tray_icon(cx: &mut App) {
 
 /// 主题换了一次之后要重刷的东西：托盘，以及 Root 的那层底色。
 fn refresh_on_theme_change(cx: &mut App) {
+    crate::ui::colors::apply(cx);
     crate::tray_theme::apply(stored_settings(cx).theme);
     refresh_tray_icon(cx);
     refresh_tray_menu(cx);
