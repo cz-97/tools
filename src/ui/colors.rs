@@ -13,7 +13,7 @@
 //! 绘制代码只从 `UiColors` 取色，不直接读主题、也不写透明度字面量。
 
 use gpui_kit::component::{ActiveTheme as _, Theme};
-use gpui_kit::{App, Hsla, rgb};
+use gpui_kit::{App, Hsla, Rgba, rgb};
 
 // ---------------------------------------------------------------------------
 // 1. 基础色：要换观感，改这一段
@@ -88,8 +88,15 @@ fn palette(dark: bool) -> Palette {
 ///
 /// `Theme::change` / `sync_system_appearance` 每次都会按内置主题重建颜色，所以换主题、
 /// 跟随系统切换之后都要再调一次（见 `app::apply_theme` 与主题观察者）。
+///
+/// **已经是这套值时就什么都不写。** `global_mut` 每调用一次都会触发一遍全局观察者，
+/// 而主题观察者又会调到这里——不拦住的话就是「观察者 → 写主题 → 观察者」的转圈，
+/// 面板直接卡死（0.9.1 踩过）。
 pub(crate) fn apply(cx: &mut App) {
     let palette = palette(cx.theme().is_dark());
+    if matches(cx.theme(), &palette) {
+        return;
+    }
     let theme = cx.global_mut::<Theme>();
     theme.background = hex(palette.background);
     theme.foreground = hex(palette.foreground);
@@ -98,6 +105,26 @@ pub(crate) fn apply(cx: &mut App) {
     theme.muted_foreground = hex(palette.muted_foreground);
     theme.accent = hex(palette.accent);
     theme.accent_foreground = hex(palette.accent_foreground);
+}
+
+/// 主题里的颜色是不是已经等于这套调色板。
+///
+/// HSL 来回换算有浮点误差，按分量比，留一点容差。
+fn matches(theme: &Theme, palette: &Palette) -> bool {
+    fn same(a: Hsla, b: Hsla) -> bool {
+        let (a, b) = (Rgba::from(a), Rgba::from(b));
+        (a.r - b.r).abs() < 1e-4
+            && (a.g - b.g).abs() < 1e-4
+            && (a.b - b.b).abs() < 1e-4
+            && (a.a - b.a).abs() < 1e-4
+    }
+    same(theme.background, hex(palette.background))
+        && same(theme.foreground, hex(palette.foreground))
+        && same(theme.border, hex(palette.border))
+        && same(theme.muted, hex(palette.muted))
+        && same(theme.muted_foreground, hex(palette.muted_foreground))
+        && same(theme.accent, hex(palette.accent))
+        && same(theme.accent_foreground, hex(palette.accent_foreground))
 }
 
 // ---------------------------------------------------------------------------

@@ -167,11 +167,15 @@ pub(crate) fn apply_panel_appearance(cx: &mut App) {
     let Some(window) = cx.try_global::<LauncherWindow>().map(|handle| handle.0) else {
         return;
     };
-    window
-        .update(cx, |_, window, _| {
+    // 调用点多半在面板自己的窗口更新里（点开关、换主题），当场 update 是重入、
+    // 只会拿到 Err，所以推到这一轮结束之后再做。
+    cx.defer(move |cx| {
+        if let Err(error) = window.update(cx, |_, window, _| {
             window.set_background_appearance(panel_appearance(translucent))
-        })
-        .ok();
+        }) {
+            eprintln!("gpui-tools: 拿不到面板窗口，背景外观没有更新：{error:?}");
+        }
+    });
 }
 
 /// 托盘菜单里的「打开启动器」。
@@ -322,7 +326,6 @@ pub fn apply_theme(choice: ColorScheme, window: Option<&mut Window>, cx: &mut Ap
     crate::tray_theme::apply(choice);
     refresh_tray_icon(cx);
     refresh_tray_menu(cx);
-    apply_root_background(cx);
 }
 
 /// 当前生效的设置。
@@ -426,18 +429,18 @@ pub(crate) fn apply_root_background(cx: &mut App) {
     let Some(window) = cx.try_global::<LauncherWindow>().map(|handle| handle.0) else {
         return;
     };
-    // Root 是 open_window 返回之后才建好的，所以这一步不能塞进建窗闭包。
-    if window
-        .update(cx, |_, window, cx| {
+    // Root 是 open_window 返回之后才建好的，这一步不能塞进建窗闭包；而且调用点多半
+    // 在面板自己的窗口更新里，当场 update 是重入，同样推到下一拍。
+    cx.defer(move |cx| {
+        if let Err(error) = window.update(cx, |_, window, cx| {
             Root::update(window, cx, |root, _window, _cx| {
                 root.style()
                     .refine(&StyleRefinement::default().bg(backdrop));
             })
-        })
-        .is_err()
-    {
-        eprintln!("gpui-tools: 拿不到面板窗口，Root 底色没有更新");
-    }
+        }) {
+            eprintln!("gpui-tools: 拿不到面板窗口，Root 底色没有更新：{error:?}");
+        }
+    });
 }
 
 fn refresh_tray_menu(cx: &mut App) {
