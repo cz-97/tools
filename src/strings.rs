@@ -107,6 +107,14 @@ pub mod settings_page {
     pub const TRANSLUCENT_NAME: &str = "半透明背景";
     /// 外观页：半透明背景的说明。
     pub const TRANSLUCENT_DESCRIPTION: &str = "降低面板底色不透明度；关闭后恢复实色背景";
+    /// 外观页：透明度的标题。
+    pub const OPACITY_NAME: &str = "透明度";
+    /// 外观页：透明度的说明。
+    pub const OPACITY_DESCRIPTION: &str = "半透明时底色的深浅，越淡越能看清背后的窗口";
+    /// 外观页：透明度的单位。
+    pub fn opacity_value(opacity: u32) -> String {
+        format!("{opacity}%")
+    }
     /// 外观页：搜索框高度的标题。
     pub const HEIGHT_NAME: &str = "搜索框高度";
     /// 外观页：搜索框高度的说明。

@@ -168,12 +168,36 @@ fn appearance_page(settings: Settings, colors: UiColors, cx: &Context<Launcher>)
                 })),
         ))
         .child(settings_row(
+            strings::settings_page::OPACITY_NAME,
+            strings::settings_page::OPACITY_DESCRIPTION,
+            colors,
+            stepper(
+                "panel-opacity",
+                settings.panel_opacity,
+                StepperRange {
+                    lowest: Settings::PANEL_OPACITY_MIN,
+                    highest: Settings::PANEL_OPACITY_MAX,
+                    step: Settings::PANEL_OPACITY_STEP,
+                    label: strings::settings_page::opacity_value(settings.panel_opacity).into(),
+                },
+                colors,
+                cx,
+                |launcher, opacity, cx| launcher.set_panel_opacity(opacity, cx),
+            ),
+        ))
+        .child(settings_row(
             strings::settings_page::HEIGHT_NAME,
             strings::settings_page::HEIGHT_DESCRIPTION,
             colors,
             stepper(
                 "search-height",
                 settings.search_height,
+                StepperRange {
+                    lowest: Settings::SEARCH_HEIGHT_MIN,
+                    highest: Settings::SEARCH_HEIGHT_MAX,
+                    step: Settings::SEARCH_HEIGHT_STEP,
+                    label: strings::settings_page::height_value(settings.search_height).into(),
+                },
                 colors,
                 cx,
                 |launcher, height, cx| launcher.set_search_height(height, cx),
@@ -348,16 +372,29 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(
 }
 
 /// 数值步进控件：减、值、加。
+/// 步进控件的档位：下限、上限、步长，以及中间显示的字。
+pub(crate) struct StepperRange {
+    pub(crate) lowest: u32,
+    pub(crate) highest: u32,
+    pub(crate) step: u32,
+    pub(crate) label: SharedString,
+}
+
 pub(crate) fn stepper(
     id: &'static str,
     value: u32,
+    range: StepperRange,
     colors: UiColors,
     cx: &Context<Launcher>,
     on_change: impl Fn(&mut Launcher, u32, &mut Context<Launcher>) + Copy + 'static,
 ) -> impl IntoElement {
-    let lowest = Settings::SEARCH_HEIGHT_MIN;
-    let highest = Settings::SEARCH_HEIGHT_MAX;
-    let step = Settings::SEARCH_HEIGHT_STEP as isize;
+    let StepperRange {
+        lowest,
+        highest,
+        step,
+        label,
+    } = range;
+    let step = step as isize;
     let at_bottom = value <= lowest;
     let at_top = value >= highest;
 
@@ -396,7 +433,7 @@ pub(crate) fn stepper(
                 .text_center()
                 .text_sm()
                 .text_color(colors.foreground)
-                .child(strings::settings_page::height_value(value)),
+                .child(label),
         )
         .child(button(1, IconName::Plus, at_top))
 }

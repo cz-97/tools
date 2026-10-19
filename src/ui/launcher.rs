@@ -368,6 +368,8 @@ impl Launcher {
         settings.theme = choice;
         apply_theme(choice, window, cx);
         store_settings(settings, cx);
+        // 主题底色是 Root 那层染色的来源，换主题要重刷一次。
+        crate::app::apply_root_background(cx);
         cx.notify();
     }
 
@@ -379,6 +381,22 @@ impl Launcher {
         }
         settings.translucent = enabled;
         store_settings(settings, cx);
+        // 窗口的背景外观与 Root 底色都得跟着换：半透明走亚克力，否则退回实色。
+        crate::app::apply_panel_appearance(cx);
+        crate::app::apply_root_background(cx);
+        cx.notify();
+    }
+
+    /// 调半透明底色的深浅。
+    pub(crate) fn set_panel_opacity(&mut self, opacity: u32, cx: &mut Context<Self>) {
+        let opacity = opacity.clamp(Settings::PANEL_OPACITY_MIN, Settings::PANEL_OPACITY_MAX);
+        let mut settings = stored_settings(cx);
+        if settings.panel_opacity == opacity {
+            return;
+        }
+        settings.panel_opacity = opacity;
+        store_settings(settings, cx);
+        // Root 那层是透明的，面板染色在自己的根节点上，所以这里只重画即可。
         cx.notify();
     }
 
@@ -652,7 +670,7 @@ impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = UiColors::current(cx);
         let (bg, fg, border, muted, muted_fg) = (
-            colors.control,
+            colors.panel,
             colors.foreground,
             colors.border,
             colors.surface,
@@ -719,6 +737,7 @@ impl Render for Launcher {
             .flex()
             .flex_col()
             .size_full()
+            // 半透明时底下的亚克力从这儿透上来；不半透明就是一块实色面板。
             .bg(bg)
             .text_color(fg)
             .child(self.header(window, cx))

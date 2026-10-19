@@ -75,6 +75,8 @@ pub struct Settings {
     pub theme: Theme,
     /// 是否启用半透明面板背景。
     pub translucent: bool,
+    /// 半透明时面板底色的不透明度，百分比（100 = 全实，盖住亚克力）。
+    pub panel_opacity: u32,
     /// 面板顶边在物理像素下的位置；面板还没被摆过时是 `None`。
     ///
     /// 横坐标故意不记：每次启动都按显示器重新居中。
@@ -118,6 +120,14 @@ impl Settings {
 
     /// 子页面能记多久，界面上按顺序给出这几档。
     pub const RESUME_CHOICES: [u32; 5] = [0, 15, 30, 60, 300];
+    /// 面板底色最淡能调到多淡。
+    pub const PANEL_OPACITY_MIN: u32 = 30;
+    /// 面板底色最深能调到多深（也就是全实）。
+    pub const PANEL_OPACITY_MAX: u32 = 100;
+    /// 透明度控件一步走多少个百分点。
+    pub const PANEL_OPACITY_STEP: u32 = 2;
+    /// 半透明底色默认的不透明度：够看清字，又明显看得出背后在动。
+    pub const PANEL_OPACITY_DEFAULT: u32 = 78;
 
     /// Remove stored command state whose `(section, id)` no longer exists in the catalogue.
     ///
@@ -223,6 +233,11 @@ impl Settings {
                         };
                     }
                     "translucent" => settings.translucent = value == "1",
+                    "panel_opacity" => {
+                        if let Ok(opacity) = value.parse() {
+                            settings.panel_opacity = opacity;
+                        }
+                    }
                     "window_y" => settings.window_y = value.parse().ok(),
                     "search_height" => {
                         if let Ok(height) = value.parse() {
@@ -274,6 +289,7 @@ impl Settings {
                 "translucent",
                 u8::from(self.translucent).to_string()
             ])?;
+            insert.execute(params!["panel_opacity", self.panel_opacity.to_string()])?;
             insert.execute(params!["search_height", self.search_height.to_string()])?;
             insert.execute(params![
                 "launch_at_login",
@@ -364,6 +380,9 @@ impl Settings {
         self.search_height = self
             .search_height
             .clamp(Self::SEARCH_HEIGHT_MIN, Self::SEARCH_HEIGHT_MAX);
+        self.panel_opacity = self
+            .panel_opacity
+            .clamp(Self::PANEL_OPACITY_MIN, Self::PANEL_OPACITY_MAX);
     }
 }
 
@@ -372,6 +391,7 @@ impl Default for Settings {
         Self {
             theme: Theme::System,
             translucent: false,
+            panel_opacity: Self::PANEL_OPACITY_DEFAULT,
             window_y: None,
             search_height: Self::SEARCH_HEIGHT_DEFAULT,
             launch_at_login: false,

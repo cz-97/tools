@@ -1,10 +1,11 @@
 //! 应用外壳：启动流程、全局状态、面板的显示与隐藏、托盘。
 
+use gpui_kit::base::Root;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Context, QuitMode, Subscription, WeakEntity, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, actions, prelude::*, px,
-    size,
+    AnyWindowHandle, App, Bounds, Context, Hsla, QuitMode, StyleRefinement, Subscription,
+    WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    actions, prelude::*, px, size,
 };
 use gpui_tools::autostart;
 use gpui_tools::logo;
@@ -65,7 +66,8 @@ pub fn launch() {
                     // 这三个选项与喝水提醒窗一致；默认 titlebar 会让 GPUI 走系统标题栏路径。
                     titlebar: None,
                     kind: WindowKind::PopUp,
-                    window_background: WindowBackgroundAppearance::Transparent,
+                    // 亚克力由外观页的「半透明」开关决定，见 `apply_panel_appearance`。
+                    window_background: panel_appearance(settings.translucent),
                     show: false,
                     focus: false,
                     ..Default::default()
@@ -110,6 +112,12 @@ pub fn launch() {
                 None => eprintln!("gpui-tools: 创建后找不到面板窗口，保留系统边框"),
             }
 
+            // 上面改样式、发 SWP_FRAMECHANGED 会重启一次 DWM 边框计算，把创建时设好的
+            // 亚克力一起洗掉，所以外壳上完再报一次背景外观。
+            apply_panel_appearance(cx);
+            // Root 的底色也要在这一刻定下来：默认那层是不透的主题色，会盖住亚克力。
+            apply_root_background(cx);
+
             cx.on_action(show_launcher_action)
                 .on_action(open_settings_action)
                 .on_action(restart_application_action)
@@ -123,14 +131,43 @@ pub fn launch() {
             });
 
             build_tray(cx);
-            // 系统主题变了也要换托盘图标，所以盯着主题这个全局值。
-            let theme_watch = cx.observe_global::<Theme>(refresh_tray_theme);
+            // 系统主题变了，托盘和 Root 底色都要跟着换，所以盯着主题这个全局值。
+            let theme_watch = cx.observe_global::<Theme>(refresh_on_theme_change);
             cx.set_global(ThemeWatch {
                 _subscription: theme_watch,
             });
 
             shortcuts::install(cx);
         });
+}
+
+/// 半透明时窗口该有的背景外观。
+///
+/// `Blurred` 在 Windows 上由 GPUI 映射成 `ACCENT_ENABLE_ACRYLICBLURBEHIND`：背后的
+/// 画面被糊掉之后透上来（见 `src/bin/transparency_probe.rs`）。不半透明就退回实色，
+/// 免得白付一份合成开销。
+fn panel_appearance(translucent: bool) -> WindowBackgroundAppearance {
+    if translucent {
+        WindowBackgroundAppearance::Blurred
+    } else {
+        WindowBackgroundAppearance::Opaque
+    }
+}
+
+/// 把当前的背景外观报给面板窗口。
+///
+/// 创建窗口、动窗口样式、以及用户翻「半透明」开关，这三件事都会洗掉或需要重设背景
+/// 外观，所以统一走这里。
+pub(crate) fn apply_panel_appearance(cx: &mut App) {
+    let translucent = stored_settings(cx).translucent;
+    let Some(window) = cx.try_global::<LauncherWindow>().map(|handle| handle.0) else {
+        return;
+    };
+    window
+        .update(cx, |_, window, _| {
+            window.set_background_appearance(panel_appearance(translucent))
+        })
+        .ok();
 }
 
 /// 托盘菜单里的「打开启动器」。
@@ -255,6 +292,8 @@ pub fn show_launcher(cx: &mut App) {
     }
     // Windows 可能拒绝前台切换，而 GPUI 自己另记一份激活状态，所以再要一次。
     cx.activate(true);
+    // 显示/隐藏窗口会把窗口合成属性打回默认，亚克力得跟着重报一次。
+    apply_panel_appearance(cx);
 }
 
 /// 收起面板，但不销毁。
@@ -351,11 +390,46 @@ fn refresh_tray_icon(cx: &mut App) {
     }
 }
 
-/// Update the native popup menu after the OS appearance changes.
-fn refresh_tray_theme(cx: &mut App) {
+/// 主题换了一次之后要重刷的东西：托盘，以及 Root 的那层底色。
+fn refresh_on_theme_change(cx: &mut App) {
     crate::tray_theme::apply(stored_settings(cx).theme);
     refresh_tray_icon(cx);
     refresh_tray_menu(cx);
+    apply_root_background(cx);
+}
+
+/// 让 Root 不要用一层**不透**的主题底色把亚克力盖死。
+///
+/// gpui-component 的 Root 插件每一帧都会把整扇窗铺上 `theme.background`（见它的
+/// root.rs），亚克力被这层盖得死死的——`src/bin/theme_probe.rs` 的四扇窗实验里，
+/// 不 refin 的那两扇就是一片纯白/纯黑。这里把 Root 的底色换成透明，背后的模糊才
+/// 透得上来；面板自己的染色由 `UiColors::panel` 负责。
+///
+/// 换主题、翻「半透明」开关都会洗掉这次改动，所以那几处都要重刷。
+pub(crate) fn apply_root_background(cx: &mut App) {
+    let backdrop = if stored_settings(cx).translucent {
+        Hsla {
+            a: 0.,
+            ..cx.theme().background
+        }
+    } else {
+        cx.theme().background
+    };
+    let Some(window) = cx.try_global::<LauncherWindow>().map(|handle| handle.0) else {
+        return;
+    };
+    // Root 是 open_window 返回之后才建好的，所以这一步不能塞进建窗闭包。
+    if window
+        .update(cx, |_, window, cx| {
+            Root::update(window, cx, |root, _window, _cx| {
+                root.style()
+                    .refine(&StyleRefinement::default().bg(backdrop));
+            })
+        })
+        .is_err()
+    {
+        eprintln!("gpui-tools: 拿不到面板窗口，Root 底色没有更新");
+    }
 }
 
 fn refresh_tray_menu(cx: &mut App) {

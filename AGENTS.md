@@ -42,6 +42,24 @@ release 构建是 **windows 子系统**（`windows_subsystem = "windows"`，见 
 双击或从快捷方式启动不会弹控制台、也不会一闪而过一个黑框。debug 构建保留控制台，
 `eprintln!` 的诊断才看得见；release 下这些输出无处可去，属于预期。
 
+### 亚克力背景
+
+- 窗口背景外观由 `app::panel_appearance`（外观页的「半透明背景」开关）决定：开 =
+  `WindowBackgroundAppearance::Blurred`，Windows 上 GPUI 映射成
+  `ACCENT_ENABLE_ACRYLICBLURBEHIND`；关 = `Opaque`。
+- **gpui-component 的 Root 插件每帧都会铺一层不透的 `theme.background`**，亚克力会被它
+  盖成一片纯色。所以 `app::apply_root_background` 用 `gpui_kit::base::Root::update` 把
+  Root 的 `style().bg` refin 成透明；面板自己的染色画在 `UiColors::panel` 上，深浅由
+  设置 `panel_opacity`（30–100%，默认 78，外观页「透明度」一行）决定。
+- Root 是 `open_window` **返回之后**才建好的，`Root::update` 不能在建窗闭包里调
+  （panic：`window must have a Base Root`）。
+- 换主题、翻「半透明」开关、系统主题变化（`observe_global::<Theme>`）都要同时重刷
+  `apply_panel_appearance` 与 `apply_root_background`。
+- 参照实验：`src/bin/theme_probe.rs`（`cargo run --bin gpui-theme-probe`）四扇窗对照
+  raw/root × light/dark；`src/bin/transparency_probe.rs` 是最早的那扇。
+- **验证亚克力只能看屏幕合成结果**：`target/cap.py`（屏幕 DC BitBlt）行，
+  `crop.py`（PrintWindow）只画窗口自己那层，半透明区域会变纯黑/白。
+
 ## 4. 命令
 
 命令全部声明在 `src/catalogue.rs` 的 `COMMANDS` 里。一条 `Command` = `id` + `section` +
