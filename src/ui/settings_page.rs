@@ -367,7 +367,9 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(
                         .text_color(if current {
                             colors.accent_foreground
                         } else {
-                            colors.muted_foreground
+                            // 未选中的胶囊画在不透明的 `control` 底上，用
+                            // `on_surface_muted`，不随半透明面板的醒目度校验走。
+                            colors.on_surface_muted
                         })
                         .cursor_pointer()
                         .when(current, move |this| this.bg(colors.accent))

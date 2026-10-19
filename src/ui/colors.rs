@@ -144,6 +144,149 @@ const FAINT_OPACITY: f32 = 0.7;
 /// 禁用态控件的透明度。不是颜色，但和颜色一样只该有一份。
 pub(crate) const DISABLED_OPACITY: f32 = 0.3;
 
+/// 次要文字的醒目下限（WCAG 对比度）。半透明面板背后的壁纸颜色不可知，
+/// 弱文字按纯白、纯黑两种极端底色校验，达不到就调。
+const MUTED_MIN_CONTRAST: f32 = 3.0;
+/// 占位性文字的醒目下限，比次要文字松一档，保住「更弱一档」的层次。
+const FAINT_MIN_CONTRAST: f32 = 2.2;
+
+/// 壁纸的两种极端假设，醒目度校验用。
+const WALLPAPER_WHITE: Rgba = Rgba {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
+};
+const WALLPAPER_BLACK: Rgba = Rgba {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 1.0,
+};
+
+/// WCAG 相对亮度（sRGB）。
+fn luminance(c: Rgba) -> f32 {
+    fn linear(v: f32) -> f32 {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b)
+}
+
+/// WCAG 对比度。
+fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// 把「文字叠在面板染色上」的结果折成一个等效色：RGB 是已叠加的前景，
+/// 剩下的 alpha 是留给壁纸的缝隙。醒目度校验用的就是它——
+/// 壁纸从缝隙里透进来多少，两种极端底色各算一遍。
+fn flatten_over_panel(text: Rgba, panel: Rgba) -> Rgba {
+    let residual = (1.0 - panel.a) * (1.0 - text.a);
+    let a = 1.0 - residual;
+    if a <= 0.0 {
+        return Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+    }
+    Rgba {
+        r: (text.r * text.a + panel.r * panel.a * (1.0 - text.a)) / a,
+        g: (text.g * text.a + panel.g * panel.a * (1.0 - text.a)) / a,
+        b: (text.b * text.a + panel.b * panel.a * (1.0 - text.a)) / a,
+        a,
+    }
+}
+
+/// 把颜色的相对亮度调到 `target`：等比缩放 RGB，色相不变。
+/// 亮度对缩放系数单调但不线性，直接二分（定点迭代会震荡）。
+fn with_luminance(c: Rgba, target: f32) -> Rgba {
+    let top = 1.0 / c.r.max(c.g).max(c.b).max(1e-6);
+    let (mut lo, mut hi) = (0.0f32, top);
+    for _ in 0..32 {
+        let mid = (lo + hi) / 2.0;
+        let probe = Rgba {
+            r: c.r * mid,
+            g: c.g * mid,
+            b: c.b * mid,
+            a: c.a,
+        };
+        if luminance(probe) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let k = (lo + hi) / 2.0;
+    Rgba {
+        r: c.r * k,
+        g: c.g * k,
+        b: c.b * k,
+        a: c.a,
+    }
+}
+
+/// 从两种极端底色的对比度要求推出文字亮度的目标值。
+/// 文字在每种底色的哪一侧就往哪侧加深/提亮；两侧要求打架时取中点折中。
+fn readable_luminance(current: f32, extremes: &[Rgba; 2], min: f32) -> f32 {
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for bg in extremes {
+        let lbg = luminance(*bg);
+        if current <= lbg {
+            // 文字比底深：继续加深，直到对比度够。
+            let x = (lbg + 0.05) / min - 0.05;
+            if x < 0.0 {
+                lo = lo.max(min * (lbg + 0.05) - 0.05);
+            } else {
+                hi = hi.min(x);
+            }
+        } else {
+            // 文字比底浅：继续提亮，直到对比度够。
+            let y = min * (lbg + 0.05) - 0.05;
+            if y > 1.0 {
+                hi = hi.min((lbg + 0.05) / min - 0.05);
+            } else {
+                lo = lo.max(y);
+            }
+        }
+    }
+    if lo > hi {
+        ((lo + hi) / 2.0).clamp(0.0, 1.0)
+    } else {
+        current.clamp(lo, hi)
+    }
+}
+
+/// 把画在半透明面板上的弱文字调到够醒目。
+///
+/// 壁纸颜色不可知，按「染色叠纯白」「染色叠纯黑」两种极端底色校验对比度；
+/// 现状两种都过关就原样返回（不透明主题的配色天然协调，不会白改）。
+/// 不过关就换成一个不透明的 adjusted 色——文字把面板盖严实之后，
+/// 看到的就是它本身，不再受壁纸搅局。两种底色一头偏白一头偏黑时，
+/// 调出来的颜色落在两者之间，深壁纸浅壁纸下都读得清。
+fn readable_on_panel(text: Hsla, panel: Hsla, extremes: &[Rgba; 2], min: f32) -> Hsla {
+    let flattened = flatten_over_panel(Rgba::from(text), Rgba::from(panel));
+    if extremes
+        .iter()
+        .all(|wp| contrast(wp.blend(flattened), *wp) >= min)
+    {
+        return text;
+    }
+    let solid = Rgba {
+        a: 1.0,
+        ..flattened
+    };
+    let target = readable_luminance(luminance(solid), extremes, min);
+    Hsla::from(with_luminance(solid, target))
+}
+
 // ---------------------------------------------------------------------------
 // 3. 调色板：绘制代码唯一该用的东西
 // ---------------------------------------------------------------------------
@@ -160,6 +303,9 @@ pub(crate) struct UiColors {
     pub(crate) border: Hsla,
     pub(crate) foreground: Hsla,
     pub(crate) muted_foreground: Hsla,
+    /// 画在 `surface` / `control` 这类不透明底色上的次要文字。
+    /// 那些底色不透明、颜色和主题配套，不随半透明校验调整。
+    pub(crate) on_surface_muted: Hsla,
     pub(crate) accent: Hsla,
     pub(crate) accent_foreground: Hsla,
     /// 悬停的淡色叠加。刻意比选中的高亮弱一档。
@@ -182,26 +328,99 @@ impl UiColors {
     }
 
     fn from_theme(theme: &Theme, translucent: bool, panel_opacity: u32) -> Self {
+        let opacity = panel_opacity as f32 / 100.0;
+        // 画在半透明面板上的弱文字：壁纸颜色不可知，按纯白/纯黑两种极端底色
+        // 校验醒目度。不透明的面板底色就是主题底色，主题配色天然协调，不用校。
+        let (muted_foreground, faint) = if translucent {
+            let tint = Rgba::from(theme.background).alpha(opacity);
+            let panel = Hsla::from(tint);
+            let extremes = [WALLPAPER_WHITE.blend(tint), WALLPAPER_BLACK.blend(tint)];
+            (
+                readable_on_panel(theme.muted_foreground, panel, &extremes, MUTED_MIN_CONTRAST),
+                readable_on_panel(
+                    theme.muted_foreground.opacity(FAINT_OPACITY),
+                    panel,
+                    &extremes,
+                    FAINT_MIN_CONTRAST,
+                ),
+            )
+        } else {
+            (
+                theme.muted_foreground,
+                theme.muted_foreground.opacity(FAINT_OPACITY),
+            )
+        };
         Self {
             surface: theme.muted,
             // 半透明时这一层只负责染色：模糊交给 DWM 的亚克力，见
             // `app::apply_panel_appearance`。染色深浅就是「透明度」那一档。
             panel: if translucent {
-                theme.background.opacity(panel_opacity as f32 / 100.0)
+                theme.background.opacity(opacity)
             } else {
                 theme.background
             },
             control: theme.background,
             border: theme.border,
             foreground: theme.foreground,
-            muted_foreground: theme.muted_foreground,
+            muted_foreground,
+            on_surface_muted: theme.muted_foreground,
             accent: theme.accent,
             accent_foreground: theme.accent_foreground,
             hover: theme.foreground.opacity(HOVER_OPACITY),
             accent_tile: theme.accent_foreground.opacity(ACCENT_TILE_OPACITY),
             on_accent_muted: theme.accent_foreground.opacity(ON_ACCENT_MUTED_OPACITY),
             footer_key: theme.foreground.opacity(FOOTER_KEY_OPACITY),
-            faint: theme.muted_foreground.opacity(FAINT_OPACITY),
+            faint,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 校验 `readable_on_panel` 的产出在 30% 暗色面板 + 两种极端壁纸下都醒目。
+    fn assert_readable(text: Hsla, min: f32) {
+        let tint = Rgba::from(hex(0x0a0a0a)).alpha(0.3);
+        let extremes = [WALLPAPER_WHITE.blend(tint), WALLPAPER_BLACK.blend(tint)];
+        let out = readable_on_panel(text, Hsla::from(tint), &extremes, min);
+        // 调整过的产出是不透明的，盖住面板后看到的就是它本身；
+        // 没调整时原样返回半透明色，要按原路叠出实际看到的颜色。
+        let seen = if Rgba::from(out).a >= 1.0 {
+            Rgba::from(out)
+        } else {
+            WALLPAPER_WHITE.blend(flatten_over_panel(Rgba::from(out), tint))
+        };
+        for wp in extremes {
+            assert!(
+                contrast(wp.blend(seen), wp) + 1e-3 >= min,
+                "contrast {wp:?} vs {seen:?} below {min}"
+            );
+        }
+    }
+
+    #[test]
+    fn translucent_dark_theme_strengthens_weak_text() {
+        // 30% 暗色面板叠白壁纸：次要文字 #a3a3a3 糊进底色，必须被调到醒目。
+        assert_readable(hex(0xa3a3a3), MUTED_MIN_CONTRAST);
+        assert_readable(hex(0xa3a3a3).opacity(FAINT_OPACITY), FAINT_MIN_CONTRAST);
+    }
+
+    #[test]
+    fn opaque_dark_theme_keeps_muted_text() {
+        // 不透明深底上的浅字本来就醒目，不该被改动。
+        let bg = hex(0x0a0a0a);
+        let text = hex(0xa3a3a3);
+        let extremes = [Rgba::from(bg), Rgba::from(bg)];
+        assert_eq!(
+            Rgba::from(readable_on_panel(text, bg, &extremes, MUTED_MIN_CONTRAST)),
+            Rgba::from(text)
+        );
+    }
+
+    #[test]
+    fn with_luminance_hits_target_for_gray() {
+        let out = with_luminance(Rgba::from(hex(0xa3a3a3)), 0.1227);
+        assert!((luminance(out) - 0.1227).abs() < 1e-3);
     }
 }

@@ -169,7 +169,7 @@ fn command_row(
             .border_color(colors.surface)
             .text_xs()
             .cursor_pointer()
-            .text_color(colors.muted_foreground)
+            .text_color(colors.on_surface_muted)
             .hover(move |style| style.bg(colors.hover))
             .on_click(cx.listener(move |launcher, _, _, cx| launcher.toggle_recording(command, cx)))
             .child(label)
@@ -215,7 +215,7 @@ fn command_row(
                         .overflow_hidden()
                         .text_ellipsis()
                         .text_xs()
-                        .text_color(colors.muted_foreground)
+                        .text_color(colors.on_surface_muted)
                         .child(command.description),
                 ),
         )
@@ -223,7 +223,7 @@ fn command_row(
             div()
                 .flex_shrink_0()
                 .text_xs()
-                .text_color(colors.muted_foreground)
+                .text_color(colors.on_surface_muted)
                 .child(strings::commands_page::uses(state.uses)),
         )
         .child(div().flex_shrink_0().child(shortcut))

@@ -3,9 +3,7 @@
 use std::collections::BTreeMap;
 
 use gpui_kit::component::list::{ListDelegate, ListState};
-use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, IndexPath, Selectable, h_flex, v_flex,
-};
+use gpui_kit::component::{Icon, IconName, IndexPath, Selectable, h_flex, v_flex};
 use gpui_kit::{
     App, Context, FontWeight, IntoElement, RenderOnce, SharedString, Task, WeakEntity, Window, div,
     prelude::*, px,
@@ -98,6 +96,13 @@ impl RenderOnce for ToolRow {
         } else {
             colors.muted_foreground
         };
+        // 快捷键小块有自己的底色：选中时是高亮上的浮层，未选中时是不透明的
+        // `surface`。文字跟着底色走，不跟整行（整行未选中时直接透在面板上）。
+        let chip_color = if selected {
+            colors.on_accent_muted
+        } else {
+            colors.on_surface_muted
+        };
         let tile_bg = if selected {
             colors.accent_tile
         } else {
@@ -121,7 +126,7 @@ impl RenderOnce for ToolRow {
                 .rounded(px(4.))
                 .bg(tile_bg)
                 .text_xs()
-                .text_color(detail_color)
+                .text_color(chip_color)
                 .child(shortcut_label(&chord))
                 .into_any_element(),
             None => div()
@@ -344,7 +349,8 @@ impl ListDelegate for ToolDelegate {
         _window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
+        // 空状态直接画在半透明面板上，用校验过醒目度的次要文字。
+        let muted = UiColors::current(cx).muted_foreground;
         let label = if self.query.is_empty() {
             strings::launcher::EMPTY.to_string()
         } else {
