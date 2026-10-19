@@ -94,12 +94,12 @@ impl RenderOnce for ToolRow {
             colors.foreground
         };
         let detail_color = if selected {
-            colors.accent_foreground.opacity(0.7)
+            colors.on_accent_muted
         } else {
             colors.muted_foreground
         };
         let tile_bg = if selected {
-            colors.accent_foreground.opacity(0.14)
+            colors.accent_tile
         } else {
             colors.surface
         };
@@ -126,7 +126,7 @@ impl RenderOnce for ToolRow {
                 .into_any_element(),
             None => div()
                 .text_xs()
-                .text_color(detail_color.opacity(0.7))
+                .text_color(colors.faint)
                 .child(strings::launcher::NO_SHORTCUT)
                 .into_any_element(),
         };

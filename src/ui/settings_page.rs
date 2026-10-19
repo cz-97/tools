@@ -1,5 +1,6 @@
 //! 设置页：左边是子模块，右边是选中那一页的内容。
 
+use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::{
@@ -62,7 +63,7 @@ pub(crate) fn render(
     let content = match tab {
         SettingsTab::System => system_page(settings, colors, cx),
         SettingsTab::Commands => commands_page::render(launcher, colors, cx).into_any_element(),
-        SettingsTab::Appearance => appearance_page(settings, colors, cx),
+        SettingsTab::Appearance => appearance_page(launcher, settings, colors, cx),
         SettingsTab::About => about_page(colors, cx),
     };
 
@@ -139,7 +140,12 @@ fn system_page(settings: Settings, colors: UiColors, cx: &Context<Launcher>) -> 
 }
 
 /// 外观页。
-fn appearance_page(settings: Settings, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
+fn appearance_page(
+    launcher: &Launcher,
+    settings: Settings,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> AnyElement {
     v_flex()
         .gap_1()
         .child(settings_row(
@@ -171,19 +177,24 @@ fn appearance_page(settings: Settings, colors: UiColors, cx: &Context<Launcher>)
             strings::settings_page::OPACITY_NAME,
             strings::settings_page::OPACITY_DESCRIPTION,
             colors,
-            stepper(
-                "panel-opacity",
-                settings.panel_opacity,
-                StepperRange {
-                    lowest: Settings::PANEL_OPACITY_MIN,
-                    highest: Settings::PANEL_OPACITY_MAX,
-                    step: Settings::PANEL_OPACITY_STEP,
-                    label: strings::settings_page::opacity_value(settings.panel_opacity).into(),
-                },
-                colors,
-                cx,
-                |launcher, opacity, cx| launcher.set_panel_opacity(opacity, cx),
-            ),
+            h_flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap_3()
+                .child(
+                    // 滑动条的状态挂在面板上，所以拖动的每一帧都直接变成面板的染色深浅。
+                    Slider::new(&launcher.opacity).w(px(160.)).flex_shrink_0(),
+                )
+                .child(
+                    div()
+                        .w(px(48.))
+                        .text_center()
+                        .text_sm()
+                        .text_color(colors.foreground)
+                        .child(strings::settings_page::opacity_value(
+                            settings.panel_opacity,
+                        )),
+                ),
         ))
         .child(settings_row(
             strings::settings_page::HEIGHT_NAME,
@@ -408,7 +419,7 @@ pub(crate) fn stepper(
             .rounded(px(6.))
             .text_color(colors.foreground);
         if disabled {
-            return button.opacity(0.3);
+            return button.opacity(crate::ui::colors::DISABLED_OPACITY);
         }
         let delta = if ix == 0 { -step } else { step };
         let next = (value as isize + delta).clamp(lowest as isize, highest as isize) as u32;

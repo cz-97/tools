@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::{List, ListState};
+use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, h_flex};
 use gpui_kit::{
     AnyElement, Context, Entity, Focusable, Font, FontWeight, IntoElement, Pixels, Render,
@@ -119,10 +120,13 @@ pub struct Launcher {
     focus_watch: Option<Task<()>>,
     /// 命令页当前显示第几个子模块，`catalogue::Section::ALL` 的下标。
     pub(crate) section: usize,
+    /// 透明度滑动条。滑动的过程只改内存，库在面板收起时统一落盘。
+    pub(crate) opacity: Entity<SliderState>,
     /// 正在录制的命令。
     recording: Option<&'static catalogue::Command>,
     /// 跟着视图活着的订阅，丢了输入框就不再上报用户敲了什么。
     _search_events: Subscription,
+    _opacity_events: Subscription,
     _search_observation: Subscription,
 }
 
@@ -152,6 +156,21 @@ impl Launcher {
             }
         });
 
+        let opacity = cx.new(|cx| {
+            SliderState::new()
+                .min(Settings::PANEL_OPACITY_MIN as f32)
+                .max(Settings::PANEL_OPACITY_MAX as f32)
+                .step(Settings::PANEL_OPACITY_STEP as f32)
+                .default_value(stored_settings(cx).panel_opacity as f32)
+        });
+        // 拖动时每一帧都会来一次事件：只在内存里改，落盘交给面板收起的那次统一写。
+        let opacity_events = cx.subscribe(&opacity, |launcher, _state, event, cx| {
+            if matches!(event, SliderEvent::Change(_)) {
+                let opacity = launcher.opacity.read(cx).value().start().round() as u32;
+                launcher.preview_panel_opacity(opacity, cx);
+            }
+        });
+
         let launcher = Self {
             list,
             search,
@@ -160,8 +179,10 @@ impl Launcher {
             last_section: None,
             focus_watch: None,
             section: 0,
+            opacity,
             recording: None,
             _search_events: search_events,
+            _opacity_events: opacity_events,
             _search_observation: search_observation,
         };
         // GPUI 默认不给焦点，用户点一下输入框之前，面板会把所有按键都吞掉。
@@ -387,16 +408,16 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 调半透明底色的深浅。
-    pub(crate) fn set_panel_opacity(&mut self, opacity: u32, cx: &mut Context<Self>) {
+    /// 拖动透明度：只改内存里的那份，面板立刻变；落盘由面板收起时统一做。
+    pub(crate) fn preview_panel_opacity(&mut self, opacity: u32, cx: &mut Context<Self>) {
         let opacity = opacity.clamp(Settings::PANEL_OPACITY_MIN, Settings::PANEL_OPACITY_MAX);
         let mut settings = stored_settings(cx);
         if settings.panel_opacity == opacity {
             return;
         }
         settings.panel_opacity = opacity;
-        store_settings(settings, cx);
-        // Root 那层是透明的，面板染色在自己的根节点上，所以这里只重画即可。
+        // 只写全局值，不落库：拖一下就是几十次，磁盘写入留给收起面板那一次。
+        cx.set_global(crate::app::SettingsStore(settings));
         cx.notify();
     }
 
@@ -686,7 +707,7 @@ impl Render for Launcher {
                         .px_1()
                         .rounded(px(4.))
                         .bg(muted)
-                        .text_color(fg.opacity(0.85))
+                        .text_color(colors.footer_key)
                         .child(key),
                 )
                 .child(div().text_color(muted_fg).child(label))

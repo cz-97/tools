@@ -1,7 +1,7 @@
 //! 命令页：左边是设置子模块，右边是该子模块下的命令。
 
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, v_flex};
+use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::{Context, IntoElement, SharedString, div, prelude::*, px};
 use gpui_tools::settings::CommandSettings;
 
@@ -23,7 +23,7 @@ pub(crate) fn render(
 ) -> impl IntoElement {
     let settings = stored_settings(cx);
     let selected = launcher.section.min(catalogue::Section::ALL.len() - 1);
-    let border = cx.theme().border;
+    let border = colors.border;
 
     let sections = v_flex()
         .w(px(MODULE_WIDTH))
@@ -77,7 +77,7 @@ pub(crate) fn render(
                             div()
                                 .text_xs()
                                 .text_color(if current {
-                                    colors.accent_foreground.opacity(0.7)
+                                    colors.on_accent_muted
                                 } else {
                                     colors.muted_foreground
                                 })

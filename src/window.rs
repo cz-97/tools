@@ -142,9 +142,18 @@ impl NativeWindow {
         sys::set_icon(self.handle, id)
     }
 
+    /// 让 DWM 按 Windows 11 的默认圆角裁窗口。
+    ///
+    /// 去掉边框之后窗口就是方的，系统默认值本来是不用自己配的：Windows 11 上
+    /// `DWMWCP_ROUND` 就是设置里那个「圆角」档的半径（100% 缩放下 8px）。更早的
+    /// Windows 不认这个属性，函数返回 `false`，窗口保持方角。
+    pub fn round_corners(self) -> bool {
+        sys::round_corners(self.handle)
+    }
+
     /// 每块面板都想要的外壳：无边框、精确客户区、居中。
     ///
-    /// 返回三步是不是都成了；只成一部分的面板照样能用，所以调用方可以记一笔日志
+    /// 返回每一步是不是都成了；只成一部分的面板照样能用，所以调用方可以记一笔日志
     /// 继续往下走。
     pub fn apply_panel_chrome(self, width: f32, height: f32) -> bool {
         let borderless = self.set_borderless(true);
@@ -162,7 +171,8 @@ mod sys {
     use windows_sys::Win32::Foundation::{HWND, RECT};
     use windows_sys::Win32::Graphics::Dwm::{
         DWMNCRP_DISABLED, DWMNCRP_USEWINDOWSTYLE, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT,
-        DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DwmSetWindowAttribute,
+        DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+        DwmSetWindowAttribute,
     };
     use windows_sys::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
@@ -434,6 +444,22 @@ mod sys {
                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             ) != 0
         }
+    }
+
+    pub fn round_corners(handle: WindowHandle) -> bool {
+        if !is_open(handle) {
+            return false;
+        }
+        let preference = DWMWCP_ROUND;
+        let ok = unsafe {
+            DwmSetWindowAttribute(
+                hwnd(handle),
+                DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                &preference as *const _ as _,
+                size_of::<i32>() as u32,
+            )
+        };
+        ok != 0
     }
 
     pub fn set_icon(handle: WindowHandle, id: u16) -> bool {
