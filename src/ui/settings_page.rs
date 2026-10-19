@@ -4,8 +4,8 @@ use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, IntoElement, MouseDownEvent, SharedString, Window, div,
-    prelude::*, px,
+    AnyElement, App, ClickEvent, Context, FontWeight, IntoElement, MouseDownEvent, SharedString,
+    Window, div, prelude::*, px,
 };
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
 
@@ -331,6 +331,7 @@ pub(crate) fn settings_row(
                         .overflow_hidden()
                         .text_ellipsis()
                         .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.muted_foreground)
                         .child(description.into()),
                 ),
@@ -342,6 +343,7 @@ pub(crate) fn settings_row(
 pub(crate) fn value_label(value: impl Into<SharedString>, colors: UiColors) -> impl IntoElement {
     div()
         .text_sm()
+        .font_weight(FontWeight::MEDIUM)
         .text_color(colors.muted_foreground)
         .child(value.into())
 }
@@ -371,6 +373,7 @@ pub(crate) fn action_row(
             .child(
                 div()
                     .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(colors.muted_foreground)
                     .child(hint),
             )
@@ -411,10 +414,11 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(
                         .text_color(if current {
                             colors.accent_foreground
                         } else {
-                            // 未选中的胶囊画在不透明的 `control` 底上，用
-                            // `on_surface_muted`，不随半透明面板的醒目度校验走。
+                            // 未选中的胶囊画在底上，用 `on_surface_muted`，
+                            // 不随半透明面板的醒目度校验走。
                             colors.on_surface_muted
                         })
+                        .when(!current, |this| this.font_weight(FontWeight::MEDIUM))
                         .cursor_pointer()
                         .when(current, move |this| this.bg(colors.accent))
                         .when(!current, move |this| {
