@@ -50,6 +50,12 @@ const SEARCH_TEXT_SIZE: f32 = 14.;
 const FOCUS_CHECK_INTERVAL: Duration = Duration::from_millis(60);
 /// 连续几次没拿到前台才收起。留几次，是为了躲开「刚显示、前台还没转过来」的空档。
 const FOCUS_LOST_SAMPLES: u8 = 3;
+/// 系统给的窗口圆角半径，**物理像素**。
+///
+/// Windows 11 的 `DWMWCP_ROUND` 固定 8px、不随 DPI 缩放（从截图里量出来的就是 8）。
+/// 面板自己也得按同一个半径圆角，那圈 1px 高光边才会贴着弧线走；
+/// 画在方角矩形上就会被窗口的圆角裁断，四个角上各缺一小段。
+const CORNER_RADIUS: f32 = 8.;
 
 /// 面板当前显示哪一页。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -890,10 +896,12 @@ impl Render for Launcher {
             .flex()
             .flex_col()
             .size_full()
+            // 面板自己的圆角和系统裁剪的圆角必须一模一样：半径用物理像素换算成逻辑像素，
+            // 不然 1px 高光边会在四个角上被裁断。
+            .rounded(px(CORNER_RADIUS / window.scale_factor()))
             // 半透明时底下的亚克力从这儿透上来；不半透明就是一块实色面板。
             .bg(bg)
-            // 玻璃的高光边：没有它，半透明面板只是一块色块。窗口是圆角裁剪的，
-            // 这一圈 1px 在四个角上会被裁掉，正好只剩圆滑的一段。
+            // 玻璃的高光边：没有它，半透明面板只是一块色块。
             .border_1()
             .border_color(colors.panel_edge)
             .text_color(fg)
