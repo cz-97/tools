@@ -892,6 +892,10 @@ impl Render for Launcher {
             .size_full()
             // 半透明时底下的亚克力从这儿透上来；不半透明就是一块实色面板。
             .bg(bg)
+            // 玻璃的高光边：没有它，半透明面板只是一块色块。窗口是圆角裁剪的，
+            // 这一圈 1px 在四个角上会被裁掉，正好只剩圆滑的一段。
+            .border_1()
+            .border_color(colors.panel_edge)
             .text_color(fg)
             .child(self.header(window, cx))
             .child(body)
