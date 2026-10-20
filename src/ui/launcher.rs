@@ -892,19 +892,30 @@ impl Render for Launcher {
             Page::Settings(tab) => settings_page::render(self, tab, cx).into_any_element(),
         };
 
+        // 面板自己的圆角必须和系统裁剪的圆角一模一样（8 物理像素，不随 DPI 缩放），
+        // 否则面板的圆角和窗口的圆角会差出一个小小的缺口。
+        let radius = px(CORNER_RADIUS / window.scale_factor());
+
         div()
             .flex()
             .flex_col()
             .size_full()
-            // 面板自己的圆角和系统裁剪的圆角必须一模一样：半径用物理像素换算成逻辑像素，
-            // 不然 1px 高光边会在四个角上被裁断。
-            .rounded(px(CORNER_RADIUS / window.scale_factor()))
+            .rounded(radius)
+            // 两端要跟着圆角裁掉，顶边高光才收得干净。
+            .overflow_hidden()
             // 半透明时底下的亚克力从这儿透上来；不半透明就是一块实色面板。
             .bg(bg)
-            // 玻璃的高光边：没有它，半透明面板只是一块色块。
-            .border_1()
-            .border_color(colors.panel_edge)
             .text_color(fg)
+            // 玻璃的顶边高光。**不用 `border_1`**：GPUI 的边框只画四条直边，
+            // 圆角那段弧是空的，框线在四个角上会断开（试过，用户看到了）。
+            // 一条 1px 的顶线两端被圆角裁掉，正好停在弧线的起点，看起来更像玻璃边缘。
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .h(px(1.))
+                    .w_full()
+                    .bg(colors.panel_edge),
+            )
             .child(self.header(window, cx))
             .child(body)
             .child(footer)

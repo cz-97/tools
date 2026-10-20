@@ -31,6 +31,9 @@ use gpui_tools::settings::Settings;
 /// 变化小一点，也不允许面板掉出这个区间。
 const FROST_FLOOR: f32 = 0.72;
 
+/// 面板外沿那 1px 高光比面板本身亮/暗多少。
+const EDGE_MIX: f32 = 0.14;
+
 /// 一套配色的具体值，浅色/深色各一份。颜色都带 alpha（纱就是这样来的）。
 struct Palette {
     /// 面板底色，半透明时按滑块浓度铺在亚克力上。
@@ -60,8 +63,8 @@ struct Palette {
     hover: u32,
     /// 页脚按键小块上的字。
     footer_key: u32,
-    /// 面板外沿的 1px 高光边。
-    panel_edge: u32,
+    /// 面板外沿那 1px 高光往哪个方向提：暗色主题提亮、浅色主题压暗。
+    edge_tint: u32,
 }
 
 /// 深色：冷墨玻璃 + 白纱 + 一点冷蓝的选中。
@@ -82,7 +85,7 @@ const DARK: Palette = Palette {
     on_accent_muted: 0xffffffb8,
     hover: 0xffffff0d,
     footer_key: 0xfffffff0,
-    panel_edge: 0xffffff26,
+    edge_tint: 0xffffffff,
 };
 
 /// 浅色：冷白玻璃 + 黑纱 + 同一种冷蓝的选中。
@@ -101,7 +104,7 @@ const LIGHT: Palette = Palette {
     on_accent_muted: 0x0d2440c7,
     hover: 0x0000000a,
     footer_key: 0x12151bf0,
-    panel_edge: 0x00000018,
+    edge_tint: 0x000000ff,
 };
 
 /// 按当前主题的深浅取一套基础色。
@@ -112,6 +115,17 @@ fn palette(dark: bool) -> Palette {
 /// 表里的 `0xRRGGBBAA` 换成绘制用的颜色。
 fn color(value: u32) -> Hsla {
     Hsla::from(rgba(value))
+}
+
+/// 把 `a` 往 `b` 混 `t`，透明度保留 `a` 的（高光边、选中态都是这么来的）。
+fn mix_toward(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    let (a, b) = (Rgba::from(a), Rgba::from(b));
+    Hsla::from(Rgba {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a,
+    })
 }
 
 /// 把基础色写进当前主题，让组件和自绘视图用同一份颜色。
@@ -222,8 +236,10 @@ impl UiColors {
             base
         };
         Self {
+            // 高光边不能是「半透明的白」：那样透过它看到的是壁纸，不是面板。
+            // 得是「面板色往高光方向调一档」，透明度跟面板一致。
+            panel_edge: mix_toward(panel, color(palette.edge_tint), EDGE_MIX),
             panel,
-            panel_edge: color(palette.panel_edge),
             surface: color(palette.surface),
             control: color(palette.control),
             border: color(palette.border),
