@@ -1,5 +1,8 @@
 //! 应用外壳：启动流程、全局状态、面板的显示与隐藏、托盘。
 
+use std::sync::Mutex;
+use std::time::Duration;
+
 use gpui_kit::base::Root;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::{
@@ -8,6 +11,7 @@ use gpui_kit::{
     actions, prelude::*, px, size,
 };
 use gpui_tools::autostart;
+use gpui_tools::instance;
 use gpui_tools::logo;
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
 use gpui_tools::window::NativeWindow;
@@ -27,6 +31,8 @@ const WINDOW_HEIGHT: f32 = 464.;
 const APP_ICON_ID: u16 = 1;
 /// 托盘图标的边长，单位像素。
 const TRAY_ICON_SIZE: u32 = 32;
+/// 多久看一眼「有没有别的进程在叫我们亮面板」。
+const WAKE_POLL: Duration = Duration::from_millis(200);
 
 actions!(
     gpui_tools,
@@ -40,11 +46,20 @@ actions!(
 
 /// 启动器。
 pub fn launch() {
+    // **先抢单例，再碰任何别的东西。** 第二个实例不许抢热键、抢托盘、抢数据库；
+    // 它只把「亮一下面板」的信号丢给已经在跑的那个，然后立刻退出。
+    let Some(singleton) = instance::Instance::acquire() else {
+        // 叫不醒也不纠缠：多半是在跑的是个更老的版本，没有这个事件。
+        instance::Instance::wake_existing();
+        return;
+    };
+
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
+            cx.set_global(Singleton(Mutex::new(Some(singleton))));
 
             let mut settings = Settings::load();
             if settings.retain_known_commands(
@@ -142,7 +157,49 @@ pub fn launch() {
             });
 
             shortcuts::install(cx);
+            // 别的进程又启动了一次，就是在叫我们把面板亮出来。
+            watch_wakeup(cx);
         });
+}
+
+/// 单例身份，活到进程结束。丢掉它就等于放行第二个实例。
+///
+/// 包一层 `Mutex<Option<_>>` 是为了**能交出去**：重启时旧进程先 `take()` 掉，
+/// 新进程立刻就能抢到，不用等在单例上。
+struct Singleton(Mutex<Option<instance::Instance>>);
+impl gpui_kit::Global for Singleton {}
+
+/// 交还单例身份。重启前必须调，否则新进程会被自己这个还没退干净的旧进程挡住。
+pub(crate) fn release_singleton(cx: &mut App) {
+    if let Some(singleton) = cx.try_global::<Singleton>() {
+        singleton.0.lock().expect("单例锁不会中毒").take();
+    }
+}
+
+/// 盯着「有人又启动了一次」这个信号：收到就把面板亮出来。
+///
+/// 走的是命名的自动复位事件，和全局热键一样靠后台轮询——没有消息循环可以挂，
+/// 200ms 一次的空转也不值得为它开一个阻塞线程。
+fn watch_wakeup(cx: &mut App) {
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        loop {
+            cx.background_executor().timer(WAKE_POLL).await;
+            cx.update(|cx| {
+                let woken = cx.try_global::<Singleton>().is_some_and(|singleton| {
+                    singleton
+                        .0
+                        .lock()
+                        .expect("单例锁不会中毒")
+                        .as_ref()
+                        .is_some_and(instance::Instance::take_wakeup)
+                });
+                if woken {
+                    show_launcher(cx);
+                }
+            });
+        }
+    })
+    .detach();
 }
 
 /// 半透明时窗口该有的背景外观。

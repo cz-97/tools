@@ -9,7 +9,7 @@ use gpui_kit::App;
 use gpui_tools::settings::Settings;
 use gpui_tools::shell;
 
-use crate::app::remember_window_position;
+use crate::app::{release_singleton, remember_window_position};
 
 /// 项目主页。
 pub const REPOSITORY_URL: &str = "https://github.com/cz-97/gpui-tools";
@@ -54,10 +54,12 @@ pub fn quit_launcher(cx: &mut App) {
 
 /// 重启：先拉起新进程，再让当前这个退出。
 ///
-/// 新进程启动时会重试注册热键（见 `shortcuts::install`），所以哪怕旧的还占着
-/// Ctrl+Space 一小会儿，新的也能接上。
+/// 程序是全局单例，所以**先把自己那份单例身份交出去**再拉新的：新的启动时就能直接
+/// 抢到位置，不必等在单例上——那种跨进程的等待又慢又难判断卡在哪。
+/// 新的照旧靠 `shortcuts::install` 的重试去拿热键，旧的没退干净也只是晚几百毫秒。
 pub fn restart_launcher(cx: &mut App) {
     remember_window_position(cx);
+    release_singleton(cx);
     match std::env::current_exe() {
         Ok(exe) => {
             if let Err(error) = std::process::Command::new(exe).spawn() {
