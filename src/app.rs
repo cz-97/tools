@@ -6,9 +6,9 @@ use std::time::Duration;
 use gpui_kit::base::Root;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Context, Hsla, QuitMode, StyleRefinement, Subscription,
-    WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
-    actions, prelude::*, px, size,
+    AnyWindowHandle, App, Bounds, Context, Focusable, Hsla, QuitMode, StyleRefinement,
+    Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
+    WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_tools::autostart;
 use gpui_tools::instance;
@@ -253,6 +253,14 @@ pub fn open_settings(cx: &mut App) {
     });
 }
 
+/// 打开面板并切换到计算器页，供主页命令共用。
+pub fn open_calculator(cx: &mut App) {
+    show_launcher(cx);
+    with_launcher(cx, |launcher, window, cx| {
+        launcher.open_calculator(window, cx)
+    });
+}
+
 /// 托盘菜单里的「重启」。
 fn restart_application_action(_: &RestartApplication, cx: &mut App) {
     crate::actions::restart_launcher(cx);
@@ -278,15 +286,18 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
         cx.stop_propagation();
         return;
     }
+    // 计算器行里正在打字：上下键归光标移动、回车归换行。不放过的话，用户在公式里
+    // 按一下上箭头，面板就切到「关于」页去了。
+    let typing = calculator_typing(window, cx);
     match event.keystroke.key.as_str() {
-        "enter" => {
+        "enter" if !typing => {
             with_launcher(cx, |launcher, _window, cx| launcher.activate_selected(cx));
         }
-        "up" => {
+        "up" if !typing => {
             with_launcher(cx, |launcher, window, cx| launcher.navigate(-1, window, cx));
             cx.stop_propagation();
         }
-        "down" => {
+        "down" if !typing => {
             with_launcher(cx, |launcher, window, cx| launcher.navigate(1, window, cx));
             cx.stop_propagation();
         }
@@ -296,6 +307,22 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
         }
         _ => {}
     }
+}
+
+/// 计算器里是不是有一行正打着字（焦点在它的公式框里）。
+fn calculator_typing(window: &Window, cx: &App) -> bool {
+    let Some(handle) = cx.try_global::<LauncherHandle>() else {
+        return false;
+    };
+    handle
+        .view
+        .read_with(cx, |launcher, cx| {
+            launcher
+                .calculator
+                .iter()
+                .any(|row| row.input.read(cx).focus_handle(cx).is_focused(window))
+        })
+        .unwrap_or(false)
 }
 
 /// 正在录制的目标，直接从面板上读。

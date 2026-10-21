@@ -398,7 +398,13 @@ mod tests {
         let visible = ToolDelegate::new(states).visible();
         assert_eq!(
             visible.iter().map(|command| command.id).collect::<Vec<_>>(),
-            ["repository", "program-folder", "quit", "open-settings"]
+            [
+                "repository",
+                "program-folder",
+                "quit",
+                "open-calculator",
+                "open-settings"
+            ]
         );
     }
 }

@@ -3,7 +3,7 @@
 //! 按所属界面分区，一律用常量名（也就是 id）取用，不要在绘制代码里直接写字符串。
 //! 改文案只动这个文件；要加界面，就加一个同名子模块。
 
-/// 四个设置子模块的名字。
+/// 五个设置子模块的名字。
 pub mod sections {
     /// 系统。
     pub const SYSTEM: &str = "系统";
@@ -11,6 +11,8 @@ pub mod sections {
     pub const COMMANDS: &str = "命令";
     /// 外观。
     pub const APPEARANCE: &str = "外观";
+    /// 计算器。
+    pub const CALCULATOR: &str = "计算器";
     /// 关于。
     pub const ABOUT: &str = "关于";
 }
@@ -78,6 +80,20 @@ pub mod commands_page {
     pub fn conflict(owner: &str) -> String {
         format!("已被\u{201c}{owner}\u{201d}占用")
     }
+}
+
+/// 计算器页（设置里的「计算器」子模块）。
+pub mod calculator {
+    /// 空行输入框里的提示。
+    pub const PLACEHOLDER: &str = "计算公式";
+    /// 底部：清空当前在编辑的那一行。
+    pub const CLEAR_ROW: &str = "清空本行";
+    /// 底部：把所有公式行撤掉，回到一行空行。
+    pub const CLEAR_ALL: &str = "清空所有";
+    /// 结果被复制走后，那一小会儿显示的字。
+    pub const COPIED: &str = "已复制";
+    /// 底部左侧的说明：认哪些运算、结果怎么复制。
+    pub const HINT: &str = "支持 + - * / ^ 与括号，点结果即可复制";
 }
 
 /// 设置页里的各项文案。

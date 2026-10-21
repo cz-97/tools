@@ -4,11 +4,12 @@
 //! 搜索、主页列表、命令页分组、启用开关、调用次数、全局快捷键全部由这一项和它的 `id`
 //! 派生出来，不需要动别处。
 //!
-//! 子模块就是设置里的那四项（系统 / 命令 / 外观 / 关于），所以命令页读起来像设置的
-//! 一张索引：命令挂在它作用的那一页下面。
+//! 子模块就是设置里那五项（系统 / 命令 / 外观 / 计算器 / 关于），所以命令页读起来像
+//! 设置的一张索引：命令挂在它作用的那一页下面。
 
 use gpui_kit::App;
-use gpui_kit::component::IconName;
+// 图标用整套 Lucide 而不是组件的子集：计算器图标只在全集里才有。
+use gpui_kit::assets::IconName;
 
 use crate::actions;
 use crate::strings;
@@ -21,12 +22,19 @@ pub enum Section {
     System,
     Commands,
     Appearance,
+    Calculator,
     About,
 }
 
 impl Section {
     /// 全部子模块，顺序就是界面上的顺序。
-    pub const ALL: [Self; 4] = [Self::System, Self::Commands, Self::Appearance, Self::About];
+    pub const ALL: [Self; 5] = [
+        Self::System,
+        Self::Commands,
+        Self::Appearance,
+        Self::Calculator,
+        Self::About,
+    ];
 
     /// 界面上显示的名字。
     pub fn label(self) -> &'static str {
@@ -34,6 +42,7 @@ impl Section {
             Self::System => strings::sections::SYSTEM,
             Self::Commands => strings::sections::COMMANDS,
             Self::Appearance => strings::sections::APPEARANCE,
+            Self::Calculator => strings::sections::CALCULATOR,
             Self::About => strings::sections::ABOUT,
         }
     }
@@ -44,6 +53,7 @@ impl Section {
             Self::System => IconName::Cpu,
             Self::Commands => IconName::SquareTerminal,
             Self::Appearance => IconName::Palette,
+            Self::Calculator => IconName::Calculator,
             Self::About => IconName::Info,
         }
     }
@@ -57,6 +67,7 @@ impl Section {
             Self::System => "system",
             Self::Commands => "commands",
             Self::Appearance => "appearance",
+            Self::Calculator => "calculator",
             Self::About => "about",
         }
     }
@@ -89,6 +100,15 @@ pub static COMMANDS: &[Command] = &[
         keyword: "settings preferences 设置 偏好",
         icon: IconName::Settings,
         action: crate::app::open_settings,
+    },
+    Command {
+        id: "open-calculator",
+        section: Section::System,
+        name: "计算器",
+        description: "打开计算器，算表达式的值",
+        keyword: "calculator calc 计算器 计算 表达式 算数",
+        icon: IconName::Calculator,
+        action: crate::app::open_calculator,
     },
     Command {
         id: "program-folder",

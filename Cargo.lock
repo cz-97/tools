@@ -2668,7 +2668,7 @@ checksum = "4b0d73e1bc02eef886a5947f41b8512708792e9e5d3053d181843311a487f96f"
 
 [[package]]
 name = "gpui-tools"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "global-hotkey",
  "gpui-kit",

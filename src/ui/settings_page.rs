@@ -13,6 +13,7 @@ use crate::actions;
 use crate::app::stored_settings;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
+use crate::ui::calculator_page;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_page;
 use crate::ui::commands_page::shortcut_button;
@@ -28,45 +29,49 @@ pub(crate) fn render(
     let settings = stored_settings(cx);
     let border = cx.theme().border;
 
-    let sections = v_flex()
-        .w(px(SIDEBAR_WIDTH))
-        .flex_shrink_0()
-        .p_2()
-        .gap_1()
-        .border_r_1()
-        .border_color(border)
-        .children(SettingsTab::ALL.into_iter().enumerate().map(|(ix, item)| {
-            let selected = item == tab;
-            h_flex()
-                .id(SharedString::from(format!("section-tab-{ix}")))
-                .gap_2()
-                .px_3()
-                .py_2()
-                .rounded(px(6.))
-                .text_sm()
-                .text_color(if selected {
-                    colors.accent_foreground
-                } else {
-                    colors.foreground
-                })
-                .cursor_pointer()
-                .when(selected, move |this| this.bg(colors.accent))
-                .when(!selected, move |this| {
-                    this.hover(move |style| style.bg(colors.hover))
-                })
-                .on_click(cx.listener(move |launcher, _, _, cx| launcher.select_tab(item, cx)))
-                .child(Icon::new(item.icon()).size_4().text_color(if selected {
-                    colors.accent_foreground
-                } else {
-                    colors.muted_foreground
-                }))
-                .child(div().child(item.label()))
-        }));
+    let sections =
+        v_flex()
+            .w(px(SIDEBAR_WIDTH))
+            .flex_shrink_0()
+            .p_2()
+            .gap_1()
+            .border_r_1()
+            .border_color(border)
+            .children(SettingsTab::ALL.into_iter().enumerate().map(|(ix, item)| {
+                let selected = item == tab;
+                h_flex()
+                    .id(SharedString::from(format!("section-tab-{ix}")))
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(6.))
+                    .text_sm()
+                    .text_color(if selected {
+                        colors.accent_foreground
+                    } else {
+                        colors.foreground
+                    })
+                    .cursor_pointer()
+                    .when(selected, move |this| this.bg(colors.accent))
+                    .when(!selected, move |this| {
+                        this.hover(move |style| style.bg(colors.hover))
+                    })
+                    .on_click(cx.listener(move |launcher, _, window, cx| {
+                        launcher.select_tab(item, window, cx)
+                    }))
+                    .child(Icon::new(item.icon()).size_4().text_color(if selected {
+                        colors.accent_foreground
+                    } else {
+                        colors.muted_foreground
+                    }))
+                    .child(div().child(item.label()))
+            }));
 
     let content = match tab {
         SettingsTab::System => system_page(launcher, settings, colors, cx),
         SettingsTab::Commands => commands_page::render(launcher, colors, cx).into_any_element(),
         SettingsTab::Appearance => appearance_page(launcher, settings, colors, cx),
+        SettingsTab::Calculator => calculator_page::render(launcher, colors, cx).into_any_element(),
         SettingsTab::About => about_page(colors, cx),
     };
 

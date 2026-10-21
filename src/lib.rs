@@ -3,6 +3,7 @@
 //! 规范以仓库根目录的 `AGENTS.md` 为准。
 
 pub mod autostart;
+pub mod calculator;
 pub mod instance;
 pub mod logo;
 pub mod settings;

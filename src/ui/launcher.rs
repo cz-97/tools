@@ -3,15 +3,16 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
 use gpui_kit::component::list::{List, ListState};
 use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, h_flex};
 use gpui_kit::{
-    AnyElement, Context, Entity, Focusable, Font, FontWeight, IntoElement, Pixels, Render,
-    Subscription, Task, TextRun, Window, WindowControlArea, div, prelude::*, px,
+    AnyElement, App, ClipboardItem, Context, Entity, Focusable, Font, FontWeight, IntoElement,
+    Pixels, Render, Subscription, Task, TextRun, Window, WindowControlArea, div, prelude::*, px,
 };
 use gpui_tools::autostart;
+use gpui_tools::calculator;
 use gpui_tools::settings::Settings;
 
 use crate::app::{
@@ -56,6 +57,10 @@ const FOCUS_LOST_SAMPLES: u8 = 3;
 /// 面板自己也得按同一个半径圆角，那圈 1px 高光边才会贴着弧线走；
 /// 画在方角矩形上就会被窗口的圆角裁断，四个角上各缺一小段。
 const CORNER_RADIUS: f32 = 8.;
+/// 计算器一行最多长到几行字。再长的公式横着也能看全，竖着会把别的行顶出面板。
+const CALCULATOR_MAX_ROWS: usize = 8;
+/// 「已复制」这四个字亮多久。
+const COPY_FEEDBACK: Duration = Duration::from_millis(1200);
 
 /// 面板当前显示哪一页。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,12 +79,19 @@ pub(crate) enum SettingsTab {
     System,
     Commands,
     Appearance,
+    Calculator,
     About,
 }
 
 impl SettingsTab {
     /// 全部子模块，按界面上的顺序。
-    pub(crate) const ALL: [Self; 4] = [Self::System, Self::Commands, Self::Appearance, Self::About];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::System,
+        Self::Commands,
+        Self::Appearance,
+        Self::Calculator,
+        Self::About,
+    ];
 
     /// 这个标签对应命令目录里的哪个子模块。
     pub(crate) fn section(self) -> catalogue::Section {
@@ -87,6 +99,7 @@ impl SettingsTab {
             Self::System => catalogue::Section::System,
             Self::Commands => catalogue::Section::Commands,
             Self::Appearance => catalogue::Section::Appearance,
+            Self::Calculator => catalogue::Section::Calculator,
             Self::About => catalogue::Section::About,
         }
     }
@@ -97,7 +110,7 @@ impl SettingsTab {
     }
 
     /// 界面上的图标。
-    pub(crate) fn icon(self) -> IconName {
+    pub(crate) fn icon(self) -> gpui_kit::assets::IconName {
         self.section().icon()
     }
 
@@ -140,6 +153,16 @@ impl RecordTarget {
     }
 }
 
+/// 计算器里的一行：一个公式输入框，和它的订阅。
+///
+/// `id` 是稳定键，不是下标：行会被增删，下标会挪窝，订阅里记的下标会对不上行。
+pub(crate) struct CalculatorRow {
+    pub(crate) id: usize,
+    pub(crate) input: Entity<TextareaState>,
+    /// 订阅跟着行一起活；行没了它也没了。
+    _events: Subscription,
+}
+
 /// 面板视图。
 pub struct Launcher {
     pub(crate) list: Entity<ListState<ToolDelegate>>,
@@ -159,6 +182,14 @@ pub struct Launcher {
     pub(crate) section: usize,
     /// 透明度滑动条。滑动的过程只改内存，库在面板收起时统一落盘。
     pub(crate) opacity: Entity<SliderState>,
+    /// 计算器的公式行。最后一行永远是空行：它有内容，下面就自动补一个。
+    pub(crate) calculator: Vec<CalculatorRow>,
+    /// 下一行计算器行的 id。只增不减，行删了也不回收。
+    next_row_id: usize,
+    /// 「清空本行」清的是哪一行：用户最后一次点进去的那行。
+    current_row: Option<usize>,
+    /// 哪一行刚被复制过、什么时候复制的；用来亮一小会儿「已复制」。
+    copied: Option<(usize, Instant)>,
     /// 正在录制的目标。
     recording: Option<RecordTarget>,
     /// 录制期间被拒绝的原因（那个键已经被谁占了）。按键换一组就清掉。
@@ -210,7 +241,7 @@ impl Launcher {
             }
         });
 
-        let launcher = Self {
+        let mut launcher = Self {
             list,
             search,
             query: String::new(),
@@ -219,12 +250,18 @@ impl Launcher {
             focus_watch: None,
             section: 0,
             opacity,
+            calculator: Vec::new(),
+            next_row_id: 0,
+            current_row: None,
+            copied: None,
             recording: None,
             conflict: None,
             _search_events: search_events,
             _opacity_events: opacity_events,
             _search_observation: search_observation,
         };
+        // 一开始就有一行空行占着：用户进来直接就能打公式。
+        launcher.append_calculator_row(window, cx);
         // GPUI 默认不给焦点，用户点一下输入框之前，面板会把所有按键都吞掉。
         launcher.focus_search(window, cx);
         launcher.select_row(0, window, cx);
@@ -288,7 +325,7 @@ impl Launcher {
     pub(crate) fn navigate(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         match self.page {
             Page::Commands => self.move_selection(delta, window, cx),
-            Page::Settings(tab) => self.select_tab(tab.shifted(delta), cx),
+            Page::Settings(tab) => self.select_tab(tab.shifted(delta), window, cx),
         }
     }
 
@@ -326,6 +363,10 @@ impl Launcher {
             None => Page::Commands,
         };
         self.focus_search(window, cx);
+        // 回到计算器页就把光标放进最后那行空行里：唤出即打，不用再点一下。
+        if matches!(self.page, Page::Settings(SettingsTab::Calculator)) {
+            self.focus_calculator_last(window, cx);
+        }
         self.select_row(0, window, cx);
         self.watch_focus(cx);
         cx.notify();
@@ -437,12 +478,139 @@ impl Launcher {
     }
 
     /// 换一个设置子模块。
-    pub(crate) fn select_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
+    ///
+    /// 切到计算器页时把焦点交给最后那行空行：它是这一页唯一要用的输入框。
+    pub(crate) fn select_tab(
+        &mut self,
+        tab: SettingsTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.page == Page::Settings(tab) {
             return;
         }
         self.page = Page::Settings(tab);
+        if matches!(tab, SettingsTab::Calculator) {
+            self.focus_calculator_last(window, cx);
+        }
         cx.notify();
+    }
+
+    /// 把命令列表换成计算器页（主页上的「计算器」命令）。
+    pub(crate) fn open_calculator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = Page::Settings(SettingsTab::Calculator);
+        self.focus_calculator_last(window, cx);
+        cx.notify();
+    }
+
+    /// 焦点给最后一行计算器，同时把它记成「本行」。
+    fn focus_calculator_last(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.calculator.last() else {
+            return;
+        };
+        self.current_row = Some(row.id);
+        row.input.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    /// 末尾追一个空行。新行要有窗口才建得起来，所以在拿得到窗口的地方调。
+    pub(crate) fn append_calculator_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.next_row_id;
+        self.next_row_id += 1;
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(1, CALCULATOR_MAX_ROWS)
+                .placeholder(strings::calculator::PLACEHOLDER)
+        });
+        let events = cx.subscribe(&input, move |launcher, input, event, cx| match event {
+            InputEvent::Change => {
+                let value = input.read(cx).value().to_string();
+                launcher.calculator_row_changed(id, &value, cx);
+            }
+            // 点进去的那一行就是「本行」：清空本行清的是它。
+            InputEvent::Focus => launcher.current_row = Some(id),
+            _ => {}
+        });
+        self.calculator.push(CalculatorRow {
+            id,
+            input,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// 一行公式变了：末行一有内容，下面就自动补一个空行。
+    fn calculator_row_changed(&mut self, id: usize, value: &str, cx: &mut Context<Self>) {
+        let is_last = self.calculator.last().is_some_and(|row| row.id == id);
+        // 建新行要窗口，而事件回调里只有视图；推到下一拍再做（和搜索词同步一个路子）。
+        if is_last && !value.trim().is_empty() {
+            with_launcher(cx, |launcher, window, cx| {
+                launcher.append_calculator_row(window, cx)
+            });
+        }
+        // 结果是从公式现算的，重画一次就有了。
+        cx.notify();
+    }
+
+    /// 清空本行：清用户最后一次点进去的那行，清完焦点还留在那儿。
+    pub(crate) fn clear_calculator_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self
+            .current_row
+            .or_else(|| self.calculator.last().map(|row| row.id));
+        let Some(row) = target.and_then(|id| self.calculator.iter().find(|row| row.id == id))
+        else {
+            return;
+        };
+        row.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        row.input.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    /// 清空所有：回到「只有一行空行」的初始状态。
+    pub(crate) fn clear_calculator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.calculator.clear();
+        self.current_row = None;
+        self.copied = None;
+        self.append_calculator_row(window, cx);
+        self.focus_calculator_last(window, cx);
+    }
+
+    /// 点一下结果：把这行算出来的数复制走，并在行上亮一小会儿「已复制」。
+    pub(crate) fn copy_calculator_result(&mut self, id: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.calculator.iter().find(|row| row.id == id) else {
+            return;
+        };
+        let Some(text) = calculator::result_text(&row.input.read(cx).value()) else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.copied = Some((id, Instant::now()));
+        cx.notify();
+        // 「已复制」亮一会儿就收回去，不收就永远赖在行上。
+        cx.spawn(async move |launcher, cx| {
+            cx.background_executor().timer(COPY_FEEDBACK).await;
+            launcher
+                .update(cx, |launcher, cx| {
+                    if launcher.copied.is_some_and(|(row, _)| row == id) {
+                        launcher.copied = None;
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// 这一行是不是刚被复制过（还在亮「已复制」的窗口里）。
+    pub(crate) fn calculator_copied(&self, id: usize) -> bool {
+        self.copied
+            .is_some_and(|(row, at)| row == id && at.elapsed() < COPY_FEEDBACK)
+    }
+
+    /// 这一行公式算出来的数；算不了就是 `None`。
+    pub(crate) fn calculator_result(&self, id: usize, cx: &App) -> Option<String> {
+        let row = self.calculator.iter().find(|row| row.id == id)?;
+        calculator::result_text(&row.input.read(cx).value())
     }
 
     /// 换配色，所有窗口一起换，并记住这个选择。
