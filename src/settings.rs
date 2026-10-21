@@ -90,6 +90,8 @@ pub struct Settings {
     pub resume_seconds: u32,
     /// 唤出面板的全局快捷键，形如 `ctrl+Space`；`None` 表示不绑，只能从托盘打开。
     pub summon_shortcut: Option<String>,
+    /// 计算器结果最多保留的小数位数；`0` 表示只显示整数（非整数会四舍五入）。
+    pub calculator_precision: u32,
     /// 每条命令的状态，键是（子模块键, 命令 id）。
     pub commands: BTreeMap<(String, String), CommandSettings>,
 }
@@ -130,13 +132,22 @@ impl Settings {
     /// 子页面能记多久，界面上按顺序给出这几档。
     pub const RESUME_CHOICES: [u32; 5] = [0, 15, 30, 60, 300];
     /// 面板底色最淡能调到多淡。
-    pub const PANEL_OPACITY_MIN: u32 = 30;
+    pub const PANEL_OPACITY_MIN: u32 = 0;
     /// 面板底色最深能调到多深（也就是全实）。
     pub const PANEL_OPACITY_MAX: u32 = 100;
     /// 透明度控件一步走多少个百分点。
     pub const PANEL_OPACITY_STEP: u32 = 2;
     /// 半透明底色默认的不透明度：够看清字，又明显看得出背后在动。
     pub const PANEL_OPACITY_DEFAULT: u32 = 78;
+
+    /// 计算器结果默认保留的小数位数。
+    pub const CALCULATOR_PRECISION_MIN: u32 = 0;
+    /// 计算器结果最多保留这么多位小数。
+    pub const CALCULATOR_PRECISION_MAX: u32 = 12;
+    /// 精度步进一次走几位。
+    pub const CALCULATOR_PRECISION_STEP: u32 = 1;
+    /// 全新安装用的精度：和改之前的行为一致（最多十位、去尾零）。
+    pub const CALCULATOR_PRECISION_DEFAULT: u32 = 10;
 
     /// Remove stored command state whose `(section, id)` no longer exists in the catalogue.
     ///
@@ -263,6 +274,11 @@ impl Settings {
                     "summon_shortcut" => {
                         settings.summon_shortcut = (value != SUMMON_NONE).then_some(value);
                     }
+                    "calculator_precision" => {
+                        if let Ok(precision) = value.parse() {
+                            settings.calculator_precision = precision;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -312,6 +328,10 @@ impl Settings {
             insert.execute(params![
                 "summon_shortcut",
                 self.summon_shortcut.as_deref().unwrap_or(SUMMON_NONE)
+            ])?;
+            insert.execute(params![
+                "calculator_precision",
+                self.calculator_precision.to_string()
             ])?;
             if let Some(y) = self.window_y {
                 insert.execute(params!["window_y", y.to_string()])?;
@@ -405,6 +425,10 @@ impl Settings {
         self.panel_opacity = self
             .panel_opacity
             .clamp(Self::PANEL_OPACITY_MIN, Self::PANEL_OPACITY_MAX);
+        self.calculator_precision = self.calculator_precision.clamp(
+            Self::CALCULATOR_PRECISION_MIN,
+            Self::CALCULATOR_PRECISION_MAX,
+        );
     }
 }
 
@@ -419,6 +443,7 @@ impl Default for Settings {
             launch_at_login: false,
             resume_seconds: 0,
             summon_shortcut: Some(Settings::SUMMON_DEFAULT.to_string()),
+            calculator_precision: Self::CALCULATOR_PRECISION_DEFAULT,
             commands: BTreeMap::new(),
         }
     }
@@ -559,6 +584,33 @@ mod tests {
         let mut settings = Settings::read(&connection).expect("读取").expect("有数据");
         settings.tidy();
         assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
+    }
+
+    #[test]
+    fn calculator_precision_survives_a_round_trip() {
+        let mut settings = Settings::default();
+        settings.calculator_precision = 4;
+        let connection = database();
+        settings.write(&connection).expect("写入");
+        let read = Settings::read(&connection).expect("读取").expect("有数据");
+        assert_eq!(read.calculator_precision, 4);
+    }
+
+    #[test]
+    fn an_out_of_range_calculator_precision_is_pulled_back() {
+        let connection = database();
+        connection
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('calculator_precision', '99')",
+                [],
+            )
+            .expect("插入");
+        let mut settings = Settings::read(&connection).expect("读取").expect("有数据");
+        settings.tidy();
+        assert_eq!(
+            settings.calculator_precision,
+            Settings::CALCULATOR_PRECISION_MAX
+        );
     }
 
     #[test]

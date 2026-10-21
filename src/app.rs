@@ -55,7 +55,10 @@ pub fn launch() {
     };
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        // `Assets` 只内嵌 `default-icons.txt` 那一组图标，计算器图标不在其中，
+        // 注册它会让 `Icon::new(Calculator)` 加载失败、图标整片空白。`AllAssets`
+        // 内嵌全部 Lucide 图标，程序用到的图标只要不出这个全集就都画得出来。
+        .with_assets(gpui_kit::assets::AllAssets)
         .with_quit_mode(QuitMode::Explicit)
         .run(|cx: &mut App| {
             gpui_kit::init(cx);

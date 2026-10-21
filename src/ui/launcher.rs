@@ -24,6 +24,7 @@ use crate::shortcuts::{
     ShortcutOwner, apply_command_shortcuts, apply_summon_shortcut, chord_from_keystroke,
 };
 use crate::strings;
+use crate::ui::calculator_page;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_list::{ToolDelegate, command_states};
 use crate::ui::settings_page;
@@ -69,6 +70,8 @@ pub(crate) enum Page {
     Commands,
     /// 设置，打开在指定的子模块上。
     Settings(SettingsTab),
+    /// 计算器：和设置平级的一级页面，从主页「计算器」命令进入。
+    Calculator,
 }
 
 /// 设置里的子模块，顺序就是左侧列的顺序。
@@ -174,8 +177,9 @@ pub struct Launcher {
     query: String,
     /// 当前这一页，页头、正文、页脚都跟着它。
     pub(crate) page: Page,
-    /// 最后一次离开设置页停在哪个子模块、什么时候走的。保留期内再唤出就回那一页。
-    last_section: Option<(Instant, SettingsTab)>,
+    /// 最后一次离开非命令页（设置或计算器）时停在哪一页、什么时候走的。
+    /// 保留期内再唤出就回到那一页。
+    last_page: Option<(Instant, Page)>,
     /// 盯着面板有没有失去前台的循环。每次唤起重开，旧的那条已经结束了。
     focus_watch: Option<Task<()>>,
     /// 命令页当前显示第几个子模块，`catalogue::Section::ALL` 的下标。
@@ -246,7 +250,7 @@ impl Launcher {
             search,
             query: String::new(),
             page: Page::Commands,
-            last_section: None,
+            last_page: None,
             focus_watch: None,
             section: 0,
             opacity,
@@ -321,11 +325,12 @@ impl Launcher {
         });
     }
 
-    /// 上下键：命令页里移高亮，设置页里换子模块。
+    /// 上下键：命令页里移高亮，设置页里换子模块；计算器页里不抢方向键（公式框自己用）。
     pub(crate) fn navigate(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         match self.page {
             Page::Commands => self.move_selection(delta, window, cx),
             Page::Settings(tab) => self.select_tab(tab.shifted(delta), window, cx),
+            Page::Calculator => {}
         }
     }
 
@@ -358,14 +363,15 @@ impl Launcher {
         self.refresh_catalogue(cx);
         self.list
             .update(cx, |list, cx| list.set_query("", window, cx));
-        self.page = match self.resumed_tab(cx) {
-            Some(tab) => Page::Settings(tab),
+        self.page = match self.resumed_page(cx) {
+            Some(page) => page,
             None => Page::Commands,
         };
-        self.focus_search(window, cx);
-        // 回到计算器页就把光标放进最后那行空行里：唤出即打，不用再点一下。
-        if matches!(self.page, Page::Settings(SettingsTab::Calculator)) {
-            self.focus_calculator_last(window, cx);
+        // 命令页把焦点给搜索框；计算器页给最后那行空行（唤出即打）；设置页没有要聚焦的输入框。
+        match self.page {
+            Page::Commands => self.focus_search(window, cx),
+            Page::Calculator => self.focus_calculator_last(window, cx),
+            Page::Settings(_) => {}
         }
         self.select_row(0, window, cx);
         self.watch_focus(cx);
@@ -417,19 +423,22 @@ impl Launcher {
         hide_launcher(cx);
     }
 
-    /// 这次唤出该回到哪个设置子模块——离开得够近、还值得记着就回。
-    fn resumed_tab(&self, cx: &Context<Self>) -> Option<SettingsTab> {
-        let (at, tab) = self.last_section?;
+    /// 这次唤出该回到哪一页——离开得够近、还值得记着就回。
+    ///
+    /// 只回「非命令页」（设置或计算器）：命令页本来就是默认页，记它也只是多余。
+    fn resumed_page(&self, cx: &Context<Self>) -> Option<Page> {
+        let (at, page) = self.last_page?;
         let window = stored_settings(cx).resume_seconds;
-        (window > 0 && at.elapsed() < Duration::from_secs(window.into())).then_some(tab)
+        (window > 0 && at.elapsed() < Duration::from_secs(window.into())).then_some(page)
     }
 
     /// 记下离开时停在哪一页，`reset` 才有地方回去。
     ///
     /// 两条离开路径都算：收起面板，以及退回命令页——因为 Esc 是先退页再收面板。
-    pub(crate) fn remember_section(&mut self) {
-        if let Page::Settings(tab) = self.page {
-            self.last_section = Some((Instant::now(), tab));
+    /// 命令页不记（它是默认页），所以离开设置/计算器时才写。
+    pub(crate) fn remember_page(&mut self) {
+        if !matches!(self.page, Page::Commands) {
+            self.last_page = Some((Instant::now(), self.page));
         }
     }
 
@@ -441,7 +450,7 @@ impl Launcher {
     pub(crate) fn leave(&mut self) {
         self.recording = None;
         self.conflict = None;
-        self.remember_section();
+        self.remember_page();
     }
 
     /// 执行高亮的那条命令。
@@ -454,9 +463,9 @@ impl Launcher {
         }
     }
 
-    /// Esc 先从设置页退出来，再收面板。
+    /// Esc 先从设置/计算器页退出来，再收面板。
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.page, Page::Settings(_)) {
+        if matches!(self.page, Page::Settings(_) | Page::Calculator) {
             self.back_to_commands(window, cx);
         } else {
             hide_launcher(cx);
@@ -471,34 +480,31 @@ impl Launcher {
 
     /// 回到命令列表，输入框准备好接收按键。
     pub(crate) fn back_to_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.remember_section();
+        self.remember_page();
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
     }
 
-    /// 换一个设置子模块。
-    ///
-    /// 切到计算器页时把焦点交给最后那行空行：它是这一页唯一要用的输入框。
+    /// 换一个设置子模块。计算器本体已经不在设置里，这里不再需要为它移交焦点。
     pub(crate) fn select_tab(
         &mut self,
         tab: SettingsTab,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.page == Page::Settings(tab) {
             return;
         }
         self.page = Page::Settings(tab);
-        if matches!(tab, SettingsTab::Calculator) {
-            self.focus_calculator_last(window, cx);
-        }
         cx.notify();
     }
 
     /// 把命令列表换成计算器页（主页上的「计算器」命令）。
+    ///
+    /// 计算器是和设置平级的一级页面，不再挂在设置下面。
     pub(crate) fn open_calculator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.page = Page::Settings(SettingsTab::Calculator);
+        self.page = Page::Calculator;
         self.focus_calculator_last(window, cx);
         cx.notify();
     }
@@ -580,7 +586,8 @@ impl Launcher {
         let Some(row) = self.calculator.iter().find(|row| row.id == id) else {
             return;
         };
-        let Some(text) = calculator::result_text(&row.input.read(cx).value()) else {
+        let precision = stored_settings(cx).calculator_precision;
+        let Some(text) = calculator::result_text(&row.input.read(cx).value(), precision) else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -607,10 +614,11 @@ impl Launcher {
             .is_some_and(|(row, at)| row == id && at.elapsed() < COPY_FEEDBACK)
     }
 
-    /// 这一行公式算出来的数；算不了就是 `None`。
+    /// 这一行公式算出来的数；算不了就是 `None`。小数位数按设置里的计算精度。
     pub(crate) fn calculator_result(&self, id: usize, cx: &App) -> Option<String> {
         let row = self.calculator.iter().find(|row| row.id == id)?;
-        calculator::result_text(&row.input.read(cx).value())
+        let precision = stored_settings(cx).calculator_precision;
+        calculator::result_text(&row.input.read(cx).value(), precision)
     }
 
     /// 换配色，所有窗口一起换，并记住这个选择。
@@ -667,6 +675,21 @@ impl Launcher {
             return;
         }
         settings.search_height = height;
+        store_settings(settings, cx);
+        cx.notify();
+    }
+
+    /// 改计算器结果的精度（最多保留几位小数）。
+    pub(crate) fn set_calculator_precision(&mut self, precision: u32, cx: &mut Context<Self>) {
+        let precision = precision.clamp(
+            Settings::CALCULATOR_PRECISION_MIN,
+            Settings::CALCULATOR_PRECISION_MAX,
+        );
+        let mut settings = stored_settings(cx);
+        if settings.calculator_precision == precision {
+            return;
+        }
+        settings.calculator_precision = precision;
         store_settings(settings, cx);
         cx.notify();
     }
@@ -932,9 +955,10 @@ impl Launcher {
                     ),
                 )
                 .into_any_element(),
-            Page::Settings(_) => bar
-                .child(
-                    div().id("settings-back").occlude().flex_shrink_0().child(
+            Page::Settings(_) | Page::Calculator => {
+                let is_calculator = matches!(self.page, Page::Calculator);
+                bar.child(
+                    div().id("page-back").occlude().flex_shrink_0().child(
                         Button::new("back-to-commands")
                             .ghost()
                             .icon(IconName::ArrowLeft)
@@ -944,14 +968,27 @@ impl Launcher {
                             })),
                     ),
                 )
+                .when(is_calculator, |this| {
+                    // 计算器图标只在全集里才有，且用 `assets::IconName` 取，组件子集没有。
+                    this.child(
+                        Icon::new(gpui_kit::assets::IconName::Calculator)
+                            .size_4()
+                            .text_color(muted_fg),
+                    )
+                })
                 .child(
                     div()
                         .text_sm()
                         .font_weight(FontWeight::MEDIUM)
-                        .child(strings::launcher::SETTINGS_TITLE),
+                        .child(if is_calculator {
+                            strings::launcher::CALCULATOR_TITLE
+                        } else {
+                            strings::launcher::SETTINGS_TITLE
+                        }),
                 )
                 .child(div().flex_1())
-                .into_any_element(),
+                .into_any_element()
+            }
         }
     }
 }
@@ -1035,6 +1072,7 @@ impl Render for Launcher {
                 ],
                 String::new(),
             ),
+            Page::Calculator => (vec![("Esc", strings::launcher::FOOTER_BACK)], String::new()),
         };
 
         let footer = h_flex()
@@ -1058,6 +1096,7 @@ impl Render for Launcher {
                 .child(List::new(&self.list).px_1().py_1())
                 .into_any_element(),
             Page::Settings(tab) => settings_page::render(self, tab, cx).into_any_element(),
+            Page::Calculator => calculator_page::render(self, colors, cx).into_any_element(),
         };
 
         // 面板自己的圆角必须和系统裁剪的圆角一模一样（8 物理像素，不随 DPI 缩放），

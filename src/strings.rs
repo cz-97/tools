@@ -37,6 +37,8 @@ pub mod launcher {
     pub const TOOLTIP_BACK: &str = "返回";
     /// 设置页页头的标题。
     pub const SETTINGS_TITLE: &str = "设置";
+    /// 计算器页页头的标题。
+    pub const CALCULATOR_TITLE: &str = "计算器";
     /// 页脚右侧的命令条数。
     pub fn count(commands: usize) -> String {
         format!("{commands} 条命令")
@@ -82,7 +84,7 @@ pub mod commands_page {
     }
 }
 
-/// 计算器页（设置里的「计算器」子模块）。
+/// 计算器页（主程序的一级页面，与设置平级）。
 pub mod calculator {
     /// 空行输入框里的提示。
     pub const PLACEHOLDER: &str = "计算公式";
@@ -164,6 +166,14 @@ pub mod settings_page {
     pub const THEME_LIGHT: &str = "浅色";
     /// 主题：深色。
     pub const THEME_DARK: &str = "深色";
+    /// 计算器设置：精度的标题。
+    pub const CALCULATOR_NAME: &str = "计算精度";
+    /// 计算器设置：精度的说明。
+    pub const CALCULATOR_DESCRIPTION: &str = "结果最多保留的小数位数";
+    /// 计算器设置：当前精度的单位。
+    pub fn precision_value(precision: u32) -> String {
+        format!("{precision} 位")
+    }
     /// 子页面保持：不保持。
     pub const RESUME_NEVER: &str = "不保持";
     /// 子页面保持：15 秒。

@@ -13,7 +13,6 @@ use crate::actions;
 use crate::app::stored_settings;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
-use crate::ui::calculator_page;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_page;
 use crate::ui::commands_page::shortcut_button;
@@ -71,7 +70,8 @@ pub(crate) fn render(
         SettingsTab::System => system_page(launcher, settings, colors, cx),
         SettingsTab::Commands => commands_page::render(launcher, colors, cx).into_any_element(),
         SettingsTab::Appearance => appearance_page(launcher, settings, colors, cx),
-        SettingsTab::Calculator => calculator_page::render(launcher, colors, cx).into_any_element(),
+        // 这里的「计算器」是计算器的设置（比如精度），计算器本体是和设置平级的一级页面。
+        SettingsTab::Calculator => calculator_settings_page(settings, colors, cx),
         SettingsTab::About => about_page(colors, cx),
     };
 
@@ -291,6 +291,36 @@ fn about_page(colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
             strings::settings_page::FOLDER_OPEN,
             colors,
             cx.listener(|_, _, _, cx| actions::open_program_folder(cx)),
+        ))
+        .into_any_element()
+}
+
+/// 计算器设置页：计算器本体的设置，目前只有结果的精度。
+fn calculator_settings_page(
+    settings: Settings,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> AnyElement {
+    v_flex()
+        .gap_1()
+        .child(settings_row(
+            strings::settings_page::CALCULATOR_NAME,
+            strings::settings_page::CALCULATOR_DESCRIPTION,
+            colors,
+            stepper(
+                "calculator-precision",
+                settings.calculator_precision,
+                StepperRange {
+                    lowest: Settings::CALCULATOR_PRECISION_MIN,
+                    highest: Settings::CALCULATOR_PRECISION_MAX,
+                    step: Settings::CALCULATOR_PRECISION_STEP,
+                    label: strings::settings_page::precision_value(settings.calculator_precision)
+                        .into(),
+                },
+                colors,
+                cx,
+                |launcher, precision, cx| launcher.set_calculator_precision(precision, cx),
+            ),
         ))
         .into_any_element()
 }

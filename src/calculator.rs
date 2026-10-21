@@ -16,15 +16,18 @@ pub fn evaluate(expression: &str) -> Option<f64> {
     (parser.pos == parser.chars.len() && value.is_finite()).then_some(value)
 }
 
-/// 一个数该显示成的样子：整数不带小数点，小数截到十位、尾巴上的零去掉。
-pub fn format(value: f64) -> String {
+/// 一个数该显示成的样子：整数不带小数点，小数最多保留 `precision` 位、尾巴上的零去掉。
+///
+/// `precision` 来自外观页的计算精度设置；整数的判定在小数位之前，所以 `0.5` 不会先被
+/// 当成整数，再被零精度抹成 `0`。
+pub fn format(value: f64, precision: u32) -> String {
     if !value.is_finite() {
         return String::new();
     }
     if value == value.trunc() && value.abs() < 1e15 {
         return format!("{}", value as i64);
     }
-    let text = format!("{value:.10}");
+    let text = format!("{value:.prec$}", prec = precision as usize);
     let text = text.trim_end_matches('0').trim_end_matches('.');
     if text == "-0" {
         // -0.0 截断后剩下的空壳，没有显示价值。
@@ -34,9 +37,11 @@ pub fn format(value: f64) -> String {
 }
 
 /// 算式算出结果后该显示的字；算不了（含除零、溢出、NaN）就是 `None`。
-pub fn result_text(expression: &str) -> Option<String> {
+///
+/// `precision` 透传给 `format`，决定小数最多保留几位。
+pub fn result_text(expression: &str, precision: u32) -> Option<String> {
     // 算不出的都已经在 `format` 里变成空串：非有限值没有可显示的样子。
-    let text = format(evaluate(expression)?);
+    let text = format(evaluate(expression)?, precision);
     (!text.is_empty()).then_some(text)
 }
 
@@ -288,25 +293,33 @@ mod tests {
 
     #[test]
     fn integers_print_without_a_decimal_point() {
-        assert_eq!(format(41.0), "41");
-        assert_eq!(format(-2.0), "-2");
-        assert_eq!(format(0.5), "0.5");
-        assert_eq!(format(-0.0), "0");
+        assert_eq!(format(41.0, 10), "41");
+        assert_eq!(format(-2.0, 10), "-2");
+        assert_eq!(format(0.5, 10), "0.5");
+        assert_eq!(format(-0.0, 10), "0");
     }
 
     #[test]
     fn decimals_are_trimmed_not_dumped_raw() {
         // 二进制浮点的毛边不该原样摆到用户面前。
-        assert_eq!(format(0.1 + 0.2), "0.3");
-        assert_eq!(format(1.0 / 3.0), "0.3333333333");
-        assert_eq!(format(2.0_f64.powf(-1.0)), "0.5");
+        assert_eq!(format(0.1 + 0.2, 10), "0.3");
+        assert_eq!(format(1.0 / 3.0, 10), "0.3333333333");
+        assert_eq!(format(2.0_f64.powf(-1.0), 10), "0.5");
+    }
+
+    #[test]
+    fn precision_limits_how_many_decimal_places_survive() {
+        assert_eq!(format(1.0 / 3.0, 2), "0.33");
+        assert_eq!(format(1.0 / 3.0, 4), "0.3333");
+        // 精度只截不抹：整数量级的数不受小数位影响。
+        assert_eq!(format(42.0, 0), "42");
     }
 
     #[test]
     fn result_text_hides_everything_that_is_not_a_number() {
-        assert_eq!(result_text("1+1").as_deref(), Some("2"));
-        assert_eq!(result_text("1/0"), None);
-        assert_eq!(result_text("nope"), None);
-        assert_eq!(result_text(""), None);
+        assert_eq!(result_text("1+1", 10).as_deref(), Some("2"));
+        assert_eq!(result_text("1/0", 10), None);
+        assert_eq!(result_text("nope", 10), None);
+        assert_eq!(result_text("", 10), None);
     }
 }
