@@ -29,7 +29,7 @@ use gpui_tools::settings::Settings;
 /// 这是整套配色唯一的「物理常数」：低于约 0.72，浅色壁纸会把面板冲成中灰，
 /// 白字怎么调都发虚——问题不在字色，在面板不够黑。所以宁可让滑块的下半程
 /// 变化小一点，也不允许面板掉出这个区间。
-const FROST_FLOOR: f32 = 0.72;
+const FROST_FLOOR: f32 = 0.6;
 
 /// 面板外沿那 1px 高光比面板本身亮/暗多少。
 const EDGE_MIX: f32 = 0.14;
@@ -79,7 +79,7 @@ const DARK: Palette = Palette {
     border: 0xffffff14,
     surface: 0xffffff12,
     control: 0xffffff0a,
-    accent: 0x7aa2f72e,
+    accent: 0x7aa2f71e,
     accent_foreground: 0xffffffff,
     accent_tile: 0xffffff1f,
     on_accent_muted: 0xffffffb8,

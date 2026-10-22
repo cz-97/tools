@@ -4,14 +4,6 @@ version = "0.14.0"
 edition = "2024"
 default-run = "gpui-tools"
 
-[[bin]]
-name = "gpui-transparency-probe"
-path = "src/bin/transparency_probe.rs"
-
-[[bin]]
-name = "gpui-theme-probe"
-path = "src/bin/theme_probe.rs"
-
 [dependencies]
 gpui-kit = "0.7.3"
 global-hotkey = "0.8"
