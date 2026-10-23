@@ -117,7 +117,7 @@ pub fn launch() {
                     }
                     // Windows 11 的默认圆角：就是系统设置里「圆角」那一档的半径。
                     if !window.round_corners() {
-                        eprintln!("gpui-tools: 系统没采用默认圆角，窗口保持方角");
+                        // eprintln!("gpui-tools: 系统没采用默认圆角，窗口保持方角");
                     }
                     // 任务栏和 Alt-Tab 的图标取自窗口，GPUI 不管，得自己挂资源。
                     if !window.set_icon(APP_ICON_ID) {
