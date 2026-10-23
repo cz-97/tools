@@ -1,5 +1,8 @@
 //! 应用外壳：启动流程、全局状态、面板的显示与隐藏、托盘。
 
+pub(crate) mod actions;
+pub(crate) mod tray_theme;
+
 use std::sync::Mutex;
 use std::time::Duration;
 

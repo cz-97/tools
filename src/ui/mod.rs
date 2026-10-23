@@ -1,8 +1,11 @@
 //! 面板的各个界面。
 
-pub mod calculator_page;
 pub mod colors;
 pub mod commands_list;
-pub mod commands_page;
 pub mod launcher;
-pub mod settings_page;
+pub mod pages;
+
+// 整页视图收进了 `pages/`，旧的 `crate::ui::settings_page` 这类路径继续有效。
+pub use pages::{
+    calculator as calculator_page, commands as commands_page, settings as settings_page,
+};

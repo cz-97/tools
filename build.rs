@@ -1,6 +1,6 @@
 //! 把图标和版本信息编进可执行文件。
 //!
-//! 图标由 `src/logo.rs` 画出来——和托盘、窗口用的是同一份描述——所以没有图片要同步。
+//! 图标由 `src/platform/logo.rs` 画出来——和托盘、窗口用的是同一份描述——所以没有图片要同步。
 //! 唯一额外的环节是 Windows SDK 里的资源编译器；找不到它构建也照常成功，只是资源
 //! 管理器里那个文件图标会缺。
 
@@ -9,11 +9,11 @@ use std::process::Command;
 
 // 这里只需要 `ico()`，托盘用的那套函数在构建脚本里用不上。
 #[allow(dead_code)]
-#[path = "src/logo.rs"]
+#[path = "src/platform/logo.rs"]
 mod logo;
 
 fn main() {
-    println!("cargo:rerun-if-changed=src/logo.rs");
+    println!("cargo:rerun-if-changed=src/platform/logo.rs");
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR 一定存在"));
