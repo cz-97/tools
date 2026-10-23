@@ -166,7 +166,7 @@ pub static COMMANDS: &[Command] = &[
         name: strings::common::PROJECTS,
         description: strings::commands::PROJECTS_DESCRIPTION,
         keyword: "github repos projects 个人项目 我的仓库 自己的",
-        icon: IconName::FolderGit2,
+        icon: IconName::House,
         action: actions::open_github_projects,
     },
     Command {
@@ -184,7 +184,7 @@ pub static COMMANDS: &[Command] = &[
         name: strings::common::REPO_SEARCH,
         description: strings::commands::REPO_SEARCH_DESCRIPTION,
         keyword: "github search repositories 搜索 查询 找仓库",
-        icon: IconName::Search,
+        icon: IconName::Github,
         action: actions::open_github_search,
     },
     Command {

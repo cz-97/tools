@@ -135,8 +135,8 @@ pub mod launcher {
 ///
 /// 五个页面共用一套骨架，所以文案也放在一处：标题、空状态、页头那枚刷新按钮。
 pub mod lists {
-    /// 页头按钮：重新读取（书签、历史、个人项目、星标）。
-    pub const REFRESH: &str = "重新读取";
+    /// 页头按钮：从网络重新取一份（个人项目、星标）。
+    pub const REFRESH: &str = "从网络重新获取";
     /// 页头按钮：立刻按当前关键词再搜一次（查询仓库）。
     pub const SEARCH_AGAIN: &str = "按当前关键词搜索";
     /// 页头：正在读库或者正在抓。
@@ -170,7 +170,7 @@ pub mod lists {
     /// 缓存为空时的空状态。
     pub const NO_CACHE: &str = "还没有缓存，点右上角刷新一次";
     /// 查询仓库页还没搜过时的空状态。
-    pub const NO_QUERY: &str = "在上面输入关键词就会自动搜索";
+    pub const NO_QUERY: &str = "输入关键词后按回车搜索";
     /// 搜到了但是空的。
     pub const NO_RESULT: &str = "没有搜到仓库";
     /// 这个账号名下确实一个仓库都没有。

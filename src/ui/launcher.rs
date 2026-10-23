@@ -66,8 +66,6 @@ const CORNER_RADIUS: f32 = 8.;
 const CALCULATOR_MAX_ROWS: usize = 8;
 /// 「已复制」这四个字亮多久。
 const COPY_FEEDBACK: Duration = Duration::from_millis(1200);
-/// 查询仓库页敲完字等多久再发请求：一口气打完只搜一次。
-const SEARCH_DEBOUNCE: Duration = Duration::from_millis(600);
 
 /// 面板当前显示哪一页。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,9 +114,9 @@ impl ListKind {
         match self {
             Self::Bookmarks => gpui_kit::assets::IconName::Bookmark,
             Self::History => gpui_kit::assets::IconName::Clock,
-            Self::Projects => gpui_kit::assets::IconName::FolderGit2,
+            Self::Projects => gpui_kit::assets::IconName::House,
             Self::Stars => gpui_kit::assets::IconName::Star,
-            Self::Search => gpui_kit::assets::IconName::Search,
+            Self::Search => gpui_kit::assets::IconName::Github,
         }
     }
 
@@ -320,10 +318,6 @@ pub struct Launcher {
     pub(crate) list_search: Entity<InputState>,
     /// 已经发给 GitHub 的那个关键词（远程搜索用）。
     list_query: String,
-    /// 远程搜索的防抖任务：新敲一个字就把上一个顶掉。
-    search_timer: Option<Task<()>>,
-    /// 防抖任务的流水号，旧的那条醒来发现号不对就不干活。
-    search_serial: u64,
     /// 后台任务（读库、抓网络）。存着它任务才不会被丢掉。
     pending: Option<Task<()>>,
     /// 设置里那三个文本框（火狐目录、GitHub 用户名、令牌）。
@@ -442,8 +436,6 @@ impl Launcher {
             entries,
             list_search,
             list_query: String::new(),
-            search_timer: None,
-            search_serial: 0,
             pending: None,
             firefox_input,
             github_user_input,
@@ -832,7 +824,6 @@ impl Launcher {
     pub(crate) fn back_to_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 离开列表页就把还在跑的任务丢掉：抓回来的数据不该塞进别的页面。
         self.pending = None;
-        self.search_timer = None;
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
@@ -901,7 +892,6 @@ impl Launcher {
     ) {
         // 上一页还在跑的活儿先丢掉，结果不许串到这一页来。
         self.pending = None;
-        self.search_timer = None;
         self.page = Page::List(kind);
         self.list_query.clear();
         self.list_search
@@ -953,9 +943,10 @@ impl Launcher {
         }
     }
 
-    /// 搜索框内容变了：本地列表立刻过滤；查询仓库页防抖之后再发请求。
+    /// 搜索框内容变了：本地列表立刻过滤，**不发请求**。
     ///
-    /// 查询仓库页**不做本地过滤**：那是全网的搜索结果，`language:rust` 这种限定符
+    /// 查询仓库页也只在回车/点右上角按钮时才联网，打字过程中一个包都不发。
+    /// 它同样**不做本地过滤**：那是全网的搜索结果，`language:rust` 这种限定符
     /// 一过滤就把结果全滤没了。
     fn list_search_changed(&mut self, text: String, cx: &mut Context<Self>) {
         let Page::List(kind) = self.page else {
@@ -963,33 +954,12 @@ impl Launcher {
         };
         cx.notify();
         if kind == ListKind::Search {
-            let keyword = text.trim().to_string();
-            if keyword.is_empty() || keyword == self.list_query {
-                return;
-            }
-            self.schedule_search(keyword, cx);
             return;
         }
         self.entries.update(cx, |list, cx| {
             list.delegate_mut().set_query(&text);
             cx.notify();
         });
-    }
-
-    /// 隔一小会儿再搜：一口气敲完只发一次请求。
-    fn schedule_search(&mut self, keyword: String, cx: &mut Context<Self>) {
-        self.search_serial += 1;
-        let serial = self.search_serial;
-        self.search_timer = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
-            this.update(cx, |launcher, cx| {
-                // 号对不上说明用户又敲了，这一次作废。
-                if launcher.search_serial == serial {
-                    launcher.run_search(keyword, cx);
-                }
-            })
-            .ok();
-        }));
     }
 
     /// 读书签或者历史。sqlite 是阻塞的，扔到后台线程去读。
@@ -1038,11 +1008,18 @@ impl Launcher {
         }
         let cache_key = format!("github-{}-{user}", kind.cache_name());
         if !refresh {
+            // 只有缓存，没有就干等着用户按刷新：进页面不联网。
             let cached = cache::read(&cache_key).and_then(|text| github::from_json(&text));
             if let Some(repos) = cached {
                 self.install_entries(repo_entries(repos), cx);
-                return;
+            } else {
+                self.entries.update(cx, |list, cx| {
+                    list.delegate_mut()
+                        .set_message(Some(strings::lists::NO_CACHE.to_string()));
+                    cx.notify();
+                });
             }
+            return;
         }
 
         self.entries.update(cx, |list, cx| {

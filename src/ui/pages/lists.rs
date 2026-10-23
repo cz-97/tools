@@ -97,8 +97,6 @@ pub(crate) struct EntryRow {
     entry: Entry,
     selected: bool,
     index: usize,
-    /// 双行排版：仓库用（第一行名字 + 语言，第二行星数和简介）。
-    two_lines: bool,
     /// 刚被单击复制过，右侧短暂变成「已复制」。
     copied: bool,
     /// 点一下要通知谁。
@@ -160,16 +158,6 @@ impl RenderOnce for EntryRow {
                     .into_any_element(),
             });
 
-        let title = div()
-            .flex_shrink_0()
-            .max_w(px(320.))
-            .min_w_0()
-            .overflow_hidden()
-            .text_ellipsis()
-            .text_sm()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(title_color)
-            .child(self.entry.title.clone());
         let detail = div()
             .flex_1()
             .min_w_0()
@@ -192,47 +180,38 @@ impl RenderOnce for EntryRow {
             .text_color(detail_color)
             .child(meta_text);
 
-        // 单行：名称和描述并排，名称不缩、描述吃剩下的地方（描述尽量长，但不压名称）。
-        // 双行：第一行名字 + 语言，第二行星数 + 简介。
-        let body = if self.two_lines {
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_0p5()
-                .child(
-                    h_flex()
-                        .min_w_0()
-                        .w_full()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(title_color)
-                                .child(self.entry.title.clone()),
-                        )
-                        .child(meta),
-                )
-                .child(detail)
-                .into_any_element()
-        } else {
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_3()
-                .child(title)
-                .child(detail)
-                .when(!self.entry.meta.is_empty(), |this| this.child(meta))
-                .into_any_element()
-        };
+        // 五个页面都两行：第一行名字（右侧挂元信息），第二行描述/网址。
+        // 描述独占一行，所以不用跟名字抢宽度，能显示多长就显示多长。
+        let body = v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(title_color)
+                            .child(self.entry.title.clone()),
+                    )
+                    .when(!self.entry.meta.is_empty() || self.copied, |this| {
+                        this.child(meta)
+                    }),
+            )
+            .child(detail)
+            .into_any_element();
 
         let index = self.index;
         let view = self.view.clone();
-        let height = if self.two_lines { px(52.) } else { px(44.) };
+        let height = px(52.);
 
         div().w_full().py(px(1.)).child(
             h_flex()
@@ -486,7 +465,6 @@ impl ListDelegate for EntryDelegate {
             },
             selected: ix.row == self.selected,
             index: ix.row,
-            two_lines: self.kind.is_repos(),
             copied: self.is_copied(index),
             view: self.view.clone(),
         })

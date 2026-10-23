@@ -162,22 +162,28 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 五个页面共用一张列表和一份 delegate（`EntryDelegate`），页头、空状态、行排版按
 `ListKind` 分派：
 
-| `ListKind` | 入口命令 | 数据 | 行 |
+| `ListKind` | 入口命令 | 数据 | 右侧元信息 |
 | --- | --- | --- | --- |
-| `Bookmarks` | 书签 | `firefox::bookmarks`，每次进来重读 | 单行：名字 + 网址 |
-| `History` | 历史 | `firefox::history`（最多 500 条） | 单行：名字 + 网址 + 次数·时间 |
-| `Projects` | 个人项目 | `github::owned_repos`，**缓存优先** | 双行：名字/语言 + ★数·简介 |
-| `Stars` | 星标 | `github::starred`，**缓存优先** | 同上 |
-| `Search` | 查询仓库 | `github::search`，**输入即搜** | 同上 |
+| `Bookmarks` | 书签 | `firefox::bookmarks`，每次进来重读 | 页面标题（和书签名不同时） |
+| `History` | 历史 | `firefox::history`（最多 500 条） | 访问次数 · 最后访问 |
+| `Projects` | 个人项目 | `github::owned_repos`，**只读缓存** | 主语言 |
+| `Stars` | 星标 | `github::starred`，**只读缓存** | 主语言 |
+| `Search` | 查询仓库 | `github::search`，**回车 / 按钮才搜** | 主语言 |
+
+**行永远是两行**：第一行名字（右边挂元信息，`text_ellipsis`），第二行描述（书签和历史
+是网址，仓库是「★ 星数 · 简介」）。不要把名字和描述塞回一行——描述独占一行才不跟名字
+抢宽度。
 
 页头从左到右：这一页的图标、标题、搜索框（空着时宽度按提示文字量，不能只剩半个字）、
 `flex_1`、**右上角那枚按钮**。按钮只在需要手动去取的页面出现（`ListKind::needs_action`）：
 仓库两页是「重新去网上取」，查询仓库是「再搜一次」；**书签和历史每次进页面重读库，
 天生最新，不给按钮**。返回只走 `Esc`（页脚有提示），左上角不挂返回箭头。
 
+- **联网时机（用户明确要求）**：只有「按刷新」和「按回车/搜索按钮」才发请求。
+  进页面**一个包都不发**——仓库两页没缓存就显示「点右上角刷新一次」干等着，绝不自动抓。
 - **搜索**：本地页（前四个）输入即过滤，不过滤也可以看；`Search` 页不做本地过滤
-  （`language:rust` 这类限定符会被滤没），改成 600ms 防抖后重新请求（`SEARCH_DEBOUNCE`，
-  流水号 `search_serial` 作废旧的那次）。
+  （`language:rust` 这类限定符会被滤没），打字时不搜，回车或点右上角按钮才发请求；
+  同一个词再回车就是「打开选中的仓库」。
 - **焦点**：列表页的默认焦点永远是搜索框；点完行、点完右上角按钮都要把焦点还回去
   （`focus_list_search`）。**不要**再做 `Tab` 切焦点的机制——试过，用户嫌复杂，
   手动点按钮就行。
@@ -185,8 +191,8 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   `List` 的 `confirm` 分不出单击双击）。**单击** = 选中 + 复制链接，**双击** = 打开。
 - 行是 `Entry`：标题 / 描述 / 右侧元信息 / 打开目标 / 站点图标。目标一律交给
   `shell::open`，**不要**在 UI 回调里直接 `ShellExecuteW`。
-- 缓存优先：进页面先读 `%APPDATA%\gpui-tools\cache\github-{projects|stars}-{user}.json`，
-  有就直接摆出来、**不发请求**；没有才抓一次。右上角那枚按钮才是强制走网络。
+- 缓存：`%APPDATA%\gpui-tools\cache\github-{projects|stars}-{user}.json`。进页面只读它，
+  有就摆出来、没有就留一句提示；要新的只有右上角那枚按钮。
 - 阻塞的读库和联网都走 `cx.background_executor().spawn`（网络用 `platform/http.rs` 的
   WinINet，不用 GPUI 的 `cx.http_client()`：桌面端那是空实现）；两者都装在
   `Launcher::pending` 里，换页/收起时丢掉这个 Task，结果就不会串页。
