@@ -470,14 +470,16 @@ impl Launcher {
         (window > 0 && at.elapsed() < Duration::from_secs(window.into())).then_some(page)
     }
 
-    /// 记下离开时停在哪一页，`reset` 才有地方回去。
+    /// 收起面板时记下停在哪一页，`reset` 才有地方回去。
     ///
-    /// 两条离开路径都算：收起面板，以及退回命令页——因为 Esc 是先退页再收面板。
-    /// 命令页不记（它是默认页），所以离开设置/计算器时才写。
+    /// **只看收起那一刻的页面**：停在设置/计算器就记住，停在命令页就忘掉上一次的子页面。
+    /// 所以「进了设置、又 Esc 回到主页、再收起」之后重新唤出是主页，不会又跳回设置。
     pub(crate) fn remember_page(&mut self) {
-        if !matches!(self.page, Page::Commands) {
-            self.last_page = Some((Instant::now(), self.page));
-        }
+        self.last_page = if matches!(self.page, Page::Commands) {
+            None
+        } else {
+            Some((Instant::now(), self.page))
+        };
     }
 
     /// 收起面板前收拾现场：记下停在哪一页，并结束录制。
@@ -560,8 +562,10 @@ impl Launcher {
     }
 
     /// 回到命令列表，输入框准备好接收按键。
+    ///
+    /// 这里**不**记页面：Esc 退回命令页后用户还停在面板上，只有真正收起时才决定
+    /// 要不要记得这一页（见 [`Self::remember_page`]）。
     pub(crate) fn back_to_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.remember_page();
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
