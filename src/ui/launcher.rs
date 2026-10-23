@@ -127,6 +127,14 @@ impl ListKind {
         matches!(self, Self::Projects | Self::Stars)
     }
 
+    /// 页头右上角要不要给按钮。
+    ///
+    /// 书签和历史每次进页面都重读库，天生是最新的，不给刷新；仓库两页读缓存、
+    /// 查询仓库要发请求，都得有个手动入口。
+    pub(crate) fn needs_action(self) -> bool {
+        matches!(self, Self::Projects | Self::Stars | Self::Search)
+    }
+
     /// 缓存键里的那一段；搜索页不缓存。
     fn cache_name(self) -> &'static str {
         match self {
@@ -312,8 +320,6 @@ pub struct Launcher {
     pub(crate) list_search: Entity<InputState>,
     /// 已经发给 GitHub 的那个关键词（远程搜索用）。
     list_query: String,
-    /// 焦点是不是在页头那枚按钮上（`false` 就是在搜索框里）。`Tab` 来回切。
-    pub(crate) list_action_focused: bool,
     /// 远程搜索的防抖任务：新敲一个字就把上一个顶掉。
     search_timer: Option<Task<()>>,
     /// 防抖任务的流水号，旧的那条醒来发现号不对就不干活。
@@ -436,7 +442,6 @@ impl Launcher {
             entries,
             list_search,
             list_query: String::new(),
-            list_action_focused: false,
             search_timer: None,
             search_serial: 0,
             pending: None,
@@ -674,10 +679,7 @@ impl Launcher {
             }
             Page::Calculator => return,
             Page::List(kind) => {
-                // 焦点在页头按钮上时，回车按的是那个按钮。
-                if self.list_action_focused {
-                    self.activate_list_action(kind, cx);
-                } else if kind == ListKind::Search {
+                if kind == ListKind::Search {
                     // 搜索框里是新词就先搜；和上次一样时，回车是「打开选中的那个仓库」。
                     let keyword = self.list_search.read(cx).value().trim().to_string();
                     if !keyword.is_empty() && keyword != self.list_query {
@@ -831,7 +833,6 @@ impl Launcher {
         // 离开列表页就把还在跑的任务丢掉：抓回来的数据不该塞进别的页面。
         self.pending = None;
         self.search_timer = None;
-        self.list_action_focused = false;
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
@@ -923,31 +924,13 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 焦点给列表页的搜索框（同时把「焦点在按钮上」这个状态清掉）。
+    /// 焦点给列表页的搜索框。进出页面、点完行、点完按钮都调它。
     pub(crate) fn focus_list_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.list_action_focused = false;
         self.list_search.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
 
-    /// `Tab`：在搜索框和页头那枚按钮之间来回换。
-    ///
-    /// 焦点由面板自己管，所以不交给 GPUI 的焦点链：切到按钮时把输入框的焦点收掉，
-    /// 按键全走 `intercept_keystrokes`。
-    pub(crate) fn toggle_list_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.page, Page::List(_)) {
-            return;
-        }
-        if self.list_action_focused {
-            self.focus_list_search(window, cx);
-        } else {
-            self.list_action_focused = true;
-            window.blur(cx);
-            cx.notify();
-        }
-    }
-
-    /// 页头那枚按钮的动作：书签/历史/仓库是「重新读取」，查询仓库是「立刻按现在的词搜」。
+    /// 页头那枚按钮的动作：仓库两页是「重新去网上取」，查询仓库是「立刻按现在的词搜」。
     pub(crate) fn activate_list_action(&mut self, kind: ListKind, cx: &mut Context<Self>) {
         match kind {
             ListKind::Search => {

@@ -131,9 +131,8 @@ impl Launcher {
 
     /// 工具列表页的页头。
     ///
-    /// 左边是返回、图标和标题，跟着一个能立刻过滤的搜索框；**右上角**是这一页的按钮
-    /// （书签/历史/仓库是「重新读取」，查询仓库是「再搜一次」）。`Tab` 在搜索框和
-    /// 这枚按钮之间来回切，切过去时按钮会有底色。
+    /// 左边是这一页的图标和标题，跟着一个能立刻过滤的搜索框；**右上角**是这一页的
+    /// 按钮（仓库两页是「重新去网上取」，查询仓库是「再搜一次」，书签和历史不给按钮）。
     fn list_header(
         &self,
         bar: gpui_kit::Stateful<gpui_kit::Div>,
@@ -185,8 +184,11 @@ impl Launcher {
             })
             .child(div().flex_1());
 
-        // 右上角：这枚按钮永远在，`Tab` 能把焦点交给它。
-        let focused = self.list_action_focused;
+        // 右上角按钮：只有「要手动去取」的页面才给。
+        // 书签和历史每次进页面都重读库，天生就是最新的，不再放刷新。
+        if !kind.needs_action() {
+            return bar.into_any_element();
+        }
         let (icon, tip) = if kind == ListKind::Search {
             (
                 gpui_kit::assets::IconName::Search,
@@ -200,26 +202,20 @@ impl Launcher {
         };
 
         bar.child(
-            div()
-                .id("list-action")
-                .occlude()
-                .flex_shrink_0()
-                .rounded(px(6.))
-                .when(focused, move |this| this.bg(colors.accent))
-                .child(
-                    Button::new("list-action-button")
-                        .ghost()
-                        .icon(icon)
-                        .tooltip(if loading {
-                            strings::lists::LOADING
-                        } else {
-                            tip
-                        })
-                        .on_click(cx.listener(move |launcher, _, window, cx| {
-                            launcher.activate_list_action(kind, cx);
-                            launcher.focus_list_search(window, cx);
-                        })),
-                ),
+            div().id("list-action").occlude().flex_shrink_0().child(
+                Button::new("list-action-button")
+                    .ghost()
+                    .icon(icon)
+                    .tooltip(if loading {
+                        strings::lists::LOADING
+                    } else {
+                        tip
+                    })
+                    .on_click(cx.listener(move |launcher, _, window, cx| {
+                        launcher.activate_list_action(kind, cx);
+                        launcher.focus_list_search(window, cx);
+                    })),
+            ),
         )
         .into_any_element()
     }
@@ -350,7 +346,6 @@ impl Render for Launcher {
                     vec![
                         ("\u{2191}\u{2193}", strings::launcher::FOOTER_NAVIGATE),
                         ("Enter", enter),
-                        ("Tab", strings::lists::FOOTER_TAB),
                         ("Esc", strings::launcher::FOOTER_BACK),
                     ],
                     strings::lists::count(rows),

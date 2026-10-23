@@ -145,8 +145,6 @@ pub mod lists {
     pub const FOOTER_OPEN: &str = super::common::OPEN;
     /// 页脚：搜索页里回车的说明。
     pub const FOOTER_SEARCH: &str = "搜索";
-    /// 页脚：Tab 的说明。
-    pub const FOOTER_TAB: &str = "切换焦点";
     /// 搜索框里的提示：书签页。
     pub const SEARCH_BOOKMARKS: &str = "搜索书签";
     /// 搜索框里的提示：历史页。
