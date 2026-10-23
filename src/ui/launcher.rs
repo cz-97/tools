@@ -914,6 +914,52 @@ impl Launcher {
         cx.notify();
     }
 
+    /// 把焦点交回这一页该有输入的地方。
+    ///
+    /// `Tab` 和「焦点被别的东西拿走」都靠它收拾：面板里除了输入框没有该吃键盘的控件，
+    /// 焦点一旦跑到别处，用户敲字就完全没有反应（GPUI 的 `Root` 把 `tab` 绑成了切焦点）。
+    pub(crate) fn focus_active_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.page {
+            Page::Commands => self.focus_search(window, cx),
+            Page::List(_) => self.focus_list_search(window, cx),
+            Page::Calculator => self.focus_calculator_last(window, cx),
+            // 设置页只有那三个文本框吃键盘，没有哪个算「默认」的，焦点留空。
+            Page::Settings(_) => {
+                if !self.settings_input_focused(window, cx) {
+                    window.blur(cx);
+                }
+            }
+        }
+    }
+
+    /// 这一页是不是已经有输入框拿着焦点。
+    pub(crate) fn active_input_focused(&self, window: &Window, cx: &App) -> bool {
+        match self.page {
+            Page::Commands => self.search.read(cx).focus_handle(cx).is_focused(window),
+            Page::List(_) => self
+                .list_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            Page::Calculator => self
+                .calculator
+                .iter()
+                .any(|row| row.input.read(cx).focus_handle(cx).is_focused(window)),
+            Page::Settings(_) => self.settings_input_focused(window, cx),
+        }
+    }
+
+    /// 设置页那三个文本框里有没有一个拿着焦点。
+    fn settings_input_focused(&self, window: &Window, cx: &App) -> bool {
+        [
+            &self.firefox_input,
+            &self.github_user_input,
+            &self.github_token_input,
+        ]
+        .into_iter()
+        .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+    }
+
     /// 焦点给列表页的搜索框。进出页面、点完行、点完按钮都调它。
     pub(crate) fn focus_list_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.list_search.read(cx).focus_handle(cx).focus(window, cx);
