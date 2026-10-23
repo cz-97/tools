@@ -1,13 +1,15 @@
 //! 主页的命令列表：数据、每一行长什么样、以及过滤和执行。
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::list::{ListDelegate, ListState};
 use gpui_kit::component::{Icon, IconName, IndexPath, Selectable, h_flex, v_flex};
 use gpui_kit::{
-    App, Context, FontWeight, IntoElement, RenderOnce, SharedString, Task, WeakEntity, Window, div,
-    prelude::*, px,
+    AnyElement, App, Context, FontWeight, IntoElement, RenderOnce, SharedString, Task, WeakEntity,
+    Window, div, prelude::*, px,
 };
+use gpui_tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
 use gpui_tools::settings::Settings;
 
 use crate::app::run_command;
@@ -200,28 +202,211 @@ impl RenderOnce for ToolRow {
     }
 }
 
-/// 主页列表，数据来自命令目录。
+/// 命中行复制成功后，「已复制」亮多久。
+const COPY_FEEDBACK: Duration = Duration::from_millis(1200);
+
+/// 主页列表里的一项：命中的指令匹配，或一条命令。
+pub(crate) enum HomeItem {
+    Match(Match),
+    Command(&'static catalogue::Command),
+}
+
+/// 一条指令匹配在列表里怎么画。
+#[derive(IntoElement)]
+pub(crate) struct MatchRow {
+    pub(crate) item: Match,
+    pub(crate) selected: bool,
+    /// 行号，只用来给命中区一个稳定的 id。
+    pub(crate) index: usize,
+    /// 刚复制过：副行短暂换成「已复制」。
+    pub(crate) copied: bool,
+}
+
+impl RenderOnce for MatchRow {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = UiColors::current(cx);
+        let selected = self.selected;
+        let actionable = !matches!(&self.item.action, MatchAction::None);
+
+        let title_color = if selected {
+            colors.accent_foreground
+        } else if actionable {
+            colors.foreground
+        } else {
+            colors.muted_foreground
+        };
+        let detail_color = if selected {
+            colors.on_accent_muted
+        } else {
+            colors.muted_foreground
+        };
+        let tile_bg = if selected {
+            colors.accent_tile
+        } else {
+            colors.surface
+        };
+        let icon = match self.item.kind {
+            MatchKind::Calculator => gpui_kit::assets::IconName::Calculator,
+            MatchKind::Amount => gpui_kit::assets::IconName::Banknote,
+            MatchKind::Url => gpui_kit::assets::IconName::Link,
+            MatchKind::Path => gpui_kit::assets::IconName::FolderOpen,
+        };
+        let hint = match &self.item.action {
+            MatchAction::Copy(_) => strings::matcher::HINT_COPY,
+            MatchAction::Open(_) => strings::matcher::HINT_OPEN,
+            MatchAction::None => "",
+        };
+        let detail: SharedString = if self.copied {
+            strings::matcher::COPIED.into()
+        } else {
+            self.item.description.clone().into()
+        };
+
+        div().w_full().py(px(1.)).child(
+            h_flex()
+                .id(SharedString::from(format!("match-row-{}", self.index)))
+                .w_full()
+                .h(px(50.))
+                .px_3()
+                .gap_3()
+                .rounded(px(8.))
+                .when(selected, move |this| this.bg(colors.accent))
+                .when(!selected, move |this| {
+                    this.hover(move |style| style.bg(colors.hover))
+                })
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .size_8()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(8.))
+                        .bg(tile_bg)
+                        .child(Icon::new(icon).size_4().text_color(if selected {
+                            colors.accent_foreground
+                        } else {
+                            colors.foreground
+                        })),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(title_color)
+                                .child(self.item.title),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_xs()
+                                .text_color(detail_color)
+                                .child(detail),
+                        ),
+                )
+                .when(!hint.is_empty(), move |this| {
+                    this.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(detail_color)
+                            .child(hint),
+                    )
+                }),
+        )
+    }
+}
+
+/// 主页列表的一行：既可能是指令匹配，也可能是命令。
+pub(crate) enum HomeRow {
+    Match(MatchRow),
+    Command(ToolRow),
+}
+
+impl Selectable for HomeRow {
+    fn selected(mut self, selected: bool) -> Self {
+        match &mut self {
+            HomeRow::Match(row) => row.selected = selected,
+            HomeRow::Command(row) => row.selected = selected,
+        }
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        match self {
+            HomeRow::Match(row) => row.selected,
+            HomeRow::Command(row) => row.selected,
+        }
+    }
+}
+
+impl IntoElement for HomeRow {
+    type Element = AnyElement;
+
+    fn into_element(self) -> AnyElement {
+        match self {
+            HomeRow::Match(row) => row.into_any_element(),
+            HomeRow::Command(row) => row.into_any_element(),
+        }
+    }
+}
+
+/// 主页列表，数据来自命令目录与当前命中的指令匹配。
 pub(crate) struct ToolDelegate {
     pub(crate) query: String,
     pub(crate) selected: usize,
     /// 设置里每条命令的状态，过滤和绘制都看它，不碰全局值。
     pub(crate) states: CommandStates,
+    /// 哪些指令匹配开着，外加算式精度。
+    pub(crate) config: MatchConfig,
+    /// 当前搜索词命中的指令匹配，排在命令前面。
+    pub(crate) matches: Vec<Match>,
+    /// 刚复制过的命中（标题 + 时间），用来亮一小会儿「已复制」。
+    pub(crate) copied: Option<(String, Instant)>,
     /// 搜索词一变就通知它，页头那点信息要跟着动。
     pub(crate) view: Option<WeakEntity<Launcher>>,
 }
 
 impl ToolDelegate {
-    pub(crate) fn new(states: CommandStates) -> Self {
+    pub(crate) fn new(states: CommandStates, config: MatchConfig) -> Self {
         Self {
             query: String::new(),
             selected: 0,
             states,
+            config,
+            matches: Vec::new(),
+            copied: None,
             view: None,
         }
     }
 
+    /// 换了匹配开关：重算当前命中的匹配，并把高亮挪回第一项。
+    pub(crate) fn set_config(&mut self, config: MatchConfig) {
+        if self.config == config {
+            return;
+        }
+        self.config = config;
+        self.recompute_matches();
+        self.selected = 0;
+    }
+
+    /// 按当前搜索词和开关重算命中的指令匹配。
+    fn recompute_matches(&mut self) {
+        self.matches = gpui_tools::matcher::matches(&self.query, &self.config);
+    }
+
     /// 用户留在主页、且搜索词能对上的所有命令。
-    fn visible(&self) -> Vec<&'static catalogue::Command> {
+    fn visible_commands(&self) -> Vec<&'static catalogue::Command> {
         let mut commands = catalogue::COMMANDS
             .iter()
             .filter(|command| self.enabled(command) && self.matches(command))
@@ -266,17 +451,36 @@ impl ToolDelegate {
             .all(|token| haystack.contains(&token.to_lowercase()))
     }
 
-    pub(crate) fn visible_count(&self) -> usize {
-        self.visible().len()
+    /// 列表总行数：命中的指令匹配 + 命令。
+    pub(crate) fn item_count(&self) -> usize {
+        self.matches.len() + self.visible_commands().len()
     }
 
-    pub(crate) fn selected_command(&self) -> Option<&'static catalogue::Command> {
-        self.visible().get(self.selected).copied()
+    /// 只看命令的行数（页脚「N 条命令」用它）。
+    pub(crate) fn command_count(&self) -> usize {
+        self.visible_commands().len()
+    }
+
+    /// 第 `row` 行是哪一项：先排命中的匹配，再排命令。
+    fn item_at(&self, row: usize) -> Option<HomeItem> {
+        if row < self.matches.len() {
+            self.matches.get(row).cloned().map(HomeItem::Match)
+        } else {
+            self.visible_commands()
+                .get(row - self.matches.len())
+                .copied()
+                .map(HomeItem::Command)
+        }
+    }
+
+    /// 当前高亮的那一项。
+    pub(crate) fn selected_item(&self) -> Option<HomeItem> {
+        self.item_at(self.selected)
     }
 }
 
 impl ListDelegate for ToolDelegate {
-    type Item = ToolRow;
+    type Item = HomeRow;
 
     fn perform_search(
         &mut self,
@@ -286,6 +490,7 @@ impl ListDelegate for ToolDelegate {
     ) -> Task<()> {
         self.query = query.trim().to_string();
         self.selected = 0;
+        self.recompute_matches();
         if let Some(view) = self.view.clone() {
             let app: &mut App = cx;
             // 延后：搜索词变化可能发生在面板自己正被更新的时候（唤出时会清空搜索词），
@@ -299,7 +504,7 @@ impl ListDelegate for ToolDelegate {
     }
 
     fn items_count(&self, _section: usize, _cx: &App) -> usize {
-        self.visible_count()
+        self.item_count()
     }
 
     fn render_item(
@@ -309,12 +514,26 @@ impl ListDelegate for ToolDelegate {
         _cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let row = ix.row;
-        let command = *self.visible().get(row)?;
-        Some(ToolRow {
-            command,
-            state: self.state(command),
-            selected: row == self.selected,
-            index: row,
+        let item = self.item_at(row)?;
+        let selected = row == self.selected;
+        Some(match item {
+            HomeItem::Match(matched) => {
+                let copied = self.copied.as_ref().is_some_and(|(title, at)| {
+                    *title == matched.title && at.elapsed() < COPY_FEEDBACK
+                });
+                HomeRow::Match(MatchRow {
+                    item: matched,
+                    selected,
+                    index: row,
+                    copied,
+                })
+            }
+            HomeItem::Command(command) => HomeRow::Command(ToolRow {
+                command,
+                state: self.state(command),
+                selected,
+                index: row,
+            }),
         })
     }
 
@@ -334,10 +553,21 @@ impl ListDelegate for ToolDelegate {
         _window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) {
-        let Some(command) = self.selected_command() else {
+        let Some(item) = self.selected_item() else {
             return;
         };
-        run_command(command, cx);
+        match item {
+            HomeItem::Command(command) => {
+                let app: &mut App = cx;
+                run_command(command, app);
+            }
+            HomeItem::Match(matched) => {
+                let app: &mut App = cx;
+                crate::app::with_launcher(app, move |launcher, _window, cx| {
+                    launcher.activate_match(matched, cx)
+                });
+            }
+        }
     }
 
     fn cancel(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
@@ -369,6 +599,7 @@ impl ListDelegate for ToolDelegate {
 #[cfg(test)]
 mod tests {
     use super::{CommandState, CommandStates, ToolDelegate};
+    use gpui_tools::matcher::MatchConfig;
 
     #[test]
     fn homepage_orders_by_uses_then_section_and_id() {
@@ -395,7 +626,7 @@ mod tests {
             },
         );
 
-        let visible = ToolDelegate::new(states).visible();
+        let visible = ToolDelegate::new(states, MatchConfig::default()).visible_commands();
         assert_eq!(
             visible.iter().map(|command| command.id).collect::<Vec<_>>(),
             [

@@ -13,7 +13,9 @@ use gpui_kit::{
 };
 use gpui_tools::autostart;
 use gpui_tools::calculator;
+use gpui_tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
 use gpui_tools::settings::Settings;
+use gpui_tools::shell;
 
 use crate::app::{
     LauncherPanel, apply_theme, hide_launcher, run_command, store_settings, stored_settings,
@@ -84,16 +86,18 @@ pub(crate) enum SettingsTab {
     Commands,
     Appearance,
     Tools,
+    Matchers,
     About,
 }
 
 impl SettingsTab {
     /// 全部子模块，按界面上的顺序。
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::System,
         Self::Commands,
         Self::Appearance,
         Self::Tools,
+        Self::Matchers,
         Self::About,
     ];
 
@@ -104,6 +108,7 @@ impl SettingsTab {
             Self::Commands => strings::sections::COMMANDS,
             Self::Appearance => strings::sections::APPEARANCE,
             Self::Tools => strings::sections::TOOLS,
+            Self::Matchers => strings::sections::MATCHERS,
             Self::About => strings::sections::ABOUT,
         }
     }
@@ -115,6 +120,7 @@ impl SettingsTab {
             Self::Commands => catalogue::Section::Commands.icon(),
             Self::Appearance => catalogue::Section::Appearance.icon(),
             Self::Tools => gpui_kit::assets::IconName::Toolbox,
+            Self::Matchers => gpui_kit::assets::IconName::Sparkles,
             Self::About => catalogue::Section::About.icon(),
         }
     }
@@ -235,8 +241,10 @@ pub struct Launcher {
 
 impl Launcher {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let states = command_states(&stored_settings(cx));
-        let list = cx.new(|cx| ListState::new(ToolDelegate::new(states), window, cx));
+        let settings = stored_settings(cx);
+        let states = command_states(&settings);
+        let config = MatchConfig::from_settings(&settings);
+        let list = cx.new(|cx| ListState::new(ToolDelegate::new(states, config), window, cx));
         let view = cx.weak_entity();
         list.update(cx, |state, _cx| {
             state.delegate_mut().view = Some(view);
@@ -366,7 +374,7 @@ impl Launcher {
 
     /// 高亮挪 `delta` 行，夹在可见命令范围内。
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.list.read(cx).delegate().visible_count();
+        let count = self.list.read(cx).delegate().item_count();
         if count == 0 {
             return;
         }
@@ -483,13 +491,56 @@ impl Launcher {
         self.remember_page();
     }
 
-    /// 执行高亮的那条命令。
+    /// 执行高亮的那一项：指令匹配（复制/打开）或一条命令。
     pub(crate) fn activate_selected(&mut self, cx: &mut Context<Self>) {
         if !matches!(self.page, Page::Commands) {
             return;
         }
-        if let Some(command) = self.list.read(cx).delegate().selected_command() {
-            run_command(command, cx);
+        match self.list.read(cx).delegate().selected_item() {
+            Some(crate::ui::commands_list::HomeItem::Match(matched)) => {
+                self.activate_match(matched, cx);
+            }
+            Some(crate::ui::commands_list::HomeItem::Command(command)) => run_command(command, cx),
+            None => {}
+        }
+    }
+
+    /// 执行一条指令匹配：显示结果的复制走，执行动作的交给 shell。
+    pub(crate) fn activate_match(&mut self, matched: Match, cx: &mut Context<Self>) {
+        match matched.action {
+            MatchAction::Copy(text) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                // 亮一小会儿「已复制」，复制没反馈用户会以为点了个寂寞。
+                let title = matched.title;
+                self.list.update(cx, |list, cx| {
+                    list.delegate_mut().copied = Some((title.clone(), Instant::now()));
+                    cx.notify();
+                });
+                cx.notify();
+                cx.spawn(async move |launcher, cx| {
+                    cx.background_executor().timer(COPY_FEEDBACK).await;
+                    launcher
+                        .update(cx, |launcher, cx| {
+                            let still = launcher
+                                .list
+                                .read(cx)
+                                .delegate()
+                                .copied
+                                .as_ref()
+                                .is_some_and(|(current, _)| *current == title);
+                            if still {
+                                launcher.list.update(cx, |list, cx| {
+                                    list.delegate_mut().copied = None;
+                                    cx.notify();
+                                });
+                            }
+                        })
+                        .ok();
+                })
+                .detach();
+            }
+            MatchAction::Open(target) => shell::open(target),
+            MatchAction::None => {}
         }
     }
 
@@ -735,6 +786,40 @@ impl Launcher {
         }
         settings.calculator_precision = precision;
         store_settings(settings, cx);
+        cx.notify();
+    }
+
+    /// 打开/关闭一项指令匹配，并立刻按新开关重算当前命中的匹配。
+    pub(crate) fn set_matcher(
+        &mut self,
+        kind: MatchKind,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut settings = stored_settings(cx);
+        let slot = match kind {
+            MatchKind::Calculator => &mut settings.matcher_calculator,
+            MatchKind::Amount => &mut settings.matcher_amount,
+            MatchKind::Url => &mut settings.matcher_url,
+            MatchKind::Path => &mut settings.matcher_path,
+        };
+        if *slot == enabled {
+            return;
+        }
+        *slot = enabled;
+        store_settings(settings, cx);
+        self.refresh_matchers(window, cx);
+    }
+
+    /// 把最新的匹配开关推给列表，并把高亮挪回第一项（命中数可能变了）。
+    pub(crate) fn refresh_matchers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let config = MatchConfig::from_settings(&stored_settings(cx));
+        self.list.update(cx, |list, cx| {
+            list.delegate_mut().set_config(config);
+            list.set_selected_index(Some(IndexPath::new(0)), window, cx);
+            cx.notify();
+        });
         cx.notify();
     }
 
@@ -1084,7 +1169,7 @@ impl Render for Launcher {
             colors.surface,
             colors.muted_foreground,
         );
-        let count = self.list.read(cx).delegate().visible_count();
+        let count = self.list.read(cx).delegate().command_count();
 
         let chip = |key: &'static str, label: &'static str| {
             h_flex()

@@ -92,6 +92,14 @@ pub struct Settings {
     pub summon_shortcut: Option<String>,
     /// 计算器结果最多保留的小数位数；`0` 表示只显示整数（非整数会四舍五入）。
     pub calculator_precision: u32,
+    /// 指令匹配：算式直接显示结果。
+    pub matcher_calculator: bool,
+    /// 指令匹配：金额转大写。
+    pub matcher_amount: bool,
+    /// 指令匹配：网址可打开。
+    pub matcher_url: bool,
+    /// 指令匹配：文件/文件夹路径可打开。
+    pub matcher_path: bool,
     /// 每条命令的状态，键是（子模块键, 命令 id）。
     pub commands: BTreeMap<(String, String), CommandSettings>,
 }
@@ -279,6 +287,10 @@ impl Settings {
                             settings.calculator_precision = precision;
                         }
                     }
+                    "matcher_calculator" => settings.matcher_calculator = value == "1",
+                    "matcher_amount" => settings.matcher_amount = value == "1",
+                    "matcher_url" => settings.matcher_url = value == "1",
+                    "matcher_path" => settings.matcher_path = value == "1",
                     _ => {}
                 }
             }
@@ -332,6 +344,22 @@ impl Settings {
             insert.execute(params![
                 "calculator_precision",
                 self.calculator_precision.to_string()
+            ])?;
+            insert.execute(params![
+                "matcher_calculator",
+                u8::from(self.matcher_calculator).to_string()
+            ])?;
+            insert.execute(params![
+                "matcher_amount",
+                u8::from(self.matcher_amount).to_string()
+            ])?;
+            insert.execute(params![
+                "matcher_url",
+                u8::from(self.matcher_url).to_string()
+            ])?;
+            insert.execute(params![
+                "matcher_path",
+                u8::from(self.matcher_path).to_string()
             ])?;
             if let Some(y) = self.window_y {
                 insert.execute(params!["window_y", y.to_string()])?;
@@ -444,6 +472,10 @@ impl Default for Settings {
             resume_seconds: 0,
             summon_shortcut: Some(Settings::SUMMON_DEFAULT.to_string()),
             calculator_precision: Self::CALCULATOR_PRECISION_DEFAULT,
+            matcher_calculator: true,
+            matcher_amount: true,
+            matcher_url: true,
+            matcher_path: true,
             commands: BTreeMap::new(),
         }
     }
@@ -611,6 +643,20 @@ mod tests {
             settings.calculator_precision,
             Settings::CALCULATOR_PRECISION_MAX
         );
+    }
+
+    #[test]
+    fn matcher_toggles_survive_a_round_trip() {
+        let mut settings = Settings::default();
+        settings.matcher_amount = false;
+        settings.matcher_path = false;
+        let connection = database();
+        settings.write(&connection).expect("写入");
+        let read = Settings::read(&connection).expect("读取").expect("有数据");
+        assert!(!read.matcher_amount);
+        assert!(!read.matcher_path);
+        assert!(read.matcher_calculator);
+        assert!(read.matcher_url);
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod autostart;
 pub mod calculator;
 pub mod instance;
 pub mod logo;
+pub mod matcher;
 pub mod settings;
 pub mod shell;
 pub mod window;

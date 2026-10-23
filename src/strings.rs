@@ -15,6 +15,8 @@ pub mod sections {
     pub const CALCULATOR: &str = "计算器";
     /// 工具（计算器这类工具的容器标签）。
     pub const TOOLS: &str = "工具";
+    /// 指令匹配。
+    pub const MATCHERS: &str = "指令匹配";
     /// 关于。
     pub const ABOUT: &str = "关于";
 }
@@ -100,6 +102,32 @@ pub mod calculator {
     pub const HINT: &str = "支持 + - * / ^ 与括号，点结果即可复制";
 }
 
+/// 「指令匹配」标签：各匹配的名字与说明，以及命中行上的提示。
+pub mod matcher {
+    /// 计算表达式：名字。
+    pub const CALCULATOR_NAME: &str = "计算表达式";
+    /// 计算表达式：说明。
+    pub const CALCULATOR_DESCRIPTION: &str = "输入算式时直接显示结果，点一下复制";
+    /// 金额大写：名字。
+    pub const AMOUNT_NAME: &str = "金额大写";
+    /// 金额大写：说明。
+    pub const AMOUNT_DESCRIPTION: &str = "输入金额（最多两位小数）显示中文大写，点一下复制";
+    /// 网址：名字。
+    pub const URL_NAME: &str = "网址";
+    /// 网址：说明。
+    pub const URL_DESCRIPTION: &str = "输入网址时在浏览器打开";
+    /// 文件路径：名字。
+    pub const PATH_NAME: &str = "文件路径";
+    /// 文件路径：说明。
+    pub const PATH_DESCRIPTION: &str = "输入文件或文件夹路径时打开，不存在会提示";
+    /// 复制成功后短暂显示的字。
+    pub const COPIED: &str = "已复制";
+    /// 命中行右侧：显示结果类。
+    pub const HINT_COPY: &str = "复制";
+    /// 命中行右侧：执行动作类。
+    pub const HINT_OPEN: &str = "打开";
+}
+
 /// 设置页里的各项文案。
 pub mod settings_page {
     /// 系统页：全局快捷键的标题。
@@ -158,6 +186,8 @@ pub mod settings_page {
     pub const REPOSITORY_NAME: &str = "项目仓库";
     /// 关于页：项目仓库的按钮字。
     pub const REPOSITORY_OPEN: &str = "打开";
+    /// 关于页：程序文件夹的标题。
+    pub const PROGRAM_FOLDER_NAME: &str = "程序所在位置";
     /// 关于页：程序文件夹的按钮字。
     pub const FOLDER_OPEN: &str = "打开";
     /// 找不到配置目录时的占位字。

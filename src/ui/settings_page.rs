@@ -7,6 +7,7 @@ use gpui_kit::{
     AnyElement, App, ClickEvent, Context, IntoElement, MouseDownEvent, SharedString, Window, div,
     prelude::*, px,
 };
+use gpui_tools::matcher::MatchKind;
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
 
 use crate::actions;
@@ -75,6 +76,7 @@ pub(crate) fn render(
         // 「工具」是容器标签：它自己不画设置项，而是把计算器等工具收在下面的
         // 子标签页里，布局和命令页一样（左列列工具，右列列内容）。
         SettingsTab::Tools => tools_page(launcher, colors, cx),
+        SettingsTab::Matchers => matchers_page(settings, colors, cx),
         SettingsTab::About => about_page(colors, cx),
     };
 
@@ -359,7 +361,7 @@ fn about_page(colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
         ))
         .child(action_row(
             "open-folder",
-            strings::settings_page::CONFIG_NAME,
+            strings::settings_page::PROGRAM_FOLDER_NAME,
             actions::program_dir().display().to_string(),
             strings::settings_page::FOLDER_OPEN,
             colors,
@@ -394,6 +396,53 @@ fn calculator_settings_page(
                 cx,
                 |launcher, precision, cx| launcher.set_calculator_precision(precision, cx),
             ),
+        ))
+        .into_any_element()
+}
+
+/// 指令匹配页：四个匹配各一行开关。
+fn matchers_page(settings: Settings, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
+    v_flex()
+        .gap_1()
+        .child(settings_row(
+            strings::matcher::CALCULATOR_NAME,
+            strings::matcher::CALCULATOR_DESCRIPTION,
+            colors,
+            Switch::new("matcher-calculator")
+                .checked(settings.matcher_calculator)
+                .on_change(cx.listener(|launcher, checked: &bool, window, cx| {
+                    launcher.set_matcher(MatchKind::Calculator, *checked, window, cx)
+                })),
+        ))
+        .child(settings_row(
+            strings::matcher::AMOUNT_NAME,
+            strings::matcher::AMOUNT_DESCRIPTION,
+            colors,
+            Switch::new("matcher-amount")
+                .checked(settings.matcher_amount)
+                .on_change(cx.listener(|launcher, checked: &bool, window, cx| {
+                    launcher.set_matcher(MatchKind::Amount, *checked, window, cx)
+                })),
+        ))
+        .child(settings_row(
+            strings::matcher::URL_NAME,
+            strings::matcher::URL_DESCRIPTION,
+            colors,
+            Switch::new("matcher-url")
+                .checked(settings.matcher_url)
+                .on_change(cx.listener(|launcher, checked: &bool, window, cx| {
+                    launcher.set_matcher(MatchKind::Url, *checked, window, cx)
+                })),
+        ))
+        .child(settings_row(
+            strings::matcher::PATH_NAME,
+            strings::matcher::PATH_DESCRIPTION,
+            colors,
+            Switch::new("matcher-path")
+                .checked(settings.matcher_path)
+                .on_change(cx.listener(|launcher, checked: &bool, window, cx| {
+                    launcher.set_matcher(MatchKind::Path, *checked, window, cx)
+                })),
         ))
         .into_any_element()
 }
