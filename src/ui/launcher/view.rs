@@ -148,22 +148,9 @@ impl Launcher {
         let text = self.list_search.read(cx).value().to_string();
         let hint = list_hint(kind);
 
+        // 左上角只留这一页的图标和标题：返回交给 `Esc`，搜索框前面也不挂放大镜。
         let bar = bar
-            .child(
-                div().id("list-back").occlude().flex_shrink_0().child(
-                    Button::new("list-back-to-commands")
-                        .ghost()
-                        .icon(IconName::ArrowLeft)
-                        .tooltip(strings::launcher::TOOLTIP_BACK)
-                        .on_click(cx.listener(|launcher, _, window, cx| {
-                            launcher.back_to_commands(window, cx)
-                        })),
-                ),
-            )
-            // 查询仓库页的图标就是放大镜，搜索框前面还有一个，别画两遍。
-            .when(kind != ListKind::Search, |this| {
-                this.child(Icon::new(kind.icon()).size_4().text_color(muted_fg))
-            })
+            .child(Icon::new(kind.icon()).size_4().text_color(muted_fg))
             .child(
                 div()
                     .flex_shrink_0()
@@ -173,15 +160,10 @@ impl Launcher {
             )
             .child(
                 div()
-                    .flex_shrink_0()
-                    .ml_2()
-                    .child(Icon::new(IconName::Search).size_4().text_color(muted_fg)),
-            )
-            .child(
-                div()
                     .id("list-search")
                     .occlude()
                     .flex_shrink_0()
+                    .ml_2()
                     .w(search_field_width_at_least(window, cx, &text, hint))
                     .h(px(settings.search_height as f32))
                     .child(
