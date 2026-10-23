@@ -494,13 +494,13 @@ impl Launcher {
     }
 
     /// 执行高亮的那一项：指令匹配（复制/打开）或一条命令。
-    pub(crate) fn activate_selected(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn activate_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(self.page, Page::Commands) {
             return;
         }
         match self.list.read(cx).delegate().selected_item() {
             Some(crate::ui::commands_list::HomeItem::Match(matched)) => {
-                self.activate_match(matched, cx);
+                self.activate_match(matched, window, cx);
             }
             Some(crate::ui::commands_list::HomeItem::Command(command)) => run_command(command, cx),
             None => {}
@@ -508,7 +508,12 @@ impl Launcher {
     }
 
     /// 执行一条指令匹配：显示结果的复制走，执行动作的交给 shell。
-    pub(crate) fn activate_match(&mut self, matched: Match, cx: &mut Context<Self>) {
+    pub(crate) fn activate_match(
+        &mut self,
+        matched: Match,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match matched.action {
             MatchAction::Copy(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -544,6 +549,9 @@ impl Launcher {
             MatchAction::Open(target) => shell::open(target),
             MatchAction::None => {}
         }
+        // 点列表会把焦点从搜索框挪走；复制完把焦点还回去，用户能接着打字。
+        self.focus_search(window, cx);
+        cx.notify();
     }
 
     /// Esc 先从设置/计算器页退出来，再收面板。

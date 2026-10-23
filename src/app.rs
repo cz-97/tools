@@ -294,7 +294,9 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
     let typing = calculator_typing(window, cx);
     match event.keystroke.key.as_str() {
         "enter" if !typing => {
-            with_launcher(cx, |launcher, _window, cx| launcher.activate_selected(cx));
+            with_launcher(cx, |launcher, window, cx| {
+                launcher.activate_selected(window, cx)
+            });
         }
         "up" if !typing => {
             with_launcher(cx, |launcher, window, cx| launcher.navigate(-1, window, cx));

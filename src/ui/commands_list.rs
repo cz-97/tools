@@ -563,8 +563,8 @@ impl ListDelegate for ToolDelegate {
             }
             HomeItem::Match(matched) => {
                 let app: &mut App = cx;
-                crate::app::with_launcher(app, move |launcher, _window, cx| {
-                    launcher.activate_match(matched, cx)
+                crate::app::with_launcher(app, move |launcher, window, cx| {
+                    launcher.activate_match(matched, window, cx)
                 });
             }
         }
