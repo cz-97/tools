@@ -197,9 +197,10 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
   显示时才转成 `Ctrl + Alt + P`。解析失败只影响那一条绑定。
 - `window_y` 写入时机：面板隐藏、退出命令、托盘退出；恢复时按显示器工作区夹紧
   （`NativeWindow::center_x_at`）。
-- `resume_seconds`：`Launcher::remember_section` 在**离开设置页时**（Esc 返回命令页、
-  或面板隐藏）记下 `(时刻, 标签)`，`reset` 在窗口内重新唤起时回到那一页；超时回命令页。
-  Esc 在设置页是先返回命令页，所以两条离开路径都要记，只记「隐藏」永远记不到设置页。
+- `resume_seconds`：`Launcher::remember_page` 只在**面板收起那一刻**按当前页记下
+  `(时刻, 标签)`：停在设置/计算器就记，停在命令页就**清空**记忆；`reset` 在窗口内重新唤起
+  时回到那一页，超时或没有记忆就回命令页。**Esc 退回命令页本身不记页面**——用户既然先
+  回到了主页，再收起就不该又被送回设置。
 
 ## 5.4 图标
 
