@@ -45,6 +45,9 @@ src/
     shortcuts.rs          全局热键注册 / 冲突检测
   logic/                  纯逻辑，可单测
     calculator.rs         表达式求值
+    cache.rs              网络结果的文件缓存
+    firefox.rs            读火狐系浏览器的 places.sqlite（书签 / 历史 / 图标）
+    github.rs             GitHub 仓库查询（个人项目 / 星标 / 搜索）
     matcher.rs            指令匹配（算式 / 金额 / 网址 / 路径）
     settings.rs           SQLite 持久化
   platform/               Windows 平台细节
@@ -64,6 +67,7 @@ src/
       commands.rs         设置里的「命令」页
       settings.rs         设置页各标签
       calculator.rs       计算器一级页面
+      lists.rs            工具列表页（书签 / 历史 / 个人项目 / 星标 / 查询仓库）
 ```
 
 ## 4. 主要模块
@@ -76,6 +80,7 @@ src/
 Page::Commands           主页：搜索框 + 列表
 Page::Settings(SettingsTab)  设置（系统/命令/外观/工具/指令匹配/关于）
 Page::Calculator         计算器一级页面
+Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查询仓库）
 ```
 
 - 行为在 `launcher/mod.rs`，绘制在 `launcher/view.rs`；两边用同一个 `Launcher` 视图。
@@ -89,7 +94,7 @@ Page::Calculator         计算器一级页面
 `catalogue::Section` 已经不是一回事**：
 
 - `SettingsTab`：系统 / 命令 / 外观 / **工具** / **指令匹配** / 关于（设置左侧导航）。
-- `Section`：系统 / 命令 / 外观 / 计算器 / 关于（命令页给命令分组）。
+- `Section`：系统 / 命令 / 外观 / **浏览器** / **GitHub** / 计算器 / 关于（命令页给命令分组）。
 
 每一项都是同一副骨架 `settings_row`：左侧名称 + 描述（两行），右侧控件
 （`segmented` / `stepper` / `Switch` / `value_label` / `action_row`）。不要另起排布。
@@ -97,9 +102,12 @@ Page::Calculator         计算器一级页面
 `h_flex` 交叉轴默认居中；设置页骨架要显式 `.items_stretch()`。描述行 `min_w_0` +
 `text_ellipsis`，控件 `flex_shrink_0`：宁可截断描述，也不挤掉控件。
 
-**「工具」是容器标签**：它自己不画设置项，而是把工具收在子标签页里（`ToolTab`，目前只有
-计算器），左右两栏布局照命令页：左列子标签、右列内容。加工具 = 给 `SettingsTab::Tools`
-下的 `ToolTab` 加一项。
+**「工具」是容器标签**：它自己不画设置项，而是把工具收在子标签页里（`ToolTab`：计算器 /
+火狐系浏览器 / GitHub），左右两栏布局照命令页：左列子标签、右列内容。加工具 = 给
+`SettingsTab::Tools` 下的 `ToolTab` 加一项。
+
+工具页里的文本框（火狐 profile 目录、GitHub 用户名和令牌）**失焦或回车时保存**
+（`Launcher::commit_settings_inputs`），不设「保存」按钮；换标签、回主页也会先存一次。
 
 **「指令匹配」标签**：四个匹配各一行开关，见 4.4。
 
@@ -149,7 +157,30 @@ Page::Calculator         计算器一级页面
 一起参与 `↑↓`、`Enter`、点击。点/回车后动作走 `Launcher::activate_match`，做完把焦点
 还给搜索框（点列表会先夺走焦点）。
 
-### 4.5 命令目录与命令页
+### 4.5 工具列表页（`ui/pages/lists.rs`）
+
+五个页面共用一张列表和一份 delegate（`EntryDelegate`），页头、空状态、回车行为按
+`ListKind` 分派：
+
+| `ListKind` | 入口命令 | 数据 | 页头左上角 |
+| --- | --- | --- | --- |
+| `Bookmarks` | 书签 | `firefox::bookmarks`，每次进来重读 | 只有返回 |
+| `History` | 历史 | `firefox::history`（最多 500 条） | 只有返回 |
+| `Projects` | 个人项目 | `github::owned_repos`，**缓存优先** | 刷新 |
+| `Stars` | 星标 | `github::starred`，**缓存优先** | 刷新 |
+| `Search` | 查询仓库 | `github::search`，回车才发请求 | 搜索框 |
+
+- 行是 `Entry`：标题 / 副行 / 右侧元信息 / 打开目标 / 站点图标。目标一律交给
+  `shell::open`，**不要**在 UI 回调里直接 `ShellExecuteW`。
+- 缓存优先的意思：进页面先读 `%APPDATA%\gpui-tools\cache\github-{projects|stars}-{user}.json`，
+  有就直接摆出来、**不发请求**；没有才抓一次。页头那枚刷新按钮才是强制走网络。
+- 阻塞的读库走 `cx.background_executor().spawn`，网络走 `cx.http_client()`；两者都装在
+  `Launcher::pending` 里，换页/收起时丢掉这个 Task，结果就不会串页。
+- 书签和历史的图标来自 `favicons.sqlite`（ATTACH 上去按 `width` 取最大的一张），
+  ICO / PNG / SVG 都能画；认不出的格式就不画图标，退回 `Entry::tile` 那个默认图标。
+- 列表页没有输入框时 `window.blur(cx)`：焦点留在主页搜索框上，敲字会进看不见的地方。
+
+### 4.6 命令目录与命令页
 
 命令全部声明在 `command/catalogue.rs` 的 `COMMANDS`：`id` + `section` + 名称 + 描述 +
 搜索词 + 图标 + `fn(&mut App)`。加命令 = 加一项；搜索、列表、命令页分组、开关、次数、
@@ -162,7 +193,7 @@ Page::Calculator         计算器一级页面
 命令页（设置 → 命令）左右两栏：左列 `catalogue::Section::ALL`，右列该分组的命令行。
 每行：图标 + 名称/描述 + 调用次数 + 快捷键按钮 + 启用开关；左列每项显示「启用数/总数」。
 
-### 4.6 快捷键
+### 4.7 快捷键
 
 - 左键录制 / 右键清除（`command/shortcuts.rs` + `ui/pages/commands.rs` 的
   `shortcut_button`，命令页与系统页共用）。
@@ -257,7 +288,10 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
 - `settings` 键：`theme`、`translucent`、`panel_opacity`、`window_y`、`search_height`、
   `launch_at_login`（**注册表才是事实**）、`resume_seconds`、`summon_shortcut`（`none` =
   明确不绑）、`calculator_precision`、`matcher_calculator` / `matcher_amount` /
-  `matcher_url` / `matcher_path`。
+  `matcher_url` / `matcher_path`、`firefox_profile`（缺这一行 = 自动探测 profile）、
+  `github_user`、`github_token`。
+- 网络结果不进这张库：它们存在 `%APPDATA%\gpui-tools\cache\<键>.json`（见 `logic/cache.rs`），
+  丢了从网上再抓一次就有。
 - `commands` 主键 `(section, id)`；只有用户改过的命令才有行。
 - 读不出来就退回默认并写 stderr，绝不让程序起不来。
 - **不写迁移**：自用项目，改表结构直接删库重建，别留 `PRAGMA user_version` 分支。

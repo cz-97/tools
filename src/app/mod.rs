@@ -267,6 +267,14 @@ pub fn open_calculator(cx: &mut App) {
     });
 }
 
+/// 打开面板并切到某个工具列表页（书签 / 历史 / 个人项目 / 星标 / 查询仓库）。
+pub fn open_list(kind: crate::ui::launcher::ListKind, cx: &mut App) {
+    show_launcher(cx);
+    with_launcher(cx, move |launcher, window, cx| {
+        launcher.open_list(kind, window, cx)
+    });
+}
+
 /// 托盘菜单里的「重启」。
 fn restart_application_action(_: &RestartApplication, cx: &mut App) {
     crate::actions::restart_launcher(cx);

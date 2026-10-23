@@ -16,10 +16,11 @@ use crate::app::stored_settings;
 use crate::strings;
 use crate::ui::calculator_page;
 use crate::ui::colors::UiColors;
+use crate::ui::lists;
 use crate::ui::settings_page;
 
 use super::{
-    CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, Page, SEARCH_FIELD_CARET,
+    CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_CARET,
     SEARCH_FIELD_MAX, SEARCH_FIELD_PADDING, SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE,
 };
 
@@ -124,7 +125,96 @@ impl Launcher {
                 .child(div().flex_1())
                 .into_any_element()
             }
+            Page::List(kind) => self.list_header(bar, kind, window, cx),
         }
+    }
+
+    /// 工具列表页的页头。
+    ///
+    /// 左上角依次是返回、这一页的按钮（个人项目/星标是刷新，查询仓库是搜索框），
+    /// 再往后才是标题；右边只放一句状态（刷新中 / 多少条）。
+    fn list_header(
+        &self,
+        bar: gpui_kit::Stateful<gpui_kit::Div>,
+        kind: ListKind,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let colors = UiColors::current(cx);
+        let muted_fg = colors.muted_foreground;
+        let settings = stored_settings(cx);
+        let count = self.entries.read(cx).delegate().len();
+        let loading = self.entries.read(cx).delegate().is_loading();
+
+        let bar =
+            bar.child(
+                div().id("list-back").occlude().flex_shrink_0().child(
+                    Button::new("list-back-to-commands")
+                        .ghost()
+                        .icon(IconName::ArrowLeft)
+                        .tooltip(strings::launcher::TOOLTIP_BACK)
+                        .on_click(cx.listener(|launcher, _, window, cx| {
+                            launcher.back_to_commands(window, cx)
+                        })),
+                ),
+            );
+
+        // 个人项目和星标：缓存优先，所以给一枚「从网络重新获取」。
+        let bar = bar.when(kind.is_repos(), |this| {
+            this.child(
+                div().id("list-refresh").occlude().flex_shrink_0().child(
+                    Button::new("refresh-list")
+                        .ghost()
+                        .icon(gpui_kit::assets::IconName::RefreshCw)
+                        .tooltip(strings::lists::REFRESH)
+                        .on_click(cx.listener(|launcher, _, _, cx| launcher.refresh_list(cx))),
+                ),
+            )
+        });
+
+        let bar = if kind == ListKind::Search {
+            let text = self.repo_search.read(cx).value().to_string();
+            bar.child(Icon::new(IconName::Search).size_4().text_color(muted_fg))
+                .child(
+                    div()
+                        .id("repo-search")
+                        .occlude()
+                        .flex_shrink_0()
+                        .w(search_field_width(window, cx, &text))
+                        .h(px(settings.search_height as f32))
+                        .child(
+                            Input::new(&self.repo_search)
+                                .small()
+                                .appearance(false)
+                                .cleanable(false),
+                        ),
+                )
+                .when(text.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_sm()
+                            .text_color(muted_fg)
+                            .child(strings::lists::SEARCH_HINT),
+                    )
+                })
+        } else {
+            bar.child(Icon::new(kind.icon()).size_4().text_color(muted_fg))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(kind.title()),
+                )
+        };
+
+        let status = if loading {
+            strings::lists::LOADING.to_string()
+        } else {
+            strings::lists::count(count)
+        };
+        bar.child(div().flex_1())
+            .child(div().text_xs().text_color(muted_fg).child(status))
+            .into_any_element()
     }
 }
 
@@ -208,6 +298,21 @@ impl Render for Launcher {
                 String::new(),
             ),
             Page::Calculator => (vec![("Esc", strings::launcher::FOOTER_BACK)], String::new()),
+            Page::List(kind) => {
+                let enter = if kind == ListKind::Search {
+                    strings::lists::FOOTER_SEARCH
+                } else {
+                    strings::lists::FOOTER_OPEN
+                };
+                (
+                    vec![
+                        ("\u{2191}\u{2193}", strings::launcher::FOOTER_NAVIGATE),
+                        ("Enter", enter),
+                        ("Esc", strings::launcher::FOOTER_BACK),
+                    ],
+                    String::new(),
+                )
+            }
         };
 
         let footer = h_flex()
@@ -232,6 +337,7 @@ impl Render for Launcher {
                 .into_any_element(),
             Page::Settings(tab) => settings_page::render(self, tab, cx).into_any_element(),
             Page::Calculator => calculator_page::render(self, colors, cx).into_any_element(),
+            Page::List(_) => lists::render(&self.entries),
         };
 
         // 面板自己的圆角必须和系统裁剪的圆角一模一样（8 物理像素，不随 DPI 缩放），

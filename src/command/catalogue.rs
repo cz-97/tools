@@ -23,16 +23,22 @@ pub enum Section {
     System,
     Commands,
     Appearance,
+    /// 火狐系浏览器的书签与历史。
+    Browser,
+    /// GitHub 的仓库查询。
+    Github,
     Calculator,
     About,
 }
 
 impl Section {
     /// 全部子模块，顺序就是界面上的顺序。
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::System,
         Self::Commands,
         Self::Appearance,
+        Self::Browser,
+        Self::Github,
         Self::Calculator,
         Self::About,
     ];
@@ -43,6 +49,8 @@ impl Section {
             Self::System => strings::sections::SYSTEM,
             Self::Commands => strings::sections::COMMANDS,
             Self::Appearance => strings::sections::APPEARANCE,
+            Self::Browser => strings::sections::BROWSER,
+            Self::Github => strings::sections::GITHUB,
             Self::Calculator => strings::sections::CALCULATOR,
             Self::About => strings::sections::ABOUT,
         }
@@ -54,6 +62,8 @@ impl Section {
             Self::System => IconName::Cpu,
             Self::Commands => IconName::SquareTerminal,
             Self::Appearance => IconName::Palette,
+            Self::Browser => IconName::Globe,
+            Self::Github => IconName::Github,
             Self::Calculator => IconName::Calculator,
             Self::About => IconName::Info,
         }
@@ -68,6 +78,8 @@ impl Section {
             Self::System => "system",
             Self::Commands => "commands",
             Self::Appearance => "appearance",
+            Self::Browser => "browser",
+            Self::Github => "github",
             Self::Calculator => "calculator",
             Self::About => "about",
         }
@@ -129,6 +141,51 @@ pub static COMMANDS: &[Command] = &[
         keyword: "github repository source 仓库 源码 项目",
         icon: IconName::Globe,
         action: actions::open_repository,
+    },
+    Command {
+        id: "bookmarks",
+        section: Section::Browser,
+        name: strings::common::BOOKMARKS,
+        description: strings::commands::BOOKMARKS_DESCRIPTION,
+        keyword: "bookmark bookmarks 书签 收藏 火狐 firefox zen librewolf",
+        icon: IconName::Bookmark,
+        action: actions::open_bookmarks,
+    },
+    Command {
+        id: "history",
+        section: Section::Browser,
+        name: strings::common::HISTORY,
+        description: strings::commands::HISTORY_DESCRIPTION,
+        keyword: "history 历史 记录 浏览过 firefox zen librewolf",
+        icon: IconName::Clock,
+        action: actions::open_history,
+    },
+    Command {
+        id: "github-projects",
+        section: Section::Github,
+        name: strings::common::PROJECTS,
+        description: strings::commands::PROJECTS_DESCRIPTION,
+        keyword: "github repos projects 个人项目 我的仓库 自己的",
+        icon: IconName::FolderGit2,
+        action: actions::open_github_projects,
+    },
+    Command {
+        id: "github-stars",
+        section: Section::Github,
+        name: strings::common::STARS,
+        description: strings::commands::STARS_DESCRIPTION,
+        keyword: "github stars starred 星标 收藏",
+        icon: IconName::Star,
+        action: actions::open_github_stars,
+    },
+    Command {
+        id: "github-search",
+        section: Section::Github,
+        name: strings::common::REPO_SEARCH,
+        description: strings::commands::REPO_SEARCH_DESCRIPTION,
+        keyword: "github search repositories 搜索 查询 找仓库",
+        icon: IconName::Search,
+        action: actions::open_github_search,
     },
     Command {
         id: "quit",

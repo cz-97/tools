@@ -633,6 +633,11 @@ mod tests {
                 "repository",
                 "program-folder",
                 "quit",
+                "bookmarks",
+                "history",
+                "github-projects",
+                "github-search",
+                "github-stars",
                 "open-calculator",
                 "open-settings"
             ]

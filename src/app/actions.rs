@@ -32,6 +32,31 @@ pub fn open_repository(_cx: &mut App) {
     shell::open(REPOSITORY_URL);
 }
 
+/// 打开书签页。
+pub fn open_bookmarks(cx: &mut App) {
+    crate::app::open_list(crate::ui::launcher::ListKind::Bookmarks, cx);
+}
+
+/// 打开历史页。
+pub fn open_history(cx: &mut App) {
+    crate::app::open_list(crate::ui::launcher::ListKind::History, cx);
+}
+
+/// 打开个人项目页。
+pub fn open_github_projects(cx: &mut App) {
+    crate::app::open_list(crate::ui::launcher::ListKind::Projects, cx);
+}
+
+/// 打开星标页。
+pub fn open_github_stars(cx: &mut App) {
+    crate::app::open_list(crate::ui::launcher::ListKind::Stars, cx);
+}
+
+/// 打开查询仓库页。
+pub fn open_github_search(cx: &mut App) {
+    crate::app::open_list(crate::ui::launcher::ListKind::Search, cx);
+}
+
 /// 打开存设置的那个文件夹。
 pub fn open_settings_folder(_cx: &mut App) {
     let Some(dir) = Settings::directory() else {

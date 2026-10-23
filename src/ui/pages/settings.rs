@@ -1,12 +1,14 @@
 //! 设置页：左边是子模块，右边是选中那一页的内容。
 
+use gpui_kit::component::input::Input;
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, IntoElement, MouseDownEvent, SharedString, Window, div,
-    prelude::*, px,
+    AnyElement, App, ClickEvent, Context, Entity, IntoElement, MouseDownEvent, Pixels,
+    SharedString, Window, div, prelude::*, px,
 };
+use gpui_tools::firefox;
 use gpui_tools::matcher::MatchKind;
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
 
@@ -140,6 +142,8 @@ fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> 
 
     let content = match selected {
         ToolTab::Calculator => calculator_settings_page(stored_settings(cx), colors, cx),
+        ToolTab::Firefox => firefox_settings_page(launcher, colors, cx),
+        ToolTab::Github => github_settings_page(launcher, colors, cx),
     };
 
     h_flex()
@@ -398,6 +402,104 @@ fn calculator_settings_page(
             ),
         ))
         .into_any_element()
+}
+
+/// 火狐系浏览器的设置：profile 目录在哪儿。
+///
+/// 留空就自动探测（Firefox / Zen / LibreWolf / Waterfox / Floorp 的默认 profile），
+/// 右边那行小字写的是「现在实际用的是哪一个」——用户要知道程序到底读了谁的库。
+fn firefox_settings_page(
+    launcher: &Launcher,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> AnyElement {
+    let settings = stored_settings(cx);
+    let resolved = firefox::resolve_profile(settings.firefox_profile.as_deref())
+        .map(|path| path.display().to_string());
+    let description = strings::settings_page::firefox_profile_value(resolved.as_deref());
+
+    v_flex()
+        .gap_1()
+        .child(settings_row(
+            strings::settings_page::FIREFOX_PROFILE_NAME,
+            format!(
+                "{description}\u{2002}\u{00b7}\u{2002}{}",
+                strings::settings_page::FIREFOX_PROFILE_DESCRIPTION
+            ),
+            colors,
+            h_flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap_2()
+                .child(text_field(&launcher.firefox_input, px(210.)))
+                .child(text_button(
+                    "firefox-auto",
+                    strings::common::AUTO,
+                    colors,
+                    cx.listener(|launcher, _, window, cx| {
+                        launcher.clear_firefox_profile(window, cx)
+                    }),
+                )),
+        ))
+        .into_any_element()
+}
+
+/// GitHub 的设置：用户名和令牌。两行都在失焦或按回车时自动保存。
+fn github_settings_page(
+    launcher: &Launcher,
+    colors: UiColors,
+    _cx: &Context<Launcher>,
+) -> AnyElement {
+    v_flex()
+        .gap_1()
+        .child(settings_row(
+            strings::settings_page::GITHUB_USER_NAME,
+            strings::settings_page::GITHUB_USER_DESCRIPTION,
+            colors,
+            text_field(&launcher.github_user_input, px(240.)),
+        ))
+        .child(settings_row(
+            strings::settings_page::GITHUB_TOKEN_NAME,
+            strings::settings_page::GITHUB_TOKEN_DESCRIPTION,
+            colors,
+            text_field(&launcher.github_token_input, px(240.)),
+        ))
+        .into_any_element()
+}
+
+/// 设置行右边的一个文本框：固定宽度、小号，和别的控件高度对得上。
+fn text_field(
+    input: &Entity<gpui_kit::component::input::InputState>,
+    width: Pixels,
+) -> impl IntoElement {
+    div()
+        .w(width)
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .child(Input::new(input).small().appearance(false))
+}
+
+/// 一枚朴素的文字按钮（设置行右侧那种「自动」「打开」）。
+fn text_button(
+    id: &'static str,
+    label: &'static str,
+    colors: UiColors,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .px_2()
+        .py_1()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(colors.surface)
+        .text_xs()
+        .cursor_pointer()
+        .text_color(colors.on_surface_muted)
+        .hover(move |style| style.bg(colors.hover))
+        .on_click(on_click)
+        .child(label)
 }
 
 /// 指令匹配页：四个匹配各一行开关。

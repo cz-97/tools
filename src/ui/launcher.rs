@@ -10,7 +10,10 @@ use gpui_kit::{
     App, ClipboardItem, Context, Entity, Focusable, Subscription, Task, Window, prelude::*,
 };
 use gpui_tools::autostart;
+use gpui_tools::cache;
 use gpui_tools::calculator;
+use gpui_tools::firefox;
+use gpui_tools::github;
 use gpui_tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
 use gpui_tools::settings::Settings;
 use gpui_tools::shell;
@@ -25,6 +28,7 @@ use crate::shortcuts::{
 };
 use crate::strings;
 use crate::ui::commands_list::{ToolDelegate, command_states};
+use crate::ui::lists::{Entry, EntryDelegate, favicon_image};
 use gpui_tools::settings::Theme as ColorScheme;
 
 // 绘制拆到 `view.rs`：页头、页脚与整页骨架在那里，这里只管状态和行为。
@@ -72,6 +76,63 @@ pub(crate) enum Page {
     Settings(SettingsTab),
     /// 计算器：和设置平级的一级页面，从主页「计算器」命令进入。
     Calculator,
+    /// 工具列表页：书签、历史、个人项目、星标、查询仓库。
+    List(ListKind),
+}
+
+/// 工具列表页有哪几页。
+///
+/// 五个页面共用一张列表（[`EntryDelegate`]），差别只在数据来源和页头那枚按钮。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListKind {
+    /// 火狐系浏览器的书签。
+    Bookmarks,
+    /// 火狐系浏览器的浏览历史。
+    History,
+    /// 自己的 GitHub 仓库。
+    Projects,
+    /// 星标仓库。
+    Stars,
+    /// 按关键词搜仓库。
+    Search,
+}
+
+impl ListKind {
+    /// 页头标题。
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::Bookmarks => strings::common::BOOKMARKS,
+            Self::History => strings::common::HISTORY,
+            Self::Projects => strings::common::PROJECTS,
+            Self::Stars => strings::common::STARS,
+            Self::Search => strings::common::REPO_SEARCH,
+        }
+    }
+
+    /// 页头图标。
+    pub(crate) fn icon(self) -> gpui_kit::assets::IconName {
+        match self {
+            Self::Bookmarks => gpui_kit::assets::IconName::Bookmark,
+            Self::History => gpui_kit::assets::IconName::Clock,
+            Self::Projects => gpui_kit::assets::IconName::FolderGit2,
+            Self::Stars => gpui_kit::assets::IconName::Star,
+            Self::Search => gpui_kit::assets::IconName::Search,
+        }
+    }
+
+    /// 这一页的数据是不是 GitHub 仓库（缓存优先，页头有刷新）。
+    pub(crate) fn is_repos(self) -> bool {
+        matches!(self, Self::Projects | Self::Stars)
+    }
+
+    /// 缓存键里的那一段；搜索页不缓存。
+    fn cache_name(self) -> &'static str {
+        match self {
+            Self::Projects => "projects",
+            Self::Stars => "stars",
+            _ => "none",
+        }
+    }
 }
 
 /// 设置里的子模块，顺序就是左侧列的顺序。
@@ -141,20 +202,32 @@ impl SettingsTab {
 pub(crate) enum ToolTab {
     /// 计算器：和它的设置（比如精度）。
     Calculator,
+    /// 火狐系浏览器：profile 目录在哪儿。
+    Firefox,
+    /// GitHub：用户名和令牌。
+    Github,
 }
 
 impl ToolTab {
     /// 全部子标签，顺序就是左侧列表的顺序。
-    pub(crate) const ALL: [Self; 1] = [Self::Calculator];
+    pub(crate) const ALL: [Self; 3] = [Self::Calculator, Self::Firefox, Self::Github];
 
     /// 界面上的名字。
     pub(crate) fn label(self) -> &'static str {
-        strings::launcher::CALCULATOR_TITLE
+        match self {
+            Self::Calculator => strings::launcher::CALCULATOR_TITLE,
+            Self::Firefox => strings::launcher::FIREFOX_TITLE,
+            Self::Github => strings::launcher::GITHUB_TITLE,
+        }
     }
 
     /// 界面上的图标。
     pub(crate) fn icon(self) -> gpui_kit::assets::IconName {
-        gpui_kit::assets::IconName::Calculator
+        match self {
+            Self::Calculator => gpui_kit::assets::IconName::Calculator,
+            Self::Firefox => gpui_kit::assets::IconName::Globe,
+            Self::Github => gpui_kit::assets::IconName::Github,
+        }
     }
 }
 
@@ -231,10 +304,26 @@ pub struct Launcher {
     recording: Option<RecordTarget>,
     /// 录制期间被拒绝的原因（那个键已经被谁占了）。按键换一组就清掉。
     conflict: Option<String>,
+    /// 工具列表页的列表。五页共用一份，换页时把数据换掉。
+    pub(crate) entries: Entity<ListState<EntryDelegate>>,
+    /// 查询仓库页页头的搜索框。
+    pub(crate) repo_search: Entity<InputState>,
+    /// 已经发给 GitHub 的那个关键词：和搜索框内容一样时，回车才是「打开选中的仓库」。
+    repo_query: String,
+    /// 后台任务（读库、抓网络）。存着它任务才不会被丢掉。
+    pending: Option<Task<()>>,
+    /// 设置里那三个文本框（火狐目录、GitHub 用户名、令牌）。
+    pub(crate) firefox_input: Entity<InputState>,
+    pub(crate) github_user_input: Entity<InputState>,
+    pub(crate) github_token_input: Entity<InputState>,
     /// 跟着视图活着的订阅，丢了输入框就不再上报用户敲了什么。
     _search_events: Subscription,
     _opacity_events: Subscription,
     _search_observation: Subscription,
+    /// 查询仓库页搜索框的订阅。
+    _repo_events: Subscription,
+    /// 三个设置文本框的订阅（变化通知 + 失焦保存）。
+    _settings_events: Vec<Subscription>,
 }
 
 impl Launcher {
@@ -280,6 +369,41 @@ impl Launcher {
             }
         });
 
+        // 列表页一上来是空的：数据在 `open_list` 里按页装进来。
+        let entries =
+            cx.new(|cx| ListState::new(EntryDelegate::new(ListKind::Bookmarks), window, cx));
+
+        // 查询仓库页的搜索框：和主页那个分开，两页的输入互不干扰。
+        let repo_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(strings::lists::SEARCH_HINT));
+        // 搜索栏的宽度是按输入框里的文字量的，内容一变就得重画。
+        let repo_events = cx.subscribe(&repo_search, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+
+        let firefox_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(strings::settings_page::FIREFOX_PROFILE_PLACEHOLDER)
+                .default_value(settings.firefox_profile.clone().unwrap_or_default())
+        });
+        let github_user_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.github_user.clone()));
+        let github_token_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.github_token.clone()));
+        // 输入框失焦就落盘：用户点走、换标签、收起面板都算「改完了」。
+        let settings_events = [&firefox_input, &github_user_input, &github_token_input]
+            .into_iter()
+            .map(|input| {
+                cx.subscribe(input, |launcher, _input, event, cx| {
+                    if matches!(event, InputEvent::Blur) {
+                        launcher.commit_settings_inputs(cx);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
         let mut launcher = Self {
             list,
             search,
@@ -296,9 +420,18 @@ impl Launcher {
             copied: None,
             recording: None,
             conflict: None,
+            entries,
+            repo_search,
+            repo_query: String::new(),
+            pending: None,
+            firefox_input,
+            github_user_input,
+            github_token_input,
             _search_events: search_events,
             _opacity_events: opacity_events,
             _search_observation: search_observation,
+            _repo_events: repo_events,
+            _settings_events: settings_events,
         };
         // 一开始就有一行空行占着：用户进来直接就能打公式。
         launcher.append_calculator_row(window, cx);
@@ -361,13 +494,32 @@ impl Launcher {
         });
     }
 
-    /// 上下键：命令页里移高亮，设置页里换子模块；计算器页里不抢方向键（公式框自己用）。
+    /// 上下键：命令页里移高亮，设置页里换子模块，列表页里换行；计算器页里不抢方向键
+    /// （公式框自己用）。
     pub(crate) fn navigate(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         match self.page {
             Page::Commands => self.move_selection(delta, window, cx),
             Page::Settings(tab) => self.select_tab(tab.shifted(delta), window, cx),
             Page::Calculator => {}
+            Page::List(_) => self.move_entry(delta, window, cx),
         }
+    }
+
+    /// 工具列表页里高亮挪 `delta` 行，夹在可见范围内。
+    fn move_entry(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.entries.read(cx).delegate().len();
+        if count == 0 {
+            return;
+        }
+        let current = self.entries.read(cx).delegate().selected();
+        let next = (current as isize + delta).clamp(0, count as isize - 1) as usize;
+        if next == current {
+            return;
+        }
+        self.entries.update(cx, |list, cx| {
+            list.set_selected_index(Some(IndexPath::new(next)), window, cx);
+            list.scroll_to_selected_item(window, cx);
+        });
     }
 
     /// 高亮挪 `delta` 行，夹在可见命令范围内。
@@ -399,15 +551,19 @@ impl Launcher {
         self.refresh_catalogue(cx);
         self.list
             .update(cx, |list, cx| list.set_query("", window, cx));
-        self.page = match self.resumed_page(cx) {
-            Some(page) => page,
-            None => Page::Commands,
-        };
-        // 命令页把焦点给搜索框；计算器页给最后那行空行（唤出即打）；设置页没有要聚焦的输入框。
-        match self.page {
-            Page::Commands => self.focus_search(window, cx),
-            Page::Calculator => self.focus_calculator_last(window, cx),
-            Page::Settings(_) => {}
+        // 唤出时停在哪一页由记忆决定；列表页要重新装数据，所以走 `open_list`。
+        match self.resumed_page(cx) {
+            Some(Page::Calculator) => self.open_calculator(window, cx),
+            Some(Page::Settings(tab)) => {
+                self.page = Page::Settings(tab);
+                // 设置页里没有默认输入框：焦点留在主页搜索框上，字会敲进看不见的地方。
+                window.blur(cx);
+            }
+            Some(Page::List(kind)) => self.open_list(kind, window, cx),
+            _ => {
+                self.page = Page::Commands;
+                self.focus_search(window, cx);
+            }
         }
         self.select_row(0, window, cx);
         self.watch_focus(cx);
@@ -491,10 +647,30 @@ impl Launcher {
         self.remember_page();
     }
 
-    /// 执行高亮的那一项：指令匹配（复制/打开）或一条命令。
+    /// 执行高亮的那一项：指令匹配（复制/打开）、一条命令、列表页的一行，或者设置页
+    /// 顺手把改过的文本框存下来。
     pub(crate) fn activate_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.page, Page::Commands) {
-            return;
+        match self.page {
+            Page::Commands => {}
+            Page::Settings(_) => {
+                self.commit_settings_inputs(cx);
+                return;
+            }
+            Page::Calculator => return,
+            Page::List(ListKind::Search) => {
+                // 搜索框里是新词就先搜；和上次一样时，回车是「打开选中的那个仓库」。
+                let keyword = self.repo_search.read(cx).value().trim().to_string();
+                if !keyword.is_empty() && keyword != self.repo_query {
+                    self.run_search(keyword, cx);
+                } else {
+                    self.open_entry(cx);
+                }
+                return;
+            }
+            Page::List(_) => {
+                self.open_entry(cx);
+                return;
+            }
         }
         match self.list.read(cx).delegate().selected_item() {
             Some(crate::ui::commands_list::HomeItem::Match(matched)) => {
@@ -503,6 +679,11 @@ impl Launcher {
             Some(crate::ui::commands_list::HomeItem::Command(command)) => run_command(command, cx),
             None => {}
         }
+    }
+
+    /// 打开列表页高亮的那一行。
+    fn open_entry(&self, cx: &App) {
+        self.entries.read(cx).delegate().open_selected();
     }
 
     /// 执行一条指令匹配：显示结果的复制走，执行动作的交给 shell。
@@ -552,9 +733,12 @@ impl Launcher {
         cx.notify();
     }
 
-    /// Esc 先从设置/计算器页退出来，再收面板。
+    /// Esc 先从设置/计算器/列表页退出来，再收面板。
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.page, Page::Settings(_) | Page::Calculator) {
+        if matches!(
+            self.page,
+            Page::Settings(_) | Page::Calculator | Page::List(_)
+        ) {
             self.back_to_commands(window, cx);
         } else {
             hide_launcher(cx);
@@ -562,8 +746,10 @@ impl Launcher {
     }
 
     /// 把命令列表换成设置页。
-    pub(crate) fn open_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.page = Page::Settings(SettingsTab::System);
+        // 齿轮本身不吃焦点，搜索框还揣着焦点的话，字会敲进看不见的地方。
+        window.blur(cx);
         cx.notify();
     }
 
@@ -572,6 +758,8 @@ impl Launcher {
     /// 这里**不**记页面：Esc 退回命令页后用户还停在面板上，只有真正收起时才决定
     /// 要不要记得这一页（见 [`Self::remember_page`]）。
     pub(crate) fn back_to_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 离开列表页就把还在跑的任务丢掉：抓回来的数据不该塞进别的页面。
+        self.pending = None;
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
@@ -581,26 +769,31 @@ impl Launcher {
     pub(crate) fn select_tab(
         &mut self,
         tab: SettingsTab,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.page == Page::Settings(tab) {
             return;
         }
+        // 换标签之前把文本框里改过的值存下来，顺手把焦点收干净。
+        self.commit_settings_inputs(cx);
+        window.blur(cx);
         self.page = Page::Settings(tab);
         cx.notify();
     }
 
-    /// 工具标签里切到某个子标签（计算器之类）。
+    /// 工具标签里切到某个子标签（计算器、火狐、GitHub）。
     pub(crate) fn select_tool_tab(
         &mut self,
         tab: ToolTab,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.tool_tab == tab {
             return;
         }
+        self.commit_settings_inputs(cx);
+        window.blur(cx);
         self.tool_tab = tab;
         cx.notify();
     }
@@ -621,6 +814,241 @@ impl Launcher {
         };
         self.current_row = Some(row.id);
         row.input.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    /// 打开一个工具列表页：先把数据装进去，再决定焦点落在哪儿。
+    ///
+    /// 书签和历史每次进来都重读一遍库（本地文件，很快）；个人项目和星标先把缓存放上来，
+    /// 没有缓存才去网上抓；查询仓库页空着手进来，等用户敲关键词。
+    pub(crate) fn open_list(
+        &mut self,
+        kind: ListKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 上一页还在跑的活儿先丢掉，结果不许串到这一页来。
+        self.pending = None;
+        self.page = Page::List(kind);
+        self.repo_query.clear();
+        self.entries.update(cx, |list, cx| {
+            list.delegate_mut().reset(kind);
+            cx.notify();
+        });
+
+        match kind {
+            ListKind::Search => {
+                self.repo_search
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                self.repo_search.read(cx).focus_handle(cx).focus(window, cx);
+            }
+            ListKind::Bookmarks | ListKind::History => {
+                // 列表页没有输入框，焦点留着会敲进看不见的搜索框。
+                window.blur(cx);
+                self.load_firefox(kind, cx);
+            }
+            ListKind::Projects | ListKind::Stars => {
+                window.blur(cx);
+                self.load_repos(kind, false, cx);
+            }
+        }
+        self.entries.update(cx, |list, cx| {
+            list.set_selected_index(Some(IndexPath::new(0)), window, cx);
+        });
+        cx.notify();
+    }
+
+    /// 页头那枚刷新按钮：不管缓存，重新去源头取一份。
+    pub(crate) fn refresh_list(&mut self, cx: &mut Context<Self>) {
+        match self.page {
+            Page::List(ListKind::Bookmarks) => self.load_firefox(ListKind::Bookmarks, cx),
+            Page::List(ListKind::History) => self.load_firefox(ListKind::History, cx),
+            Page::List(kind) if kind.is_repos() => self.load_repos(kind, true, cx),
+            _ => {}
+        }
+    }
+
+    /// 读书签或者历史。sqlite 是阻塞的，扔到后台线程去读。
+    fn load_firefox(&mut self, kind: ListKind, cx: &mut Context<Self>) {
+        self.commit_settings_inputs(cx);
+        let profile = firefox::resolve_profile(stored_settings(cx).firefox_profile.as_deref());
+        let Some(profile) = profile else {
+            self.entries.update(cx, |list, cx| {
+                list.delegate_mut()
+                    .set_message(Some(strings::settings_page::NO_FIREFOX_PROFILE.to_string()));
+                cx.notify();
+            });
+            return;
+        };
+        self.entries.update(cx, |list, cx| {
+            list.delegate_mut().set_loading(true);
+            cx.notify();
+        });
+
+        let reading = cx.background_executor().spawn(async move {
+            if kind == ListKind::History {
+                firefox::history(&profile).map(visit_entries)
+            } else {
+                firefox::bookmarks(&profile).map(bookmark_entries)
+            }
+        });
+        self.pending = Some(cx.spawn(async move |this, cx| {
+            let outcome = reading.await;
+            this.update(cx, |launcher, cx| launcher.finish_list(outcome, cx))
+                .ok();
+        }));
+    }
+
+    /// 取个人项目或者星标。缓存优先：有缓存就先摆上来，刷新按钮才碰网络。
+    fn load_repos(&mut self, kind: ListKind, refresh: bool, cx: &mut Context<Self>) {
+        self.commit_settings_inputs(cx);
+        let settings = stored_settings(cx);
+        let user = settings.github_user.trim().to_string();
+        if user.is_empty() {
+            self.entries.update(cx, |list, cx| {
+                list.delegate_mut()
+                    .set_message(Some(strings::lists::NO_USER.to_string()));
+                cx.notify();
+            });
+            return;
+        }
+        let cache_key = format!("github-{}-{user}", kind.cache_name());
+        if !refresh {
+            let cached = cache::read(&cache_key).and_then(|text| github::from_json(&text));
+            if let Some(repos) = cached {
+                self.install_entries(repo_entries(repos), cx);
+                return;
+            }
+        }
+
+        self.entries.update(cx, |list, cx| {
+            list.delegate_mut().set_loading(true);
+            cx.notify();
+        });
+        let http = cx.http_client();
+        let token = settings.github_token.trim().to_string();
+        self.pending = Some(cx.spawn(async move |this, cx| {
+            let outcome = if kind == ListKind::Projects {
+                github::owned_repos(http, &user, &token).await
+            } else {
+                github::starred(http, &user, &token).await
+            };
+            this.update(cx, |launcher, cx| {
+                launcher.finish_repos(kind, &cache_key, outcome, cx)
+            })
+            .ok();
+        }));
+    }
+
+    /// 按关键词搜仓库。
+    fn run_search(&mut self, keyword: String, cx: &mut Context<Self>) {
+        let keyword = keyword.trim().to_string();
+        if keyword.is_empty() {
+            return;
+        }
+        let token = stored_settings(cx).github_token.trim().to_string();
+        let http = cx.http_client();
+        // 记下来：同一个词再按回车就是「打开选中的仓库」，不再重复搜。
+        self.repo_query = keyword.clone();
+        self.entries.update(cx, |list, cx| {
+            list.delegate_mut().mark_searched();
+            list.delegate_mut().set_loading(true);
+            cx.notify();
+        });
+        self.pending = Some(cx.spawn(async move |this, cx| {
+            let outcome = github::search(http, &keyword, &token).await;
+            this.update(cx, |launcher, cx| {
+                launcher.finish_list(outcome.map(repo_entries), cx)
+            })
+            .ok();
+        }));
+    }
+
+    /// 网络回来的仓库：写进缓存，再摆到列表上。
+    fn finish_repos(
+        &mut self,
+        kind: ListKind,
+        cache_key: &str,
+        outcome: Result<Vec<github::Repo>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending = None;
+        // 用户可能已经翻到别的页面去了，那就别往回塞。
+        if !matches!(self.page, Page::List(current) if current == kind) {
+            return;
+        }
+        match outcome {
+            Ok(repos) => {
+                cache::write(cache_key, &github::to_json(&repos));
+                if repos.is_empty() {
+                    self.entries.update(cx, |list, cx| {
+                        list.delegate_mut()
+                            .set_message(Some(strings::lists::NO_REPOS.to_string()));
+                        cx.notify();
+                    });
+                } else {
+                    self.install_entries(repo_entries(repos), cx);
+                }
+            }
+            Err(error) => {
+                // 刷新失败就把缓存留着，只在上面写一句为什么。
+                self.entries.update(cx, |list, cx| {
+                    list.delegate_mut().set_message(Some(error));
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    /// 本地读取回来的数据（书签、历史、搜索结果）。
+    fn finish_list(&mut self, outcome: Result<Vec<Entry>, String>, cx: &mut Context<Self>) {
+        self.pending = None;
+        match outcome {
+            Ok(entries) => self.install_entries(entries, cx),
+            Err(error) => self.entries.update(cx, |list, cx| {
+                list.delegate_mut().set_message(Some(error));
+                cx.notify();
+            }),
+        }
+    }
+
+    /// 把一批行装进列表页，高亮回到第一行。
+    fn install_entries(&mut self, entries: Vec<Entry>, cx: &mut Context<Self>) {
+        self.entries.update(cx, |list, cx| {
+            let empty = entries.is_empty();
+            list.delegate_mut().set_items(entries);
+            if empty {
+                list.delegate_mut().set_message(None);
+            }
+            cx.notify();
+        });
+    }
+
+    /// 把设置页三个文本框里的值存下来；没变就不写库。
+    pub(crate) fn commit_settings_inputs(&mut self, cx: &mut Context<Self>) {
+        let profile = self.firefox_input.read(cx).value().trim().to_string();
+        let user = self.github_user_input.read(cx).value().trim().to_string();
+        let token = self.github_token_input.read(cx).value().trim().to_string();
+
+        let mut settings = stored_settings(cx);
+        let profile = (!profile.is_empty()).then_some(profile);
+        if settings.firefox_profile == profile
+            && settings.github_user == user
+            && settings.github_token == token
+        {
+            return;
+        }
+        settings.firefox_profile = profile;
+        settings.github_user = user;
+        settings.github_token = token;
+        store_settings(settings, cx);
+        cx.notify();
+    }
+
+    /// 火狐目录退回自动探测：清空输入框并落盘。
+    pub(crate) fn clear_firefox_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.firefox_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.commit_settings_inputs(cx);
     }
 
     /// 末尾追一个空行。新行要有窗口才建得起来，所以在拿得到窗口的地方调。
@@ -1027,4 +1455,69 @@ impl Launcher {
         self.conflict = None;
         cx.notify();
     }
+}
+
+/// 书签行：标题是书签名字，副行是网址，右边补一句页面标题（和书签名字不一样时才写）。
+fn bookmark_entries(rows: Vec<firefox::Bookmark>) -> Vec<Entry> {
+    rows.into_iter()
+        .map(|bookmark| {
+            let meta = if bookmark.page_title.is_empty() || bookmark.page_title == bookmark.title {
+                String::new()
+            } else {
+                bookmark.page_title
+            };
+            Entry::new(
+                bookmark.title,
+                bookmark.url.clone(),
+                meta,
+                bookmark.url,
+                gpui_kit::assets::IconName::Bookmark,
+            )
+            .with_icon(bookmark.icon.as_ref().map(favicon_image))
+        })
+        .collect()
+}
+
+/// 历史行：标题是页面标题，右边是「访问次数 · 最后访问」。
+fn visit_entries(rows: Vec<firefox::Visit>) -> Vec<Entry> {
+    rows.into_iter()
+        .map(|visit| {
+            let mut meta = format!("{} 次", visit.visits);
+            if !visit.visited.is_empty() {
+                meta = format!("{meta} \u{00b7} {}", visit.visited);
+            }
+            Entry::new(
+                visit.title,
+                visit.url.clone(),
+                meta,
+                visit.url,
+                gpui_kit::assets::IconName::Clock,
+            )
+            .with_icon(visit.icon.as_ref().map(favicon_image))
+        })
+        .collect()
+}
+
+/// 仓库行：标题是 `owner/name`，副行是简介（没有就写网址），右边是「★ 数 · 主语言」。
+fn repo_entries(rows: Vec<github::Repo>) -> Vec<Entry> {
+    rows.into_iter()
+        .map(|repo| {
+            let mut meta = format!("\u{2605} {}", repo.stars);
+            if !repo.language.is_empty() {
+                meta = format!("{meta} \u{00b7} {}", repo.language);
+            }
+            let detail = if repo.description.is_empty() {
+                repo.url.clone()
+            } else {
+                repo.description
+            };
+            Entry::new(
+                repo.full_name,
+                detail,
+                meta,
+                repo.url,
+                gpui_kit::assets::IconName::Github,
+            )
+        })
+        .collect()
 }

@@ -26,6 +26,18 @@ pub mod common {
     pub const PROGRAM_FOLDER: &str = "程序所在位置";
     /// 项目仓库（关于页那一行，也是主页上的命令名）。
     pub const REPOSITORY: &str = "项目仓库";
+    /// 书签（主页上的命令名，也是书签页的标题）。
+    pub const BOOKMARKS: &str = "书签";
+    /// 历史（主页上的命令名，也是历史页的标题）。
+    pub const HISTORY: &str = "历史";
+    /// 个人项目（主页上的命令名，也是这一页的标题）。
+    pub const PROJECTS: &str = "个人项目";
+    /// 星标（主页上的命令名，也是这一页的标题）。
+    pub const STARS: &str = "星标";
+    /// 查询仓库（主页上的命令名，也是这一页的标题）。
+    pub const REPO_SEARCH: &str = "查询仓库";
+    /// 自动（交给程序自己找）。
+    pub const AUTO: &str = "自动";
 
     /// 调用次数：`N 次`。
     pub fn uses(count: u64) -> String {
@@ -45,6 +57,16 @@ pub mod commands {
     pub const PROGRAM_FOLDER_DESCRIPTION: &str = "打开启动器所在的文件夹";
     /// 主页「项目仓库」命令。
     pub const REPOSITORY_DESCRIPTION: &str = "在浏览器打开项目仓库";
+    /// 主页「书签」命令。
+    pub const BOOKMARKS_DESCRIPTION: &str = "列出火狐系浏览器的书签";
+    /// 主页「历史」命令。
+    pub const HISTORY_DESCRIPTION: &str = "列出火狐系浏览器的浏览历史";
+    /// 主页「个人项目」命令。
+    pub const PROJECTS_DESCRIPTION: &str = "列出自己的 GitHub 仓库，先读缓存";
+    /// 主页「星标」命令。
+    pub const STARS_DESCRIPTION: &str = "列出星标仓库，先读缓存";
+    /// 主页「查询仓库」命令。
+    pub const REPO_SEARCH_DESCRIPTION: &str = "输入关键词搜索 GitHub 仓库";
 }
 
 /// 五个设置子模块的名字。
@@ -59,6 +81,10 @@ pub mod sections {
     pub const CALCULATOR: &str = super::common::CALCULATOR;
     /// 工具（计算器这类工具的容器标签）。
     pub const TOOLS: &str = "工具";
+    /// 浏览器（命令页给书签、历史分组时用的名字）。
+    pub const BROWSER: &str = "浏览器";
+    /// GitHub（命令页给三个仓库命令分组时用的名字）。
+    pub const GITHUB: &str = "GitHub";
     /// 指令匹配。
     pub const MATCHERS: &str = "指令匹配";
     /// 关于。
@@ -87,6 +113,10 @@ pub mod launcher {
     pub const SETTINGS_TITLE: &str = super::common::SETTINGS;
     /// 计算器页页头的标题。
     pub const CALCULATOR_TITLE: &str = super::common::CALCULATOR;
+    /// 工具标签里「火狐系浏览器」那一项的名字。
+    pub const FIREFOX_TITLE: &str = "火狐系浏览器";
+    /// 工具标签里「GitHub」那一项的名字。
+    pub const GITHUB_TITLE: &str = "GitHub";
     /// 页脚右侧的命令条数。
     pub fn count(commands: usize) -> String {
         format!("{commands} 条命令")
@@ -99,6 +129,40 @@ pub mod launcher {
     }
     /// 主页每行：没有绑定快捷键时显示的字。
     pub const NO_SHORTCUT: &str = "无快捷键";
+}
+
+/// 工具列表页（书签 / 历史 / 个人项目 / 星标 / 查询仓库）。
+///
+/// 五个页面共用一套骨架，所以文案也放在一处：标题、空状态、页头那枚刷新按钮。
+pub mod lists {
+    /// 页头：从网络重新抓一份。
+    pub const REFRESH: &str = "从网络重新获取";
+    /// 页头：正在读库或者正在抓。
+    pub const LOADING: &str = "刷新中\u{2026}";
+    /// 查询仓库页的搜索框提示。
+    pub const SEARCH_HINT: &str = "输入关键词，回车搜索";
+    /// 页脚：回车的说明。
+    pub const FOOTER_OPEN: &str = super::common::OPEN;
+    /// 页脚：搜索页里回车的说明。
+    pub const FOOTER_SEARCH: &str = "搜索";
+    /// 页脚右侧的条数。
+    pub fn count(items: usize) -> String {
+        format!("{items} 项")
+    }
+    /// 书签页的空状态。
+    pub const NO_BOOKMARKS: &str = "这个 profile 里没有书签";
+    /// 历史页的空状态。
+    pub const NO_HISTORY: &str = "这个 profile 里没有历史记录";
+    /// 缓存为空时的空状态。
+    pub const NO_CACHE: &str = "还没有缓存，点左上角刷新一次";
+    /// 查询仓库页还没搜过时的空状态。
+    pub const NO_QUERY: &str = "输入关键词，回车搜索";
+    /// 搜到了但是空的。
+    pub const NO_RESULT: &str = "没有搜到仓库";
+    /// 这个账号名下确实一个仓库都没有。
+    pub const NO_REPOS: &str = "这个账号下没有仓库";
+    /// 没有配置 GitHub 用户名时的提示。
+    pub const NO_USER: &str = "先在设置 \u{2192} 工具 \u{2192} GitHub 里填用户名";
 }
 
 /// 命令页（设置里的「命令」标签）。
@@ -242,6 +306,30 @@ pub mod settings_page {
     pub fn precision_value(precision: u32) -> String {
         format!("{precision} 位")
     }
+    /// 火狐设置：profile 目录的标题。
+    pub const FIREFOX_PROFILE_NAME: &str = "配置文件文件夹";
+    /// 火狐设置：profile 目录的说明。
+    pub const FIREFOX_PROFILE_DESCRIPTION: &str =
+        "留空就自动找；也可以填 profile 或 profiles.ini 所在目录";
+    /// 火狐设置：输入框里的提示。
+    pub const FIREFOX_PROFILE_PLACEHOLDER: &str = "自动检测";
+    /// 火狐设置：当前实际在用的目录。
+    pub fn firefox_profile_value(path: Option<&str>) -> String {
+        match path {
+            Some(path) => path.to_string(),
+            None => NO_FIREFOX_PROFILE.to_string(),
+        }
+    }
+    /// 火狐设置：一个 profile 都没找到。
+    pub const NO_FIREFOX_PROFILE: &str = "没找到火狐系浏览器的配置";
+    /// GitHub 设置：用户名的标题。
+    pub const GITHUB_USER_NAME: &str = "用户名";
+    /// GitHub 设置：用户名的说明。
+    pub const GITHUB_USER_DESCRIPTION: &str = "个人项目和星标都按这个用户名查";
+    /// GitHub 设置：令牌的标题。
+    pub const GITHUB_TOKEN_NAME: &str = "令牌";
+    /// GitHub 设置：令牌的说明。
+    pub const GITHUB_TOKEN_DESCRIPTION: &str = "可选；填了接口额度从 60 次/小时提到 5000";
     /// 工具标签下某个工具的内容标题。
     pub fn tool_caption(name: &str) -> String {
         format!("{name}的设置")

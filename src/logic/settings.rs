@@ -100,6 +100,12 @@ pub struct Settings {
     pub matcher_url: bool,
     /// 指令匹配：文件/文件夹路径可打开。
     pub matcher_path: bool,
+    /// 火狐系浏览器的 profile 目录；`None` 表示按产品目录自动探测。
+    pub firefox_profile: Option<String>,
+    /// GitHub 用户名：个人项目和星标都用它查。
+    pub github_user: String,
+    /// GitHub 令牌，可以为空；填了接口额度高一档。
+    pub github_token: String,
     /// 每条命令的状态，键是（子模块键, 命令 id）。
     pub commands: BTreeMap<(String, String), CommandSettings>,
 }
@@ -291,6 +297,11 @@ impl Settings {
                     "matcher_amount" => settings.matcher_amount = value == "1",
                     "matcher_url" => settings.matcher_url = value == "1",
                     "matcher_path" => settings.matcher_path = value == "1",
+                    "firefox_profile" if !value.is_empty() => {
+                        settings.firefox_profile = Some(value)
+                    }
+                    "github_user" => settings.github_user = value,
+                    "github_token" => settings.github_token = value,
                     _ => {}
                 }
             }
@@ -361,6 +372,11 @@ impl Settings {
                 "matcher_path",
                 u8::from(self.matcher_path).to_string()
             ])?;
+            if let Some(profile) = self.firefox_profile.as_deref() {
+                insert.execute(params!["firefox_profile", profile])?;
+            }
+            insert.execute(params!["github_user", self.github_user.as_str()])?;
+            insert.execute(params!["github_token", self.github_token.as_str()])?;
             if let Some(y) = self.window_y {
                 insert.execute(params!["window_y", y.to_string()])?;
             }
@@ -476,6 +492,9 @@ impl Default for Settings {
             matcher_amount: true,
             matcher_url: true,
             matcher_path: true,
+            firefox_profile: None,
+            github_user: String::new(),
+            github_token: String::new(),
             commands: BTreeMap::new(),
         }
     }
@@ -657,6 +676,28 @@ mod tests {
         assert!(!read.matcher_path);
         assert!(read.matcher_calculator);
         assert!(read.matcher_url);
+    }
+
+    #[test]
+    fn the_browser_profile_and_github_identity_survive_a_round_trip() {
+        let mut settings = Settings::default();
+        settings.firefox_profile = Some("D:/Profiles/abc.default".to_string());
+        settings.github_user = "cz-97".to_string();
+        settings.github_token = "ghp_example".to_string();
+        let connection = database();
+        settings.write(&connection).expect("写入");
+        let read = Settings::read(&connection).expect("读取").expect("有数据");
+        assert_eq!(read, settings);
+    }
+
+    #[test]
+    fn a_missing_browser_profile_means_automatic_detection() {
+        let settings = Settings::default();
+        let connection = database();
+        settings.write(&connection).expect("写入");
+        let read = Settings::read(&connection).expect("读取").expect("有数据");
+        assert_eq!(read.firefox_profile, None);
+        assert_eq!(read.github_user, "");
     }
 
     #[test]
