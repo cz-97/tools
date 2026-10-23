@@ -13,6 +13,8 @@ pub mod sections {
     pub const APPEARANCE: &str = "外观";
     /// 计算器。
     pub const CALCULATOR: &str = "计算器";
+    /// 工具（计算器这类工具的容器标签）。
+    pub const TOOLS: &str = "工具";
     /// 关于。
     pub const ABOUT: &str = "关于";
 }
@@ -173,6 +175,10 @@ pub mod settings_page {
     /// 计算器设置：当前精度的单位。
     pub fn precision_value(precision: u32) -> String {
         format!("{precision} 位")
+    }
+    /// 工具标签下某个工具的内容标题。
+    pub fn tool_caption(name: &str) -> String {
+        format!("{name}的设置")
     }
     /// 子页面保持：不保持。
     pub const RESUME_NEVER: &str = "不保持";

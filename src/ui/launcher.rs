@@ -76,13 +76,14 @@ pub(crate) enum Page {
 
 /// 设置里的子模块，顺序就是左侧列的顺序。
 ///
-/// 它们同时也是命令页给命令分组的依据，所以命令在 `catalogue.rs` 里声明时就属于其中一个。
+/// `Tools` 是一个容器：它本身不含设置项，而是把计算器等工具收在下面的子标签页里
+/// （见 `ToolTab`）。其余四项与命令页给命令分组的子模块一一对应。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
     System,
     Commands,
     Appearance,
-    Calculator,
+    Tools,
     About,
 }
 
@@ -92,29 +93,30 @@ impl SettingsTab {
         Self::System,
         Self::Commands,
         Self::Appearance,
-        Self::Calculator,
+        Self::Tools,
         Self::About,
     ];
 
-    /// 这个标签对应命令目录里的哪个子模块。
-    pub(crate) fn section(self) -> catalogue::Section {
-        match self {
-            Self::System => catalogue::Section::System,
-            Self::Commands => catalogue::Section::Commands,
-            Self::Appearance => catalogue::Section::Appearance,
-            Self::Calculator => catalogue::Section::Calculator,
-            Self::About => catalogue::Section::About,
-        }
-    }
-
     /// 界面上的名字。
     pub(crate) fn label(self) -> &'static str {
-        self.section().label()
+        match self {
+            Self::System => strings::sections::SYSTEM,
+            Self::Commands => strings::sections::COMMANDS,
+            Self::Appearance => strings::sections::APPEARANCE,
+            Self::Tools => strings::sections::TOOLS,
+            Self::About => strings::sections::ABOUT,
+        }
     }
 
     /// 界面上的图标。
     pub(crate) fn icon(self) -> gpui_kit::assets::IconName {
-        self.section().icon()
+        match self {
+            Self::System => catalogue::Section::System.icon(),
+            Self::Commands => catalogue::Section::Commands.icon(),
+            Self::Appearance => catalogue::Section::Appearance.icon(),
+            Self::Tools => gpui_kit::assets::IconName::Toolbox,
+            Self::About => catalogue::Section::About.icon(),
+        }
     }
 
     /// 往后挪 `delta` 个，到底就停在最后一个。
@@ -124,6 +126,31 @@ impl SettingsTab {
             .position(|tab| *tab == self)
             .unwrap_or_default() as isize;
         Self::ALL[(index + delta).clamp(0, Self::ALL.len() as isize - 1) as usize]
+    }
+}
+
+/// 设置里「工具」标签下面的子标签页。
+///
+/// 每个子标签是一个可配置的工具；加工具 = 给这个枚举加一项，右侧内容按它分派，
+/// 左侧列表自动列出全部。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolTab {
+    /// 计算器：和它的设置（比如精度）。
+    Calculator,
+}
+
+impl ToolTab {
+    /// 全部子标签，顺序就是左侧列表的顺序。
+    pub(crate) const ALL: [Self; 1] = [Self::Calculator];
+
+    /// 界面上的名字。
+    pub(crate) fn label(self) -> &'static str {
+        strings::launcher::CALCULATOR_TITLE
+    }
+
+    /// 界面上的图标。
+    pub(crate) fn icon(self) -> gpui_kit::assets::IconName {
+        gpui_kit::assets::IconName::Calculator
     }
 }
 
@@ -184,6 +211,8 @@ pub struct Launcher {
     focus_watch: Option<Task<()>>,
     /// 命令页当前显示第几个子模块，`catalogue::Section::ALL` 的下标。
     pub(crate) section: usize,
+    /// 工具标签下当前显示哪个子标签页（`ToolTab`）。
+    pub(crate) tool_tab: ToolTab,
     /// 透明度滑动条。滑动的过程只改内存，库在面板收起时统一落盘。
     pub(crate) opacity: Entity<SliderState>,
     /// 计算器的公式行。最后一行永远是空行：它有内容，下面就自动补一个。
@@ -253,6 +282,7 @@ impl Launcher {
             last_page: None,
             focus_watch: None,
             section: 0,
+            tool_tab: ToolTab::Calculator,
             opacity,
             calculator: Vec::new(),
             next_row_id: 0,
@@ -497,6 +527,20 @@ impl Launcher {
             return;
         }
         self.page = Page::Settings(tab);
+        cx.notify();
+    }
+
+    /// 工具标签里切到某个子标签（计算器之类）。
+    pub(crate) fn select_tool_tab(
+        &mut self,
+        tab: ToolTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tool_tab == tab {
+            return;
+        }
+        self.tool_tab = tab;
         cx.notify();
     }
 
