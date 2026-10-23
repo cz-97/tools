@@ -456,7 +456,7 @@ pub fn show_launcher(cx: &mut App) {
 /// 收起面板，但不销毁。
 pub fn hide_launcher(cx: &mut App) {
     // 窗口收起来之前先记下离开的是哪一页，并结束还在进行的录制。
-    with_launcher(cx, |launcher, _window, _cx| launcher.leave());
+    with_launcher(cx, |launcher, _window, cx| launcher.leave(cx));
     if let Some(panel) = cx.try_global::<LauncherPanel>() {
         panel.window.hide();
     }

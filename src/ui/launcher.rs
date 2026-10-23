@@ -268,6 +268,13 @@ impl RecordTarget {
     }
 }
 
+/// 仓库搜索页的现场：关键词、结果、高亮在第几行。
+struct SearchState {
+    keyword: String,
+    rows: Vec<Entry>,
+    selected: usize,
+}
+
 /// 计算器里的一行：一个公式输入框，和它的订阅。
 ///
 /// `id` 是稳定键，不是下标：行会被增删，下标会挪窝，订阅里记的下标会对不上行。
@@ -318,6 +325,8 @@ pub struct Launcher {
     pub(crate) list_search: Entity<InputState>,
     /// 已经发给 GitHub 的那个关键词（远程搜索用）。
     list_query: String,
+    /// 仓库搜索页上次的结果：面板收起时留一份，`resume_seconds` 内再进来直接摆回去。
+    search_state: Option<SearchState>,
     /// 后台任务（读库、抓网络）。存着它任务才不会被丢掉。
     pending: Option<Task<()>>,
     /// 设置里那三个文本框（火狐目录、GitHub 用户名、令牌）。
@@ -436,6 +445,7 @@ impl Launcher {
             entries,
             list_search,
             list_query: String::new(),
+            search_state: None,
             pending: None,
             firefox_input,
             github_user_input,
@@ -641,12 +651,23 @@ impl Launcher {
     ///
     /// **只看收起那一刻的页面**：停在设置/计算器就记住，停在命令页就忘掉上一次的子页面。
     /// 所以「进了设置、又 Esc 回到主页、再收起」之后重新唤出是主页，不会又跳回设置。
-    pub(crate) fn remember_page(&mut self) {
+    ///
+    /// 仓库搜索页多做一件事：把关键词和结果留一份。真正的用法是「搜到 → 双击打开 →
+    /// 面板被别的窗口顶掉 → 再唤出来接着挑下一个」，结果没了等于白搜一次。
+    pub(crate) fn remember_page(&mut self, cx: &App) {
         self.last_page = if matches!(self.page, Page::Commands) {
             None
         } else {
             Some((Instant::now(), self.page))
         };
+        if self.page == Page::List(ListKind::Search) {
+            let (rows, selected) = self.entries.read(cx).delegate().snapshot();
+            self.search_state = Some(SearchState {
+                keyword: self.list_search.read(cx).value().trim().to_string(),
+                rows,
+                selected,
+            });
+        }
     }
 
     /// 收起面板前收拾现场：记下停在哪一页，并结束录制。
@@ -654,10 +675,10 @@ impl Launcher {
     /// **录制不能跟着面板一起藏起来**：全局热键分发是按「有没有在录制」决定执行还是
     /// 报冲突的，面板藏了但录制还在，所有热键都会静默失效——连唤出面板的那一个都
     /// 按不回来，而按钮早就看不见了。
-    pub(crate) fn leave(&mut self) {
+    pub(crate) fn leave(&mut self, cx: &App) {
         self.recording = None;
         self.conflict = None;
-        self.remember_page();
+        self.remember_page(cx);
     }
 
     /// 执行高亮的那一项：指令匹配（复制/打开）、一条命令、列表页的一行，或者设置页
@@ -824,6 +845,8 @@ impl Launcher {
     pub(crate) fn back_to_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 离开列表页就把还在跑的任务丢掉：抓回来的数据不该塞进别的页面。
         self.pending = None;
+        // 回到主页就是离开搜索了，现场不再留着。
+        self.search_state = None;
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
@@ -890,16 +913,35 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 从「收起后再唤出」回来的搜索页：把上次的关键词和结果摆回去，别再重搜一次。
+        let restoring =
+            matches!(self.page, Page::List(ListKind::Search)) && kind == ListKind::Search;
+        let restored = restoring.then(|| self.search_state.take()).flatten();
+
         // 上一页还在跑的活儿先丢掉，结果不许串到这一页来。
         self.pending = None;
         self.page = Page::List(kind);
         self.list_query.clear();
-        self.list_search
-            .update(cx, |input, cx| input.set_value("", window, cx));
         self.entries.update(cx, |list, cx| {
             list.delegate_mut().reset(kind);
             cx.notify();
         });
+
+        if let Some(state) = restored {
+            self.list_query = state.keyword.clone();
+            self.list_search
+                .update(cx, |input, cx| input.set_value(state.keyword, window, cx));
+            self.entries.update(cx, |list, cx| {
+                list.delegate_mut().restore(state.rows, state.selected);
+                cx.notify();
+            });
+            self.focus_list_search(window, cx);
+            cx.notify();
+            return;
+        }
+
+        self.list_search
+            .update(cx, |input, cx| input.set_value("", window, cx));
 
         match kind {
             ListKind::Search => {}

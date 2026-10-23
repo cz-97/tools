@@ -30,6 +30,7 @@ use crate::ui::launcher::{Launcher, ListKind};
 const COPY_FEEDBACK: Duration = Duration::from_millis(1200);
 
 /// 列表里的一行。
+#[derive(Clone)]
 pub(crate) struct Entry {
     pub(crate) title: String,
     /// 副行：网址，或者仓库简介。
@@ -295,6 +296,21 @@ impl EntryDelegate {
         self.message = None;
         self.searched = false;
         self.copied = None;
+    }
+
+    /// 记下现在的数据和高亮位置，供「面板收起再唤出」时摆回去。
+    pub(crate) fn snapshot(&self) -> (Vec<Entry>, usize) {
+        (self.all.clone(), self.selected)
+    }
+
+    /// 把上次的现场摆回去：数据、高亮位置，按当前（空）过滤词重算可见行。
+    pub(crate) fn restore(&mut self, items: Vec<Entry>, selected: usize) {
+        self.all = items;
+        self.loading = false;
+        self.message = None;
+        self.searched = true;
+        self.refine();
+        self.selected = selected.min(self.visible.len().saturating_sub(1));
     }
 
     /// 装一批数据进来，按当前过滤词重算可见行，高亮回到第一行。
