@@ -113,8 +113,8 @@ pub mod launcher {
     pub const SETTINGS_TITLE: &str = super::common::SETTINGS;
     /// 计算器页页头的标题。
     pub const CALCULATOR_TITLE: &str = super::common::CALCULATOR;
-    /// 工具标签里「火狐系浏览器」那一项的名字。
-    pub const FIREFOX_TITLE: &str = "火狐系浏览器";
+    /// 工具标签里「火狐系浏览器」那一项的名字（左列只有 124px，全名放不下）。
+    pub const FIREFOX_TITLE: &str = "浏览器";
     /// 工具标签里「GitHub」那一项的名字。
     pub const GITHUB_TITLE: &str = "GitHub";
     /// 页脚右侧的命令条数。
@@ -308,9 +308,6 @@ pub mod settings_page {
     }
     /// 火狐设置：profile 目录的标题。
     pub const FIREFOX_PROFILE_NAME: &str = "配置文件文件夹";
-    /// 火狐设置：profile 目录的说明。
-    pub const FIREFOX_PROFILE_DESCRIPTION: &str =
-        "留空就自动找；也可以填 profile 或 profiles.ini 所在目录";
     /// 火狐设置：输入框里的提示。
     pub const FIREFOX_PROFILE_PLACEHOLDER: &str = "自动检测";
     /// 火狐设置：当前实际在用的目录。

@@ -10,4 +10,4 @@ pub mod platform;
 // 文件已按 `logic` / `platform` 归位，这里把顶层路径重新导出，
 // 界面代码继续用 `gpui_tools::settings` 这类老写法，不必跟着搬家。
 pub use logic::{cache, calculator, firefox, github, matcher, settings};
-pub use platform::{autostart, instance, logo, shell, window};
+pub use platform::{autostart, http, instance, logo, shell, window};

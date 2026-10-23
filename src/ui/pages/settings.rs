@@ -422,16 +422,13 @@ fn firefox_settings_page(
         .gap_1()
         .child(settings_row(
             strings::settings_page::FIREFOX_PROFILE_NAME,
-            format!(
-                "{description}\u{2002}\u{00b7}\u{2002}{}",
-                strings::settings_page::FIREFOX_PROFILE_DESCRIPTION
-            ),
+            description,
             colors,
             h_flex()
                 .flex_shrink_0()
                 .items_center()
                 .gap_2()
-                .child(text_field(&launcher.firefox_input, px(210.)))
+                .child(text_field(&launcher.firefox_input, px(190.)))
                 .child(text_button(
                     "firefox-auto",
                     strings::common::AUTO,
@@ -456,13 +453,13 @@ fn github_settings_page(
             strings::settings_page::GITHUB_USER_NAME,
             strings::settings_page::GITHUB_USER_DESCRIPTION,
             colors,
-            text_field(&launcher.github_user_input, px(240.)),
+            text_field(&launcher.github_user_input, px(200.)),
         ))
         .child(settings_row(
             strings::settings_page::GITHUB_TOKEN_NAME,
             strings::settings_page::GITHUB_TOKEN_DESCRIPTION,
             colors,
-            text_field(&launcher.github_token_input, px(240.)),
+            text_field(&launcher.github_token_input, px(200.)),
         ))
         .into_any_element()
 }
@@ -477,7 +474,7 @@ fn text_field(
         .h(px(28.))
         .flex()
         .items_center()
-        .child(Input::new(input).small().appearance(false))
+        .child(Input::new(input).small())
 }
 
 /// 一枚朴素的文字按钮（设置行右侧那种「自动」「打开」）。

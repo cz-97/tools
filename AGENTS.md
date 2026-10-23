@@ -174,7 +174,8 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   `shell::open`，**不要**在 UI 回调里直接 `ShellExecuteW`。
 - 缓存优先的意思：进页面先读 `%APPDATA%\gpui-tools\cache\github-{projects|stars}-{user}.json`，
   有就直接摆出来、**不发请求**；没有才抓一次。页头那枚刷新按钮才是强制走网络。
-- 阻塞的读库走 `cx.background_executor().spawn`，网络走 `cx.http_client()`；两者都装在
+- 阻塞的读库和联网都走 `cx.background_executor().spawn`（网络用 `platform/http.rs` 的
+  WinINet，不用 GPUI 的 `cx.http_client()`：桌面端那是空实现）；两者都装在
   `Launcher::pending` 里，换页/收起时丢掉这个 Task，结果就不会串页。
 - 书签和历史的图标来自 `favicons.sqlite`（ATTACH 上去按 `width` 取最大的一张），
   ICO / PNG / SVG 都能画；认不出的格式就不画图标，退回 `Entry::tile` 那个默认图标。

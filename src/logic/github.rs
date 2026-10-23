@@ -3,18 +3,12 @@
 //! 三个接口都走 `api.github.com`，都只读：设置里填了令牌就带上（额度从 60 次/小时
 //! 提到 5000 次/小时），没填也能用，只是容易撞限流。
 //!
-//! HTTP 用 GPUI 自带的客户端（`cx.http_client()`），所以这里只收一个 `Arc<dyn HttpClient>`，
-//! 不自己建连接池、也不开线程。
+//! HTTP 走 `platform/http.rs`（WinHTTP），是**阻塞**的：调用方要放到后台线程里跑
+//! （`cx.background_executor().spawn`），不要在 UI 线程上直接调。
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use futures::AsyncReadExt as _;
-use gpui_kit::http_client::{AsyncBody, HttpClient, HttpRequestExt, RedirectPolicy, Request};
 use serde_json::{Value, json};
 
-/// 一次请求最多等这么久。
-const TIMEOUT: Duration = Duration::from_secs(15);
+use crate::http;
 /// 每页取多少条（GitHub 上限就是 100）。
 const PER_PAGE: usize = 100;
 /// 星标最多翻这么多页，也就是 1000 个仓库。
@@ -37,11 +31,7 @@ pub struct Repo {
 }
 
 /// 某个用户的个人项目（他自己名下的仓库），按最近更新排。
-pub async fn owned_repos(
-    http: Arc<dyn HttpClient>,
-    user: &str,
-    token: &str,
-) -> Result<Vec<Repo>, String> {
+pub fn owned_repos(user: &str, token: &str) -> Result<Vec<Repo>, String> {
     let user = user.trim();
     if user.is_empty() {
         return Err("先在设置里填 GitHub 用户名".to_string());
@@ -53,7 +43,7 @@ pub async fn owned_repos(
     let mut repos = Vec::new();
     for page in 1..=PROJECT_PAGES {
         let url = format!("{base}&page={page}");
-        let items = get_array(&http, &url, token).await?;
+        let items = get_array(&url, token)?;
         let count = items.len();
         repos.extend(items.iter().filter_map(repo_from_json));
         if count < PER_PAGE {
@@ -64,11 +54,7 @@ pub async fn owned_repos(
 }
 
 /// 某个用户的星标仓库。
-pub async fn starred(
-    http: Arc<dyn HttpClient>,
-    user: &str,
-    token: &str,
-) -> Result<Vec<Repo>, String> {
+pub fn starred(user: &str, token: &str) -> Result<Vec<Repo>, String> {
     let user = user.trim();
     if user.is_empty() {
         return Err("先在设置里填 GitHub 用户名".to_string());
@@ -80,7 +66,7 @@ pub async fn starred(
     let mut repos = Vec::new();
     for page in 1..=STARS_PAGES {
         let url = format!("{base}&page={page}");
-        let items = get_array(&http, &url, token).await?;
+        let items = get_array(&url, token)?;
         let count = items.len();
         repos.extend(items.iter().filter_map(repo_from_json));
         if count < PER_PAGE {
@@ -91,11 +77,7 @@ pub async fn starred(
 }
 
 /// 按关键词搜仓库，按星数降序取前 [`SEARCH_LIMIT`] 个。
-pub async fn search(
-    http: Arc<dyn HttpClient>,
-    keyword: &str,
-    token: &str,
-) -> Result<Vec<Repo>, String> {
+pub fn search(keyword: &str, token: &str) -> Result<Vec<Repo>, String> {
     let keyword = keyword.trim();
     if keyword.is_empty() {
         return Err("先输入要搜的关键词".to_string());
@@ -104,7 +86,7 @@ pub async fn search(
         "https://api.github.com/search/repositories?q={}&sort=stars&order=desc&per_page={SEARCH_LIMIT}",
         encode(keyword)
     );
-    let value = get_json(&http, &url, token).await?;
+    let value = get_json(&url, token)?;
     let items = value
         .get("items")
         .and_then(Value::as_array)
@@ -145,33 +127,17 @@ pub fn cached_at(text: &str) -> Option<i64> {
 }
 
 /// 发一个 GET，把整段响应体当 JSON 拿回来。
-async fn get_json(http: &Arc<dyn HttpClient>, url: &str, token: &str) -> Result<Value, String> {
-    let mut builder = Request::builder()
-        .method("GET")
-        .uri(url)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .header("User-Agent", "gpui-tools");
+fn get_json(url: &str, token: &str) -> Result<Value, String> {
+    let mut headers = vec![
+        ("Accept", "application/vnd.github+json".to_string()),
+        ("X-GitHub-Api-Version", "2022-11-28".to_string()),
+        ("User-Agent", "gpui-tools".to_string()),
+    ];
     if !token.trim().is_empty() {
-        builder = builder.header("Authorization", format!("Bearer {}", token.trim()));
+        headers.push(("Authorization", format!("Bearer {}", token.trim())));
     }
-    let request = builder
-        .follow_redirects(RedirectPolicy::FollowAll)
-        .timeout(TIMEOUT)
-        .body(AsyncBody::empty())
-        .map_err(|error| format!("请求没发出去：{error}"))?;
-
-    let mut response = http
-        .send(request)
-        .await
-        .map_err(|error| format!("连不上 GitHub：{error}"))?;
-    let status = response.status().as_u16();
-    let mut body = Vec::new();
-    response
-        .body_mut()
-        .read_to_end(&mut body)
-        .await
-        .map_err(|error| format!("读不到 GitHub 的回复：{error}"))?;
+    let response = http::get(url, &headers)?;
+    let status = response.status;
 
     match status {
         200..=299 => {}
@@ -180,16 +146,13 @@ async fn get_json(http: &Arc<dyn HttpClient>, url: &str, token: &str) -> Result<
         422 => return Err("这个关键词 GitHub 不认".to_string()),
         _ => return Err(format!("GitHub 返回 {status}")),
     }
-    serde_json::from_slice(&body).map_err(|error| format!("GitHub 的回复解析不了：{error}"))
+    serde_json::from_slice(&response.body)
+        .map_err(|error| format!("GitHub 的回复解析不了：{error}"))
 }
 
 /// 发一个 GET，要求响应是一个数组。
-async fn get_array(
-    http: &Arc<dyn HttpClient>,
-    url: &str,
-    token: &str,
-) -> Result<Vec<Value>, String> {
-    let value = get_json(http, url, token).await?;
+fn get_array(url: &str, token: &str) -> Result<Vec<Value>, String> {
+    let value = get_json(url, token)?;
     match value {
         Value::Array(items) => Ok(items),
         _ => Err("GitHub 返回的内容看不懂".to_string()),

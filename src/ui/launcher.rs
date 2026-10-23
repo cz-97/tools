@@ -924,14 +924,17 @@ impl Launcher {
             list.delegate_mut().set_loading(true);
             cx.notify();
         });
-        let http = cx.http_client();
         let token = settings.github_token.trim().to_string();
-        self.pending = Some(cx.spawn(async move |this, cx| {
-            let outcome = if kind == ListKind::Projects {
-                github::owned_repos(http, &user, &token).await
+        // 网络是阻塞的（WinHTTP），和读库一样扔到后台线程去跑。
+        let fetching = cx.background_executor().spawn(async move {
+            if kind == ListKind::Projects {
+                github::owned_repos(&user, &token)
             } else {
-                github::starred(http, &user, &token).await
-            };
+                github::starred(&user, &token)
+            }
+        });
+        self.pending = Some(cx.spawn(async move |this, cx| {
+            let outcome = fetching.await;
             this.update(cx, |launcher, cx| {
                 launcher.finish_repos(kind, &cache_key, outcome, cx)
             })
@@ -946,7 +949,6 @@ impl Launcher {
             return;
         }
         let token = stored_settings(cx).github_token.trim().to_string();
-        let http = cx.http_client();
         // 记下来：同一个词再按回车就是「打开选中的仓库」，不再重复搜。
         self.repo_query = keyword.clone();
         self.entries.update(cx, |list, cx| {
@@ -954,8 +956,11 @@ impl Launcher {
             list.delegate_mut().set_loading(true);
             cx.notify();
         });
+        let searching = cx
+            .background_executor()
+            .spawn(async move { github::search(&keyword, &token) });
         self.pending = Some(cx.spawn(async move |this, cx| {
-            let outcome = github::search(http, &keyword, &token).await;
+            let outcome = searching.await;
             this.update(cx, |launcher, cx| {
                 launcher.finish_list(outcome.map(repo_entries), cx)
             })
