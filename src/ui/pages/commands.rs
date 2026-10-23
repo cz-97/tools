@@ -222,7 +222,7 @@ fn command_row(
                 .flex_shrink_0()
                 .text_xs()
                 .text_color(colors.on_surface_muted)
-                .child(strings::commands_page::uses(state.uses)),
+                .child(strings::common::uses(state.uses)),
         )
         .child(div().flex_shrink_0().child(shortcut))
         .child(

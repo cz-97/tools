@@ -120,7 +120,7 @@ impl RenderOnce for ToolRow {
         let uses = div()
             .text_xs()
             .text_color(detail_color)
-            .child(strings::launcher::uses(self.state.uses));
+            .child(strings::common::uses(self.state.uses));
         let shortcut = match self.state.shortcut.clone() {
             Some(chord) => div()
                 .px_1p5()

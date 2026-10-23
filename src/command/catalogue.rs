@@ -4,8 +4,8 @@
 //! 搜索、主页列表、命令页分组、启用开关、调用次数、全局快捷键全部由这一项和它的 `id`
 //! 派生出来，不需要动别处。
 //!
-//! 子模块就是设置里那五项（系统 / 命令 / 外观 / 计算器 / 关于），所以命令页读起来像
-//! 设置的一张索引：命令挂在它作用的那一页下面。
+//! 命令页按 `Section` 分组（系统 / 命令 / 外观 / 计算器 / 关于）；名称和说明全部来自
+//! `crate::strings`，和设置页里同功能的那一行用同一个词，不要在这里另写一份文案。
 
 use gpui_kit::App;
 // 图标用整套 Lucide 而不是组件的子集：计算器图标只在全集里才有。
@@ -14,9 +14,10 @@ use gpui_kit::assets::IconName;
 use crate::actions;
 use crate::strings;
 
-/// 一条命令作用在应用的哪一部分。
+/// 命令页里给命令分组的依据。
 ///
-/// 与设置子模块一一对应；设置的标签和图标都从这里取，不再各写一份。
+/// **它不等于设置左侧的标签列表**（那是 `ui::launcher::SettingsTab`）：命令页仍按
+/// 系统 / 命令 / 外观 / 计算器 / 关于 分组，和设置页的 六 个标签不必一一对应。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     System,
@@ -79,10 +80,11 @@ pub struct Command {
     ///
     /// 改名不能动它；它和所属子模块一起构成持久化主键，所以必须唯一。
     pub id: &'static str,
-    /// 它属于哪个设置子模块。
+    /// 它在命令页里归到哪个分组。
     pub section: Section,
-    /// 列表和命令页显示的名称。
+    /// 列表和命令页显示的名称（来自 `strings`，和设置页同功能的一行同词）。
     pub name: &'static str,
+    /// 列表和命令页显示的说明。
     pub description: &'static str,
     /// 搜索时额外匹配的词，让命令能被名字里没有的说法搜到。
     pub keyword: &'static str,
@@ -95,8 +97,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         id: "open-settings",
         section: Section::System,
-        name: "设置",
-        description: "打开启动器设置",
+        name: strings::common::SETTINGS,
+        description: strings::commands::OPEN_SETTINGS_DESCRIPTION,
         keyword: "settings preferences 设置 偏好",
         icon: IconName::Settings,
         action: crate::app::open_settings,
@@ -104,8 +106,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         id: "open-calculator",
         section: Section::System,
-        name: "计算器",
-        description: "打开计算器，算表达式的值",
+        name: strings::common::CALCULATOR,
+        description: strings::commands::OPEN_CALCULATOR_DESCRIPTION,
         keyword: "calculator calc 计算器 计算 表达式 算数",
         icon: IconName::Calculator,
         action: crate::app::open_calculator,
@@ -113,8 +115,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         id: "program-folder",
         section: Section::System,
-        name: "程序所在文件夹",
-        description: "打开启动器所在的文件夹",
+        name: strings::common::PROGRAM_FOLDER,
+        description: strings::commands::PROGRAM_FOLDER_DESCRIPTION,
         keyword: "program folder directory 程序 目录 文件夹 打开",
         icon: IconName::FolderOpen,
         action: actions::open_program_folder,
@@ -122,8 +124,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         id: "repository",
         section: Section::About,
-        name: "GitHub仓库",
-        description: "在浏览器打开项目仓库",
+        name: strings::common::REPOSITORY,
+        description: strings::commands::REPOSITORY_DESCRIPTION,
         keyword: "github repository source 仓库 源码 项目",
         icon: IconName::Globe,
         action: actions::open_repository,
@@ -131,8 +133,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         id: "quit",
         section: Section::System,
-        name: "退出",
-        description: "杀死本程序进程",
+        name: strings::common::QUIT,
+        description: strings::common::QUIT_DESCRIPTION,
         keyword: "quit exit close 退出 关闭",
         icon: IconName::Close,
         action: actions::quit_launcher,

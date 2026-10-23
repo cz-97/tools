@@ -2,6 +2,50 @@
 //!
 //! 按所属界面分区，一律用常量名（也就是 id）取用，不要在绘制代码里直接写字符串。
 //! 改文案只动这个文件；要加界面，就加一个同名子模块。
+//!
+//! 同一个词在多处出现时，只在 [`common`] 里写一次、别处引用它；命令目录
+//! （`command/catalogue.rs`）里的名称和说明也要和设置页里同功能的那一行用同一个词。
+
+/// 多处复用的短词与句式，只写一次。
+pub mod common {
+    /// 设置。
+    pub const SETTINGS: &str = "设置";
+    /// 计算器。
+    pub const CALCULATOR: &str = "计算器";
+    /// 打开（按钮、提示通用）。
+    pub const OPEN: &str = "打开";
+    /// 返回。
+    pub const BACK: &str = "返回";
+    /// 退出。
+    pub const QUIT: &str = "退出";
+    /// 退出的说明。
+    pub const QUIT_DESCRIPTION: &str = "关闭面板与托盘";
+    /// 已复制。
+    pub const COPIED: &str = "已复制";
+    /// 程序所在位置（关于页那一行，也是主页上的命令名）。
+    pub const PROGRAM_FOLDER: &str = "程序所在位置";
+    /// 项目仓库（关于页那一行，也是主页上的命令名）。
+    pub const REPOSITORY: &str = "项目仓库";
+
+    /// 调用次数：`N 次`。
+    pub fn uses(count: u64) -> String {
+        format!("{count} 次")
+    }
+}
+
+/// 命令目录（`command/catalogue.rs`）里每条命令的说明。
+///
+/// 名称尽量复用 [`common`] 里同功能的词，这里只放命令独有的那几句说明。
+pub mod commands {
+    /// 主页「设置」命令。
+    pub const OPEN_SETTINGS_DESCRIPTION: &str = "打开启动器设置";
+    /// 主页「计算器」命令。
+    pub const OPEN_CALCULATOR_DESCRIPTION: &str = "打开计算器，算表达式的值";
+    /// 主页「程序所在位置」命令。
+    pub const PROGRAM_FOLDER_DESCRIPTION: &str = "打开启动器所在的文件夹";
+    /// 主页「项目仓库」命令。
+    pub const REPOSITORY_DESCRIPTION: &str = "在浏览器打开项目仓库";
+}
 
 /// 五个设置子模块的名字。
 pub mod sections {
@@ -12,7 +56,7 @@ pub mod sections {
     /// 外观。
     pub const APPEARANCE: &str = "外观";
     /// 计算器。
-    pub const CALCULATOR: &str = "计算器";
+    pub const CALCULATOR: &str = super::common::CALCULATOR;
     /// 工具（计算器这类工具的容器标签）。
     pub const TOOLS: &str = "工具";
     /// 指令匹配。
@@ -34,15 +78,15 @@ pub mod launcher {
     /// 页脚：设置页里上下键的说明。
     pub const FOOTER_SECTIONS: &str = "切换子模块";
     /// 页脚：设置页里 Esc 的说明。
-    pub const FOOTER_BACK: &str = "返回";
+    pub const FOOTER_BACK: &str = super::common::BACK;
     /// 齿轮按钮的悬浮提示。
-    pub const TOOLTIP_SETTINGS: &str = "设置";
+    pub const TOOLTIP_SETTINGS: &str = super::common::SETTINGS;
     /// 设置页左上角返回按钮的悬浮提示。
-    pub const TOOLTIP_BACK: &str = "返回";
+    pub const TOOLTIP_BACK: &str = super::common::BACK;
     /// 设置页页头的标题。
-    pub const SETTINGS_TITLE: &str = "设置";
+    pub const SETTINGS_TITLE: &str = super::common::SETTINGS;
     /// 计算器页页头的标题。
-    pub const CALCULATOR_TITLE: &str = "计算器";
+    pub const CALCULATOR_TITLE: &str = super::common::CALCULATOR;
     /// 页脚右侧的命令条数。
     pub fn count(commands: usize) -> String {
         format!("{commands} 条命令")
@@ -52,10 +96,6 @@ pub mod launcher {
     /// 搜索无结果时的空状态。
     pub fn no_match(query: &str) -> String {
         format!("没有匹配 \u{201c}{query}\u{201d} 的命令")
-    }
-    /// 主页每行：调用次数。
-    pub fn uses(count: u64) -> String {
-        format!("{count} 次")
     }
     /// 主页每行：没有绑定快捷键时显示的字。
     pub const NO_SHORTCUT: &str = "无快捷键";
@@ -73,10 +113,6 @@ pub mod commands_page {
     /// 左侧子模块后面的「启用数/总数」。
     pub fn enabled_ratio(enabled: usize, total: usize) -> String {
         format!("{enabled}/{total}")
-    }
-    /// 每行的调用次数。
-    pub fn uses(count: u64) -> String {
-        format!("{count} 次")
     }
     /// 快捷键按钮在没绑定时显示的字。
     pub const SHORTCUT_EMPTY: &str = "快捷键";
@@ -97,7 +133,7 @@ pub mod calculator {
     /// 底部：把所有公式行撤掉，回到一行空行。
     pub const CLEAR_ALL: &str = "清空所有";
     /// 结果被复制走后，那一小会儿显示的字。
-    pub const COPIED: &str = "已复制";
+    pub const COPIED: &str = super::common::COPIED;
     /// 底部左侧的说明：认哪些运算、结果怎么复制。
     pub const HINT: &str = "支持 + - * / ^ 与括号，点结果即可复制";
 }
@@ -121,11 +157,11 @@ pub mod matcher {
     /// 文件路径：说明。
     pub const PATH_DESCRIPTION: &str = "输入文件或文件夹路径时打开，不存在会提示";
     /// 复制成功后短暂显示的字。
-    pub const COPIED: &str = "已复制";
+    pub const COPIED: &str = super::common::COPIED;
     /// 命中行右侧：显示结果类。
     pub const HINT_COPY: &str = "复制";
     /// 命中行右侧：执行动作类。
-    pub const HINT_OPEN: &str = "打开";
+    pub const HINT_OPEN: &str = super::common::OPEN;
 }
 
 /// 设置页里的各项文案。
@@ -146,14 +182,14 @@ pub mod settings_page {
     pub const RESUME_DESCRIPTION: &str = "隐藏后短时间内再唤出，仍停在原页面";
     /// 系统页：配置文件夹的标题。
     pub const CONFIG_NAME: &str = "配置文件夹";
-    /// 系统页：配置文件夹的说明。
-    pub const CONFIG_OPEN: &str = "打开";
+    /// 系统页：配置文件夹的按钮字。
+    pub const CONFIG_OPEN: &str = super::common::OPEN;
     /// 系统页：退出启动器的标题。
     pub const QUIT_NAME: &str = "退出启动器";
     /// 系统页：退出启动器的说明。
-    pub const QUIT_DESCRIPTION: &str = "关闭面板与托盘";
+    pub const QUIT_DESCRIPTION: &str = super::common::QUIT_DESCRIPTION;
     /// 系统页：退出启动器的按钮字。
-    pub const QUIT_ACTION: &str = "退出";
+    pub const QUIT_ACTION: &str = super::common::QUIT;
     /// 外观页：主题的标题。
     pub const THEME_NAME: &str = "主题";
     /// 外观页：主题的说明。
@@ -183,13 +219,13 @@ pub mod settings_page {
     /// 关于页：版本的说明。
     pub const VERSION_DESCRIPTION: &str = "当前运行的程序版本";
     /// 关于页：项目仓库的标题。
-    pub const REPOSITORY_NAME: &str = "项目仓库";
+    pub const REPOSITORY_NAME: &str = super::common::REPOSITORY;
     /// 关于页：项目仓库的按钮字。
-    pub const REPOSITORY_OPEN: &str = "打开";
-    /// 关于页：程序文件夹的标题。
-    pub const PROGRAM_FOLDER_NAME: &str = "程序所在位置";
-    /// 关于页：程序文件夹的按钮字。
-    pub const FOLDER_OPEN: &str = "打开";
+    pub const REPOSITORY_OPEN: &str = super::common::OPEN;
+    /// 关于页：程序所在位置的标题。
+    pub const PROGRAM_FOLDER_NAME: &str = super::common::PROGRAM_FOLDER;
+    /// 关于页：程序所在的按钮字。
+    pub const FOLDER_OPEN: &str = super::common::OPEN;
     /// 找不到配置目录时的占位字。
     pub const NO_CONFIG_DIRECTORY: &str = "未找到配置目录";
     /// 主题：跟随系统。
@@ -240,9 +276,9 @@ pub mod tray {
     /// 菜单：打开启动器。
     pub const OPEN: &str = "打开启动器";
     /// 菜单：设置。
-    pub const SETTINGS: &str = "设置";
+    pub const SETTINGS: &str = super::common::SETTINGS;
     /// 菜单：重启。
     pub const RESTART: &str = "重启";
     /// 菜单：退出。
-    pub const QUIT: &str = "退出";
+    pub const QUIT: &str = super::common::QUIT;
 }
