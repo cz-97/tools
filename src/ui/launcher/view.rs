@@ -131,8 +131,9 @@ impl Launcher {
 
     /// 工具列表页的页头。
     ///
-    /// 左上角依次是返回、这一页的按钮（个人项目/星标是刷新，查询仓库是搜索框），
-    /// 再往后才是标题；右边只放一句状态（刷新中 / 多少条）。
+    /// 左边是返回、图标和标题，跟着一个能立刻过滤的搜索框；**右上角**是这一页的按钮
+    /// （书签/历史/仓库是「重新读取」，查询仓库是「再搜一次」）。`Tab` 在搜索框和
+    /// 这枚按钮之间来回切，切过去时按钮会有底色。
     fn list_header(
         &self,
         bar: gpui_kit::Stateful<gpui_kit::Div>,
@@ -143,11 +144,12 @@ impl Launcher {
         let colors = UiColors::current(cx);
         let muted_fg = colors.muted_foreground;
         let settings = stored_settings(cx);
-        let count = self.entries.read(cx).delegate().len();
         let loading = self.entries.read(cx).delegate().is_loading();
+        let text = self.list_search.read(cx).value().to_string();
+        let hint = list_hint(kind);
 
-        let bar =
-            bar.child(
+        let bar = bar
+            .child(
                 div().id("list-back").occlude().flex_shrink_0().child(
                     Button::new("list-back-to-commands")
                         .ghost()
@@ -157,64 +159,98 @@ impl Launcher {
                             launcher.back_to_commands(window, cx)
                         })),
                 ),
-            );
-
-        // 个人项目和星标：缓存优先，所以给一枚「从网络重新获取」。
-        let bar = bar.when(kind.is_repos(), |this| {
-            this.child(
-                div().id("list-refresh").occlude().flex_shrink_0().child(
-                    Button::new("refresh-list")
-                        .ghost()
-                        .icon(gpui_kit::assets::IconName::RefreshCw)
-                        .tooltip(strings::lists::REFRESH)
-                        .on_click(cx.listener(|launcher, _, _, cx| launcher.refresh_list(cx))),
-                ),
             )
-        });
-
-        let bar = if kind == ListKind::Search {
-            let text = self.repo_search.read(cx).value().to_string();
-            bar.child(Icon::new(IconName::Search).size_4().text_color(muted_fg))
-                .child(
+            // 查询仓库页的图标就是放大镜，搜索框前面还有一个，别画两遍。
+            .when(kind != ListKind::Search, |this| {
+                this.child(Icon::new(kind.icon()).size_4().text_color(muted_fg))
+            })
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(kind.title()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .ml_2()
+                    .child(Icon::new(IconName::Search).size_4().text_color(muted_fg)),
+            )
+            .child(
+                div()
+                    .id("list-search")
+                    .occlude()
+                    .flex_shrink_0()
+                    .w(search_field_width_at_least(window, cx, &text, hint))
+                    .h(px(settings.search_height as f32))
+                    .child(
+                        Input::new(&self.list_search)
+                            .small()
+                            .appearance(false)
+                            .cleanable(false),
+                    ),
+            )
+            .when(text.is_empty(), |this| {
+                // 提示画在拖动区里，跟着输入框走，不在框内。
+                this.child(
                     div()
-                        .id("repo-search")
-                        .occlude()
                         .flex_shrink_0()
-                        .w(search_field_width(window, cx, &text))
-                        .h(px(settings.search_height as f32))
-                        .child(
-                            Input::new(&self.repo_search)
-                                .small()
-                                .appearance(false)
-                                .cleanable(false),
-                        ),
-                )
-                .when(text.is_empty(), |this| {
-                    this.child(
-                        div()
-                            .text_sm()
-                            .text_color(muted_fg)
-                            .child(strings::lists::SEARCH_HINT),
-                    )
-                })
-        } else {
-            bar.child(Icon::new(kind.icon()).size_4().text_color(muted_fg))
-                .child(
-                    div()
                         .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(kind.title()),
+                        .text_color(muted_fg)
+                        .child(hint),
                 )
+            })
+            .child(div().flex_1());
+
+        // 右上角：这枚按钮永远在，`Tab` 能把焦点交给它。
+        let focused = self.list_action_focused;
+        let (icon, tip) = if kind == ListKind::Search {
+            (
+                gpui_kit::assets::IconName::Search,
+                strings::lists::SEARCH_AGAIN,
+            )
+        } else {
+            (
+                gpui_kit::assets::IconName::RefreshCw,
+                strings::lists::REFRESH,
+            )
         };
 
-        let status = if loading {
-            strings::lists::LOADING.to_string()
-        } else {
-            strings::lists::count(count)
-        };
-        bar.child(div().flex_1())
-            .child(div().text_xs().text_color(muted_fg).child(status))
-            .into_any_element()
+        bar.child(
+            div()
+                .id("list-action")
+                .occlude()
+                .flex_shrink_0()
+                .rounded(px(6.))
+                .when(focused, move |this| this.bg(colors.accent))
+                .child(
+                    Button::new("list-action-button")
+                        .ghost()
+                        .icon(icon)
+                        .tooltip(if loading {
+                            strings::lists::LOADING
+                        } else {
+                            tip
+                        })
+                        .on_click(cx.listener(move |launcher, _, window, cx| {
+                            launcher.activate_list_action(kind, cx);
+                            launcher.focus_list_search(window, cx);
+                        })),
+                ),
+        )
+        .into_any_element()
+    }
+}
+
+/// 这一页搜索框里的提示；`Tab` 那枚按钮的悬浮提示也用得上。
+fn list_hint(kind: ListKind) -> &'static str {
+    match kind {
+        ListKind::Bookmarks => strings::lists::SEARCH_BOOKMARKS,
+        ListKind::History => strings::lists::SEARCH_HISTORY,
+        ListKind::Projects => strings::lists::SEARCH_PROJECTS,
+        ListKind::Stars => strings::lists::SEARCH_STARS,
+        ListKind::Search => strings::lists::SEARCH_REPOS,
     }
 }
 
@@ -232,11 +268,34 @@ fn search_field_width(window: &Window, cx: &Context<Launcher>, query: &str) -> P
     if query.is_empty() {
         return padding + px(SEARCH_FIELD_CARET);
     }
+    px(
+        (text_width(window, cx, query) + SEARCH_FIELD_PADDING + SEARCH_FIELD_SLACK)
+            .min(SEARCH_FIELD_MAX),
+    )
+}
 
+/// 列表页的输入框：空着的时候也得放得下那句提示，不能只剩半个字。
+fn search_field_width_at_least(
+    window: &Window,
+    cx: &Context<Launcher>,
+    query: &str,
+    hint: &str,
+) -> Pixels {
+    let measured = if query.is_empty() {
+        0.
+    } else {
+        text_width(window, cx, query)
+    };
+    let floor = text_width(window, cx, hint);
+    px((measured.max(floor) + SEARCH_FIELD_PADDING + SEARCH_FIELD_SLACK).min(SEARCH_FIELD_MAX))
+}
+
+/// 一段文字排版之后有多宽。
+fn text_width(window: &Window, cx: &Context<Launcher>, text: &str) -> f32 {
     let theme = cx.theme();
     let colors = UiColors::current(cx);
     let run = TextRun {
-        len: query.len(),
+        len: text.len(),
         font: Font {
             family: theme.font_family.clone(),
             ..Default::default()
@@ -246,13 +305,13 @@ fn search_field_width(window: &Window, cx: &Context<Launcher>, query: &str) -> P
         underline: None,
         strikethrough: None,
     };
-    let text = window.text_system().shape_line(
-        query.to_string().into(),
+    let shaped = window.text_system().shape_line(
+        text.to_string().into(),
         px(SEARCH_TEXT_SIZE),
         &[run],
         None,
     );
-    (text.width() + padding + px(SEARCH_FIELD_SLACK)).min(px(SEARCH_FIELD_MAX))
+    f32::from(shaped.width())
 }
 
 impl Render for Launcher {
@@ -304,13 +363,15 @@ impl Render for Launcher {
                 } else {
                     strings::lists::FOOTER_OPEN
                 };
+                let rows = self.entries.read(cx).delegate().len();
                 (
                     vec![
                         ("\u{2191}\u{2193}", strings::launcher::FOOTER_NAVIGATE),
                         ("Enter", enter),
+                        ("Tab", strings::lists::FOOTER_TAB),
                         ("Esc", strings::launcher::FOOTER_BACK),
                     ],
-                    String::new(),
+                    strings::lists::count(rows),
                 )
             }
         };

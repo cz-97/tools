@@ -317,6 +317,13 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
             with_launcher(cx, |launcher, window, cx| launcher.navigate(1, window, cx));
             cx.stop_propagation();
         }
+        "tab" if !typing => {
+            // 列表页里 Tab 在搜索框和右上角那枚按钮之间换焦点。
+            with_launcher(cx, |launcher, window, cx| {
+                launcher.toggle_list_action(window, cx)
+            });
+            cx.stop_propagation();
+        }
         "escape" => {
             with_launcher(cx, |launcher, window, cx| launcher.escape(window, cx));
             cx.stop_propagation();

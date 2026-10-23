@@ -7,7 +7,9 @@
 //! 数据库是浏览器自己开着的，还带着 WAL，所以**先只读打开**；只读打不开（临时文件被清掉、
 //! 或者库正被独占）就把几个文件复制到临时目录再读，读完删掉。绝不写用户的原库。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rusqlite::{Connection, OpenFlags, params};
 
@@ -27,6 +29,7 @@ const PRODUCTS: [&str; 6] = [
 /// 一张站点图标。
 ///
 /// `favicons.sqlite` 里没有 MIME 字段，格式只能从文件头嗅出来。
+#[derive(Clone)]
 pub struct Favicon {
     pub bytes: Vec<u8>,
     pub kind: IconKind,
@@ -52,7 +55,7 @@ pub struct Bookmark {
     /// 网页标题，和书签名字不一样时才值得显示。
     pub page_title: String,
     pub url: String,
-    pub icon: Option<Favicon>,
+    pub icon: Option<Arc<Favicon>>,
 }
 
 /// 一条历史记录。
@@ -63,7 +66,7 @@ pub struct Visit {
     pub visits: u64,
     /// 最后访问时间，写成「几分钟前」这种好读的样子。
     pub visited: String,
-    pub icon: Option<Favicon>,
+    pub icon: Option<Arc<Favicon>>,
 }
 
 /// 用户指定的目录是不是一个 profile、或者装着 profile 的根目录。
@@ -183,14 +186,15 @@ pub fn profile_from_ini(text: &str) -> Option<PathBuf> {
 /// 读这个 profile 的所有书签，最近改过的排前面。
 pub fn bookmarks(profile: &Path) -> Result<Vec<Bookmark>, String> {
     with_places(profile, |connection, icons| {
+        let table = icons.then(|| load_icons(connection));
         let sql = format!(
-            "SELECT title, url, page_title, icon_width, icon_data FROM (
+            "SELECT title, url, page_title, icon_id FROM (
                  SELECT b.id AS bid,
                         COALESCE(NULLIF(b.title, ''), p.title, p.url) AS title,
                         p.url AS url,
                         COALESCE(p.title, '') AS page_title,
+                        {icon_id} AS icon_id,
                         {icon_width} AS icon_width,
-                        {icon_data} AS icon_data,
                         b.lastModified AS ts,
                         ROW_NUMBER() OVER (
                             PARTITION BY b.id
@@ -203,17 +207,18 @@ pub fn bookmarks(profile: &Path) -> Result<Vec<Bookmark>, String> {
              ) WHERE rn = 1
              ORDER BY ts DESC",
             icon_width = icon_column(icons, "i.width"),
-            icon_data = icon_column(icons, "i.data"),
             icon_id = icon_column(icons, "i.id"),
             icon_join = icon_join(icons),
         );
         let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map([], |row| {
+            let url: String = row.get(1)?;
+            let icon_id: Option<i64> = row.get(3)?;
             Ok(Bookmark {
                 title: row.get(0)?,
-                url: row.get(1)?,
                 page_title: row.get(2)?,
-                icon: icon_from_row(row, 3, 4),
+                icon: table.as_ref().and_then(|table| table.pick(icon_id, &url)),
+                url,
             })
         })?;
         rows.collect()
@@ -224,15 +229,16 @@ pub fn bookmarks(profile: &Path) -> Result<Vec<Bookmark>, String> {
 pub fn history(profile: &Path) -> Result<Vec<Visit>, String> {
     let now = unix_now();
     with_places(profile, move |connection, icons| {
+        let table = icons.then(|| load_icons(connection));
         let sql = format!(
-            "SELECT title, url, visits, visited, icon_width, icon_data FROM (
+            "SELECT title, url, visits, visited, icon_id FROM (
                  SELECT p.id AS pid,
                         COALESCE(NULLIF(p.title, ''), p.url) AS title,
                         p.url AS url,
                         p.visit_count AS visits,
                         p.last_visit_date AS visited,
+                        {icon_id} AS icon_id,
                         {icon_width} AS icon_width,
-                        {icon_data} AS icon_data,
                         ROW_NUMBER() OVER (
                             PARTITION BY p.id
                             ORDER BY COALESCE({icon_width}, 0) DESC, {icon_id} DESC
@@ -244,19 +250,20 @@ pub fn history(profile: &Path) -> Result<Vec<Visit>, String> {
              ORDER BY visited DESC
              LIMIT ?1",
             icon_width = icon_column(icons, "i.width"),
-            icon_data = icon_column(icons, "i.data"),
             icon_id = icon_column(icons, "i.id"),
             icon_join = icon_join(icons),
         );
         let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map(params![HISTORY_LIMIT as i64], |row| {
             let micros: Option<i64> = row.get(3)?;
+            let url: String = row.get(1)?;
+            let icon_id: Option<i64> = row.get(4)?;
             Ok(Visit {
                 title: row.get(0)?,
-                url: row.get(1)?,
                 visits: row.get::<_, i64>(2)?.max(0) as u64,
                 visited: micros.map_or_else(String::new, |micros| visited_text(micros, now)),
-                icon: icon_from_row(row, 4, 5),
+                icon: table.as_ref().and_then(|table| table.pick(icon_id, &url)),
+                url,
             })
         })?;
         rows.collect()
@@ -279,13 +286,88 @@ fn icon_column(icons: bool, column: &str) -> &str {
     if icons { column } else { "NULL" }
 }
 
-/// 一行里的图标：BLOB 在、格式认得出才算有。
-fn icon_from_row(row: &rusqlite::Row<'_>, width: usize, data: usize) -> Option<Favicon> {
-    let _width: Option<i64> = row.get(width).ok()?;
-    let bytes: Option<Vec<u8>> = row.get(data).ok()?;
-    let bytes = bytes?;
-    let kind = sniff(&bytes)?;
-    Some(Favicon { bytes, kind })
+/// `favicons.sqlite` 里的全部图标，按 id 和按域名各索引一份。
+///
+/// 为什么要有域名这一份：书签和历史页只靠 `moz_pages_w_icons` 的关联，很多站点压根
+/// 没有那条记录，图标就全是空的。改成整表读一遍、再按页面域名兜底，覆盖率才够。
+#[derive(Default)]
+struct IconTable {
+    by_id: HashMap<i64, (i64, Arc<Favicon>)>,
+    by_domain: HashMap<String, (i64, Arc<Favicon>)>,
+}
+
+impl IconTable {
+    /// 先按 `icon_id` 找，找不到就按页面域名找。
+    fn pick(&self, icon_id: Option<i64>, page_url: &str) -> Option<Arc<Favicon>> {
+        if let Some((_, icon)) = icon_id.and_then(|id| self.by_id.get(&id)) {
+            return Some(icon.clone());
+        }
+        let host = host_of(page_url)?;
+        self.by_domain.get(&host).map(|(_, icon)| icon.clone())
+    }
+
+    /// 同一个键只留更清楚的那张（`width` 大的；SVG 存的是 65535，天然最优先）。
+    fn remember(
+        slot: &mut HashMap<i64, (i64, Arc<Favicon>)>,
+        key: i64,
+        width: i64,
+        icon: &Arc<Favicon>,
+    ) {
+        if slot.get(&key).is_none_or(|(seen, _)| width > *seen) {
+            slot.insert(key, (width, icon.clone()));
+        }
+    }
+}
+
+/// 把 `moz_icons` 整表读成两张索引。
+fn load_icons(connection: &Connection) -> IconTable {
+    let mut by_id: HashMap<i64, (i64, Arc<Favicon>)> = HashMap::new();
+    let mut by_domain: HashMap<String, (i64, Arc<Favicon>)> = HashMap::new();
+
+    let Ok(mut statement) =
+        connection.prepare("SELECT id, width, icon_url, data FROM favicons.moz_icons")
+    else {
+        return IconTable::default();
+    };
+    let Ok(mut rows) = statement.query([]) else {
+        return IconTable::default();
+    };
+    while let Ok(Some(row)) = rows.next() {
+        let Some(bytes) = row.get::<_, Option<Vec<u8>>>(3).unwrap_or(None) else {
+            continue;
+        };
+        let Some(kind) = sniff(&bytes) else {
+            continue;
+        };
+        let id: i64 = row.get(0).unwrap_or_default();
+        let width: i64 = row.get(1).unwrap_or_default();
+        let icon_url: Option<String> = row.get(2).unwrap_or(None);
+        let icon = Arc::new(Favicon { bytes, kind });
+
+        IconTable::remember(&mut by_id, id, width, &icon);
+        if let Some(host) = icon_url.as_deref().and_then(host_of)
+            && by_domain.get(&host).is_none_or(|(seen, _)| width > *seen)
+        {
+            by_domain.insert(host, (width, icon));
+        }
+    }
+
+    IconTable { by_id, by_domain }
+}
+
+/// 从网址里取域名：小写、去端口、去 `www.`。取不到就是 `None`。
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = host.split(':').next()?.trim_end_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    let host = host.to_ascii_lowercase();
+    Some(host.strip_prefix("www.").unwrap_or(&host).to_string())
 }
 
 /// 按文件头判断图标格式；认不出的直接放弃（宁可不画图标，也不画一个裂图）。
@@ -482,6 +564,24 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::{IconKind, civil_from_days, profile_from_ini, sniff, visited_text};
+
+    #[test]
+    fn a_host_is_read_out_of_a_url() {
+        use super::host_of;
+        assert_eq!(
+            host_of("https://www.Massgrave.dev/x?y=1"),
+            Some("massgrave.dev".to_string())
+        );
+        assert_eq!(
+            host_of("https://192.168.100.251:8443/web/frame"),
+            Some("192.168.100.251".to_string())
+        );
+        assert_eq!(
+            host_of("http://user:pw@example.com/"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(host_of("about:blank"), None);
+    }
 
     #[test]
     fn the_install_section_wins_over_a_marked_profile() {

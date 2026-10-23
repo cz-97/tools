@@ -66,6 +66,8 @@ const CORNER_RADIUS: f32 = 8.;
 const CALCULATOR_MAX_ROWS: usize = 8;
 /// 「已复制」这四个字亮多久。
 const COPY_FEEDBACK: Duration = Duration::from_millis(1200);
+/// 查询仓库页敲完字等多久再发请求：一口气打完只搜一次。
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(600);
 
 /// 面板当前显示哪一页。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,10 +308,16 @@ pub struct Launcher {
     conflict: Option<String>,
     /// 工具列表页的列表。五页共用一份，换页时把数据换掉。
     pub(crate) entries: Entity<ListState<EntryDelegate>>,
-    /// 查询仓库页页头的搜索框。
-    pub(crate) repo_search: Entity<InputState>,
-    /// 已经发给 GitHub 的那个关键词：和搜索框内容一样时，回车才是「打开选中的仓库」。
-    repo_query: String,
+    /// 列表页页头的搜索框。五页共用，换页时清空。
+    pub(crate) list_search: Entity<InputState>,
+    /// 已经发给 GitHub 的那个关键词（远程搜索用）。
+    list_query: String,
+    /// 焦点是不是在页头那枚按钮上（`false` 就是在搜索框里）。`Tab` 来回切。
+    pub(crate) list_action_focused: bool,
+    /// 远程搜索的防抖任务：新敲一个字就把上一个顶掉。
+    search_timer: Option<Task<()>>,
+    /// 防抖任务的流水号，旧的那条醒来发现号不对就不干活。
+    search_serial: u64,
     /// 后台任务（读库、抓网络）。存着它任务才不会被丢掉。
     pending: Option<Task<()>>,
     /// 设置里那三个文本框（火狐目录、GitHub 用户名、令牌）。
@@ -320,8 +328,8 @@ pub struct Launcher {
     _search_events: Subscription,
     _opacity_events: Subscription,
     _search_observation: Subscription,
-    /// 查询仓库页搜索框的订阅。
-    _repo_events: Subscription,
+    /// 列表页搜索框的订阅。
+    _list_search_events: Subscription,
     /// 三个设置文本框的订阅（变化通知 + 失焦保存）。
     _settings_events: Vec<Subscription>,
 }
@@ -370,16 +378,21 @@ impl Launcher {
         });
 
         // 列表页一上来是空的：数据在 `open_list` 里按页装进来。
-        let entries =
-            cx.new(|cx| ListState::new(EntryDelegate::new(ListKind::Bookmarks), window, cx));
+        // 点击由行自己分单击/双击，所以关掉 List 自带的点击执行。
+        let entries = cx.new(|cx| {
+            ListState::new(EntryDelegate::new(ListKind::Bookmarks), window, cx).selectable(false)
+        });
+        let view = cx.weak_entity();
+        entries.update(cx, |state, _cx| {
+            state.delegate_mut().view = Some(view);
+        });
 
-        // 查询仓库页的搜索框：和主页那个分开，两页的输入互不干扰。
-        let repo_search =
-            cx.new(|cx| InputState::new(window, cx).placeholder(strings::lists::SEARCH_HINT));
-        // 搜索栏的宽度是按输入框里的文字量的，内容一变就得重画。
-        let repo_events = cx.subscribe(&repo_search, |_, _, event, cx| {
+        // 列表页的搜索框：和主页那个分开，两页的输入互不干扰。
+        let list_search = cx.new(|cx| InputState::new(window, cx));
+        let list_search_events = cx.subscribe(&list_search, |launcher, search, event, cx| {
             if matches!(event, InputEvent::Change) {
-                cx.notify();
+                let text = search.read(cx).value().to_string();
+                launcher.list_search_changed(text, cx);
             }
         });
 
@@ -421,8 +434,11 @@ impl Launcher {
             recording: None,
             conflict: None,
             entries,
-            repo_search,
-            repo_query: String::new(),
+            list_search,
+            list_query: String::new(),
+            list_action_focused: false,
+            search_timer: None,
+            search_serial: 0,
             pending: None,
             firefox_input,
             github_user_input,
@@ -430,7 +446,7 @@ impl Launcher {
             _search_events: search_events,
             _opacity_events: opacity_events,
             _search_observation: search_observation,
-            _repo_events: repo_events,
+            _list_search_events: list_search_events,
             _settings_events: settings_events,
         };
         // 一开始就有一行空行占着：用户进来直接就能打公式。
@@ -657,18 +673,21 @@ impl Launcher {
                 return;
             }
             Page::Calculator => return,
-            Page::List(ListKind::Search) => {
-                // 搜索框里是新词就先搜；和上次一样时，回车是「打开选中的那个仓库」。
-                let keyword = self.repo_search.read(cx).value().trim().to_string();
-                if !keyword.is_empty() && keyword != self.repo_query {
-                    self.run_search(keyword, cx);
+            Page::List(kind) => {
+                // 焦点在页头按钮上时，回车按的是那个按钮。
+                if self.list_action_focused {
+                    self.activate_list_action(kind, cx);
+                } else if kind == ListKind::Search {
+                    // 搜索框里是新词就先搜；和上次一样时，回车是「打开选中的那个仓库」。
+                    let keyword = self.list_search.read(cx).value().trim().to_string();
+                    if !keyword.is_empty() && keyword != self.list_query {
+                        self.run_search(keyword, cx);
+                    } else {
+                        self.open_entry(cx);
+                    }
                 } else {
                     self.open_entry(cx);
                 }
-                return;
-            }
-            Page::List(_) => {
-                self.open_entry(cx);
                 return;
             }
         }
@@ -684,6 +703,57 @@ impl Launcher {
     /// 打开列表页高亮的那一行。
     fn open_entry(&self, cx: &App) {
         self.entries.read(cx).delegate().open_selected();
+    }
+
+    /// 行被点了一下：单击只选中并复制链接，双击才打开。
+    ///
+    /// 单击之后还得把焦点还给搜索框：点列表会把焦点从输入框夺走，不还回去的话
+    /// 用户接着敲字，字就哪儿也去不了。
+    pub(crate) fn entry_clicked(
+        &mut self,
+        row: usize,
+        clicks: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.page, Page::List(_)) {
+            return;
+        }
+        if clicks >= 2 {
+            self.entries.read(cx).delegate().open(row);
+            cx.notify();
+            return;
+        }
+
+        self.entries.update(cx, |list, cx| {
+            list.set_selected_index(Some(IndexPath::new(row)), window, cx);
+            list.delegate_mut().mark_copied(row);
+            cx.notify();
+        });
+        let target = self
+            .entries
+            .read(cx)
+            .delegate()
+            .selected_entry()
+            .map(|entry| entry.target.clone());
+        if let Some(target) = target {
+            cx.write_to_clipboard(ClipboardItem::new_string(target));
+        }
+        self.focus_list_search(window, cx);
+
+        // 「已复制」亮一小会儿就收回去。
+        cx.spawn(async move |launcher, cx| {
+            cx.background_executor().timer(COPY_FEEDBACK).await;
+            launcher
+                .update(cx, |launcher, cx| {
+                    launcher.entries.update(cx, |list, cx| {
+                        list.delegate_mut().clear_copied();
+                        cx.notify();
+                    });
+                })
+                .ok();
+        })
+        .detach();
     }
 
     /// 执行一条指令匹配：显示结果的复制走，执行动作的交给 shell。
@@ -760,6 +830,8 @@ impl Launcher {
     pub(crate) fn back_to_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 离开列表页就把还在跑的任务丢掉：抓回来的数据不该塞进别的页面。
         self.pending = None;
+        self.search_timer = None;
+        self.list_action_focused = false;
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
@@ -828,36 +900,67 @@ impl Launcher {
     ) {
         // 上一页还在跑的活儿先丢掉，结果不许串到这一页来。
         self.pending = None;
+        self.search_timer = None;
         self.page = Page::List(kind);
-        self.repo_query.clear();
+        self.list_query.clear();
+        self.list_search
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.entries.update(cx, |list, cx| {
             list.delegate_mut().reset(kind);
             cx.notify();
         });
 
         match kind {
-            ListKind::Search => {
-                self.repo_search
-                    .update(cx, |input, cx| input.set_value("", window, cx));
-                self.repo_search.read(cx).focus_handle(cx).focus(window, cx);
-            }
-            ListKind::Bookmarks | ListKind::History => {
-                // 列表页没有输入框，焦点留着会敲进看不见的搜索框。
-                window.blur(cx);
-                self.load_firefox(kind, cx);
-            }
-            ListKind::Projects | ListKind::Stars => {
-                window.blur(cx);
-                self.load_repos(kind, false, cx);
-            }
+            ListKind::Search => {}
+            ListKind::Bookmarks | ListKind::History => self.load_firefox(kind, cx),
+            ListKind::Projects | ListKind::Stars => self.load_repos(kind, false, cx),
         }
         self.entries.update(cx, |list, cx| {
             list.set_selected_index(Some(IndexPath::new(0)), window, cx);
         });
+        // 列表页的搜索框永远是默认焦点：进来就能过滤。
+        self.focus_list_search(window, cx);
         cx.notify();
     }
 
-    /// 页头那枚刷新按钮：不管缓存，重新去源头取一份。
+    /// 焦点给列表页的搜索框（同时把「焦点在按钮上」这个状态清掉）。
+    pub(crate) fn focus_list_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.list_action_focused = false;
+        self.list_search.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    /// `Tab`：在搜索框和页头那枚按钮之间来回换。
+    ///
+    /// 焦点由面板自己管，所以不交给 GPUI 的焦点链：切到按钮时把输入框的焦点收掉，
+    /// 按键全走 `intercept_keystrokes`。
+    pub(crate) fn toggle_list_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.page, Page::List(_)) {
+            return;
+        }
+        if self.list_action_focused {
+            self.focus_list_search(window, cx);
+        } else {
+            self.list_action_focused = true;
+            window.blur(cx);
+            cx.notify();
+        }
+    }
+
+    /// 页头那枚按钮的动作：书签/历史/仓库是「重新读取」，查询仓库是「立刻按现在的词搜」。
+    pub(crate) fn activate_list_action(&mut self, kind: ListKind, cx: &mut Context<Self>) {
+        match kind {
+            ListKind::Search => {
+                let keyword = self.list_search.read(cx).value().trim().to_string();
+                if !keyword.is_empty() && keyword != self.list_query {
+                    self.run_search(keyword, cx);
+                }
+            }
+            _ => self.refresh_list(cx),
+        }
+    }
+
+    /// 页头那枚按钮：不管缓存，重新去源头取一份。
     pub(crate) fn refresh_list(&mut self, cx: &mut Context<Self>) {
         match self.page {
             Page::List(ListKind::Bookmarks) => self.load_firefox(ListKind::Bookmarks, cx),
@@ -865,6 +968,45 @@ impl Launcher {
             Page::List(kind) if kind.is_repos() => self.load_repos(kind, true, cx),
             _ => {}
         }
+    }
+
+    /// 搜索框内容变了：本地列表立刻过滤；查询仓库页防抖之后再发请求。
+    ///
+    /// 查询仓库页**不做本地过滤**：那是全网的搜索结果，`language:rust` 这种限定符
+    /// 一过滤就把结果全滤没了。
+    fn list_search_changed(&mut self, text: String, cx: &mut Context<Self>) {
+        let Page::List(kind) = self.page else {
+            return;
+        };
+        cx.notify();
+        if kind == ListKind::Search {
+            let keyword = text.trim().to_string();
+            if keyword.is_empty() || keyword == self.list_query {
+                return;
+            }
+            self.schedule_search(keyword, cx);
+            return;
+        }
+        self.entries.update(cx, |list, cx| {
+            list.delegate_mut().set_query(&text);
+            cx.notify();
+        });
+    }
+
+    /// 隔一小会儿再搜：一口气敲完只发一次请求。
+    fn schedule_search(&mut self, keyword: String, cx: &mut Context<Self>) {
+        self.search_serial += 1;
+        let serial = self.search_serial;
+        self.search_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            this.update(cx, |launcher, cx| {
+                // 号对不上说明用户又敲了，这一次作废。
+                if launcher.search_serial == serial {
+                    launcher.run_search(keyword, cx);
+                }
+            })
+            .ok();
+        }));
     }
 
     /// 读书签或者历史。sqlite 是阻塞的，扔到后台线程去读。
@@ -950,7 +1092,7 @@ impl Launcher {
         }
         let token = stored_settings(cx).github_token.trim().to_string();
         // 记下来：同一个词再按回车就是「打开选中的仓库」，不再重复搜。
-        self.repo_query = keyword.clone();
+        self.list_query = keyword.clone();
         self.entries.update(cx, |list, cx| {
             list.delegate_mut().mark_searched();
             list.delegate_mut().set_loading(true);
@@ -1478,7 +1620,7 @@ fn bookmark_entries(rows: Vec<firefox::Bookmark>) -> Vec<Entry> {
                 bookmark.url,
                 gpui_kit::assets::IconName::Bookmark,
             )
-            .with_icon(bookmark.icon.as_ref().map(favicon_image))
+            .with_icon(bookmark.icon.as_deref().map(favicon_image))
         })
         .collect()
 }
@@ -1498,7 +1640,7 @@ fn visit_entries(rows: Vec<firefox::Visit>) -> Vec<Entry> {
                 visit.url,
                 gpui_kit::assets::IconName::Clock,
             )
-            .with_icon(visit.icon.as_ref().map(favicon_image))
+            .with_icon(visit.icon.as_deref().map(favicon_image))
         })
         .collect()
 }
@@ -1507,19 +1649,16 @@ fn visit_entries(rows: Vec<firefox::Visit>) -> Vec<Entry> {
 fn repo_entries(rows: Vec<github::Repo>) -> Vec<Entry> {
     rows.into_iter()
         .map(|repo| {
-            let mut meta = format!("\u{2605} {}", repo.stars);
-            if !repo.language.is_empty() {
-                meta = format!("{meta} \u{00b7} {}", repo.language);
-            }
+            // 第一行放语言（靠右），第二行是「★ 星数 · 简介」。
             let detail = if repo.description.is_empty() {
-                repo.url.clone()
+                format!("\u{2605} {}", repo.stars)
             } else {
-                repo.description
+                format!("\u{2605} {} \u{00b7} {}", repo.stars, repo.description)
             };
             Entry::new(
                 repo.full_name,
                 detail,
-                meta,
+                repo.language,
                 repo.url,
                 gpui_kit::assets::IconName::Github,
             )

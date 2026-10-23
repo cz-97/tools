@@ -159,27 +159,39 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 
 ### 4.5 工具列表页（`ui/pages/lists.rs`）
 
-五个页面共用一张列表和一份 delegate（`EntryDelegate`），页头、空状态、回车行为按
+五个页面共用一张列表和一份 delegate（`EntryDelegate`），页头、空状态、行排版按
 `ListKind` 分派：
 
-| `ListKind` | 入口命令 | 数据 | 页头左上角 |
+| `ListKind` | 入口命令 | 数据 | 行 |
 | --- | --- | --- | --- |
-| `Bookmarks` | 书签 | `firefox::bookmarks`，每次进来重读 | 只有返回 |
-| `History` | 历史 | `firefox::history`（最多 500 条） | 只有返回 |
-| `Projects` | 个人项目 | `github::owned_repos`，**缓存优先** | 刷新 |
-| `Stars` | 星标 | `github::starred`，**缓存优先** | 刷新 |
-| `Search` | 查询仓库 | `github::search`，回车才发请求 | 搜索框 |
+| `Bookmarks` | 书签 | `firefox::bookmarks`，每次进来重读 | 单行：名字 + 网址 |
+| `History` | 历史 | `firefox::history`（最多 500 条） | 单行：名字 + 网址 + 次数·时间 |
+| `Projects` | 个人项目 | `github::owned_repos`，**缓存优先** | 双行：名字/语言 + ★数·简介 |
+| `Stars` | 星标 | `github::starred`，**缓存优先** | 同上 |
+| `Search` | 查询仓库 | `github::search`，**输入即搜** | 同上 |
 
-- 行是 `Entry`：标题 / 副行 / 右侧元信息 / 打开目标 / 站点图标。目标一律交给
+页头从左到右：返回、图标、标题、搜索框（空着时宽度按提示文字量，不能只剩半个字）、
+`flex_1`、**右上角那枚按钮**（书签/历史/仓库是「重新读取」，查询仓库是「再搜一次」）。
+
+- **搜索**：本地页（前四个）输入即过滤，不过滤也可以看；`Search` 页不做本地过滤
+  （`language:rust` 这类限定符会被滤没），改成 600ms 防抖后重新请求（`SEARCH_DEBOUNCE`，
+  流水号 `search_serial` 作废旧的那次）。
+- **焦点**：列表页的默认焦点永远是搜索框；`Tab` 在搜索框和右上角按钮之间切换
+  （`toggle_list_action`，切到按钮时 `window.blur`，按钮加底色）。点完行、点完按钮
+  都要把焦点还给搜索框。
+- **点击**：行自己挂 `on_click`（`ListState` 建的时候 `selectable(false)`，不然
+  `List` 的 `confirm` 分不出单击双击）。**单击** = 选中 + 复制链接，**双击** = 打开。
+- 行是 `Entry`：标题 / 描述 / 右侧元信息 / 打开目标 / 站点图标。目标一律交给
   `shell::open`，**不要**在 UI 回调里直接 `ShellExecuteW`。
-- 缓存优先的意思：进页面先读 `%APPDATA%\gpui-tools\cache\github-{projects|stars}-{user}.json`，
-  有就直接摆出来、**不发请求**；没有才抓一次。页头那枚刷新按钮才是强制走网络。
+- 缓存优先：进页面先读 `%APPDATA%\gpui-tools\cache\github-{projects|stars}-{user}.json`，
+  有就直接摆出来、**不发请求**；没有才抓一次。右上角那枚按钮才是强制走网络。
 - 阻塞的读库和联网都走 `cx.background_executor().spawn`（网络用 `platform/http.rs` 的
   WinINet，不用 GPUI 的 `cx.http_client()`：桌面端那是空实现）；两者都装在
   `Launcher::pending` 里，换页/收起时丢掉这个 Task，结果就不会串页。
-- 书签和历史的图标来自 `favicons.sqlite`（ATTACH 上去按 `width` 取最大的一张），
-  ICO / PNG / SVG 都能画；认不出的格式就不画图标，退回 `Entry::tile` 那个默认图标。
-- 列表页没有输入框时 `window.blur(cx)`：焦点留在主页搜索框上，敲字会进看不见的地方。
+- 书签和历史的图标：`moz_icons` **整表**读一遍，按 `id` 和按域名（`icon_url` 的 host，
+  去 `www.`）各建一份索引；取图标先按 `moz_pages_w_icons` 关联到的 icon id，找不到再按
+  页面域名兜底。只靠关联那一份会有一半书签没图标（那正是第一版的毛病）。
+  ICO / PNG / SVG 都能画（SVG 走 `svg_renderer`）；认不出的格式退回 `Entry::tile`。
 
 ### 4.6 命令目录与命令页
 
@@ -223,7 +235,10 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 里处理（`enter` / `up` / `down` / `escape`），经 `with_launcher` 回到视图：
 
 - `up/down`：命令页移动高亮，设置页切换标签。
-- `enter`：执行高亮项（`activate_selected`，分派匹配或命令）。
+- `enter`：执行高亮项（`activate_selected`，分派匹配或命令）；列表页里执行页头按钮
+  （焦点在按钮上时）或打开高亮那一行。
+- `tab`：只在列表页有用——搜索框和右上角按钮之间换焦点（见 4.5）。
+- 列表页的搜索框常驻焦点，`↑↓` 仍由拦截器收走做选中移动，不进输入框。
 - `escape`：设置/计算器页先回命令页，否则收面板。
 - **计算器行有焦点时 `up/down/enter` 一律放行**（`app::calculator_typing`），那三个键在公式
   框里是光标移动和换行。

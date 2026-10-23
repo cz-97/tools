@@ -135,16 +135,32 @@ pub mod launcher {
 ///
 /// 五个页面共用一套骨架，所以文案也放在一处：标题、空状态、页头那枚刷新按钮。
 pub mod lists {
-    /// 页头：从网络重新抓一份。
-    pub const REFRESH: &str = "从网络重新获取";
+    /// 页头按钮：重新读取（书签、历史、个人项目、星标）。
+    pub const REFRESH: &str = "重新读取";
+    /// 页头按钮：立刻按当前关键词再搜一次（查询仓库）。
+    pub const SEARCH_AGAIN: &str = "按当前关键词搜索";
     /// 页头：正在读库或者正在抓。
     pub const LOADING: &str = "刷新中\u{2026}";
-    /// 查询仓库页的搜索框提示。
-    pub const SEARCH_HINT: &str = "输入关键词，回车搜索";
     /// 页脚：回车的说明。
     pub const FOOTER_OPEN: &str = super::common::OPEN;
     /// 页脚：搜索页里回车的说明。
     pub const FOOTER_SEARCH: &str = "搜索";
+    /// 页脚：Tab 的说明。
+    pub const FOOTER_TAB: &str = "切换焦点";
+    /// 搜索框里的提示：书签页。
+    pub const SEARCH_BOOKMARKS: &str = "搜索书签";
+    /// 搜索框里的提示：历史页。
+    pub const SEARCH_HISTORY: &str = "搜索历史";
+    /// 搜索框里的提示：个人项目页。
+    pub const SEARCH_PROJECTS: &str = "搜索仓库";
+    /// 搜索框里的提示：星标页。
+    pub const SEARCH_STARS: &str = "搜索星标";
+    /// 搜索框里的提示：查询仓库页。
+    pub const SEARCH_REPOS: &str = "搜索 GitHub 仓库";
+    /// 有数据但一行都过滤不出来时的空状态。
+    pub fn no_match(query: &str) -> String {
+        format!("没有匹配 \u{201c}{query}\u{201d} 的条目")
+    }
     /// 页脚右侧的条数。
     pub fn count(items: usize) -> String {
         format!("{items} 项")
@@ -154,9 +170,9 @@ pub mod lists {
     /// 历史页的空状态。
     pub const NO_HISTORY: &str = "这个 profile 里没有历史记录";
     /// 缓存为空时的空状态。
-    pub const NO_CACHE: &str = "还没有缓存，点左上角刷新一次";
+    pub const NO_CACHE: &str = "还没有缓存，点右上角刷新一次";
     /// 查询仓库页还没搜过时的空状态。
-    pub const NO_QUERY: &str = "输入关键词，回车搜索";
+    pub const NO_QUERY: &str = "在上面输入关键词就会自动搜索";
     /// 搜到了但是空的。
     pub const NO_RESULT: &str = "没有搜到仓库";
     /// 这个账号名下确实一个仓库都没有。
