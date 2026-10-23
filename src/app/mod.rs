@@ -303,6 +303,25 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
     // 计算器行里正在打字：上下键归光标移动、回车归换行。不放过的话，用户在公式里
     // 按一下上箭头，面板就切到「关于」页去了。
     let typing = calculator_typing(window, cx);
+    // 焦点绝不能被 `Tab` 带走：gpui-base 的 `Root` 把 `tab` 绑成了切焦点，切走之后
+    // 敲字母数字全都没反应（用户报过两次）。这里直接吞掉，再把焦点还给本页输入框。
+    if event.keystroke.key == "tab" && !typing {
+        with_launcher(cx, |launcher, window, cx| {
+            launcher.focus_active_input(window, cx)
+        });
+        cx.stop_propagation();
+        return;
+    }
+    // 保险：焦点不知怎么跑到别处了（点按钮之后的极端情况），敲字时先把它拽回来。
+    // 这一下字符会丢，但后面接着敲就正常了——总比整页没反应强。
+    if types_text(&event.keystroke) && !active_input_focused(window, cx) {
+        with_launcher(cx, |launcher, window, cx| {
+            launcher.focus_active_input(window, cx)
+        });
+        cx.stop_propagation();
+        return;
+    }
+
     match event.keystroke.key.as_str() {
         "enter" if !typing => {
             with_launcher(cx, |launcher, window, cx| {
@@ -323,6 +342,31 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
         }
         _ => {}
     }
+}
+
+/// 这一下按键会不会往输入框里送一个字。
+fn types_text(keystroke: &gpui_kit::Keystroke) -> bool {
+    let plain = !keystroke.modifiers.control
+        && !keystroke.modifiers.alt
+        && !keystroke.modifiers.platform
+        && !keystroke.modifiers.function;
+    plain
+        && keystroke
+            .key_char
+            .as_deref()
+            .is_some_and(|text| !text.is_empty() && !text.chars().any(char::is_control))
+}
+
+/// 面板里是不是有输入框正拿着焦点（字符键的兜底要用）。
+fn active_input_focused(window: &Window, cx: &App) -> bool {
+    cx.try_global::<LauncherHandle>()
+        .and_then(|handle| {
+            handle
+                .view
+                .read_with(cx, |launcher, cx| launcher.active_input_focused(window, cx))
+                .ok()
+        })
+        .unwrap_or(true)
 }
 
 /// 计算器里是不是有一行正打着字（焦点在它的公式框里）。
