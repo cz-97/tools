@@ -5,4 +5,5 @@ pub mod http;
 pub mod instance;
 pub mod logo;
 pub mod shell;
+pub mod vsync;
 pub mod window;

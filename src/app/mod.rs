@@ -18,6 +18,7 @@ use gpui_tools::autostart;
 use gpui_tools::instance;
 use gpui_tools::logo;
 use gpui_tools::settings::{Settings, Theme as ColorScheme};
+use gpui_tools::vsync;
 use gpui_tools::window::NativeWindow;
 use gpui_tray::{Icon as TrayIcon, Tray};
 
@@ -33,6 +34,8 @@ const APP_ICON_ID: u16 = 1;
 const TRAY_ICON_SIZE: u32 = 32;
 /// 等事件循环转起来再跟 GPUI 对一次窗口尺寸，等多久都行，给足一两帧的余量。
 const VIEWPORT_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
+/// 面板收起多久之后才去挂起渲染线程；太短会让「关了马上又开」白挂一次。
+const RENDER_SUSPEND_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 actions!(
     gpui_tools,
@@ -492,6 +495,11 @@ pub fn with_launcher(
 
 /// 显示并抬到前面，每次都从干净状态开始。
 pub fn show_launcher(cx: &mut App) {
+    // 挂机时 GPUI 的渲染线程是被挂起的（见 `platform::vsync`），**必须**先放它出来，
+    // 否则面板亮起来是黑的一块。
+    if !vsync::resume() {
+        eprintln!("gpui-tools: 渲染线程没能恢复，面板可能不刷新");
+    }
     with_launcher(cx, |launcher, window, cx| launcher.reset(window, cx));
     if let Some(panel) = cx.try_global::<LauncherPanel>() {
         panel.window.show();
@@ -511,6 +519,31 @@ pub fn hide_launcher(cx: &mut App) {
         panel.window.hide();
     }
     remember_window_position(cx);
+    schedule_render_suspend(cx);
+}
+
+/// 面板收起来一小会儿之后，把 GPUI 的渲染线程挂起。
+///
+/// GPUI 的 vsync 线程每 16.6ms 醒一次，跟窗口可不可见无关；面板挂机时它是唯一的
+/// CPU 开销，而 GPUI 没有开关能停它。这里是唯一能做干净的地方：等一会儿（万一是
+/// 顺手关一下马上又开），确认窗口还藏着，再挂起。
+fn schedule_render_suspend(cx: &mut App) {
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        cx.background_executor().timer(RENDER_SUSPEND_DELAY).await;
+        cx.update(|cx| {
+            // 这中间又唤出来了就不挂。
+            let visible = cx
+                .try_global::<LauncherPanel>()
+                .is_some_and(|panel| panel.window.is_visible());
+            if visible {
+                return;
+            }
+            if !vsync::suspend() {
+                eprintln!("gpui-tools: 没找到 GPUI 的渲染线程，挂机时省不下那点 CPU");
+            }
+        });
+    })
+    .detach();
 }
 
 /// 让存下来的配色在所有窗口里生效。

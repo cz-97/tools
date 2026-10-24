@@ -9,8 +9,6 @@
 //! 2. **块和线都是纱，不是实心色**：暗色主题叠白纱、浅色主题叠黑纱，浓度直接写在
 //!    [`Palette`] 的 rgba 里。纱让亚克力从块里透上来，块才像玻璃上的浮层，
 //!    而不是贴上去的黑补丁。
-//! 3. **面板外沿有一根 1px 高光边**（`panel_edge`）。这是「玻璃」最关键的暗示：
-//!    没有它，再好的配色也只是一块半透明色块。
 //!
 //! 两层结构：`apply` 把基础色写进当前主题（开关、滑动条这些组件读 `Theme`），
 //! [`UiColors`] 在基础色之上加面板浓度给自绘视图用。绘制代码只从 `UiColors` 取色，
@@ -71,7 +69,7 @@ struct Palette {
 ///
 /// 底色不带纯黑：`#0f1116` 有一点点蓝，铺在白壁纸上会透出一层冷雾，比中性灰高级。
 const DARK: Palette = Palette {
-    background: 0x0f1116ff,
+    background: 0x1f1f1fff,
     foreground: 0xf6f8fcff,
     muted_foreground: 0xc9d0dcff,
     on_surface_muted: 0xd6dce6ff,

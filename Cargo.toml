@@ -1,6 +1,6 @@
 [package]
 name = "gpui-tools"
-version = "0.20.0"
+version = "0.20.1"
 edition = "2024"
 default-run = "gpui-tools"
 
@@ -21,6 +21,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Gdi",
     "Win32_Networking_WinInet",
     "Win32_System_Com",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Threading",

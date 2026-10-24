@@ -240,6 +240,10 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   （`NativeWindow::apply_panel_chrome`）。**`WS_THICKFRAME` 必须留着**：系统只认它决定
   窗口边缘能不能拖。它的那圈非客户区由 `window.rs` 里挂的子类过程吃掉（`WM_NCCALCSIZE`
   直接返回 0，客户区铺满整扇窗），否则四周会露出一圈透明缝。
+- **四条边的命中区自己算**：GPUI 只在**上边**判断拉伸（`events.rs` 的 `handle_hit_test_msg`
+  只比较 `cursor_point.y <= frame_y`），左右和下边落到 `DefWindowProc` 只剩一像素。
+  子类过程里 `resize_hit_test` 按 `SM_CXSIZEFRAME + SM_CXPADDEDBORDER` 算一圈，返回
+  `HTLEFT/HTRIGHT/...`；不在边缘就交回 GPUI（页头的拖动区在那里）。
 - 尺寸存在 `Settings::window_width` / `window_height`（**逻辑像素**，换 DPI 打开还是同样大），
   只在 `remember_window_position`（收起面板 / 退出）时回写；下限
   `WINDOW_WIDTH_MIN` / `WINDOW_HEIGHT_MIN` 同时喂给 `WindowOptions::window_min_size`。
@@ -252,8 +256,13 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   多出来的部分会盖住页脚。
 - **空闲时不许轮询**。全局热键（`global_hotkey` 的 channel）和「别的进程叫我们亮面板」
   （命名事件）都走一条阻塞的后台线程 + `futures` channel 交给前台，删掉 80ms / 200ms
-  的 `try_recv` 循环。剩下的固定开销是 GPUI 自己的 VSync 线程（每帧 16.6ms 醒一次，
-  与窗口是否可见无关），那是库的行为，改不了。
+  的 `try_recv` 循环。
+- 剩下那点固定开销来自 GPUI 的 VSync 线程：`gpui-pre-windows` 的 `begin_vsync_thread`
+  无条件每 16.6ms 醒一次并对所有窗口 `RedrawWindow`，与可见性无关。GPUI 没有开关，
+  所以 `platform::vsync` 按线程名（`VSyncProvider`）找到它，**面板收起 3 秒后挂起、
+  唤出前恢复**（`hide_launcher` → `schedule_render_suspend`，`show_launcher` 第一件事
+  就是 `resume`）。挂起期间主线程不渲染，恢复一定早于显示。实测隐藏态从 4~6% 降到
+  **0.000%**（单核，debug 构建）。
 
 ## 5. 交互细节
 

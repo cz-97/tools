@@ -185,25 +185,27 @@ mod sys {
     use std::mem::size_of;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Dwm::{
         DWMNCRP_DISABLED, DWMNCRP_USEWINDOWSTYLE, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT,
         DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
         DwmSetWindowAttribute,
     };
     use windows_sys::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, ScreenToClient,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, GWL_STYLE, GetClientRect, GetForegroundWindow, GetSystemMetrics,
-        GetWindowLongPtrW, GetWindowRect, ICON_BIG, ICON_SMALL, IMAGE_ICON, IsWindow,
-        IsWindowVisible, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXSMICON, SW_HIDE, SW_SHOW,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW,
-        SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_NCCALCSIZE,
-        WM_SETICON, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+        GetWindowLongPtrW, GetWindowRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT,
+        HTTOP, HTTOPLEFT, HTTOPRIGHT, ICON_BIG, ICON_SMALL, IMAGE_ICON, IsWindow, IsWindowVisible,
+        LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXPADDEDBORDER, SM_CXSIZEFRAME, SM_CXSMICON,
+        SM_CYSIZEFRAME, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+        ShowWindow, WM_NCCALCSIZE, WM_NCHITTEST, WM_SETICON, WS_CAPTION, WS_MAXIMIZEBOX,
+        WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
 
     /// 构成原生标题栏、它那几个按钮和可拉伸边框的样式位。全清掉就只剩客户区。
@@ -411,7 +413,7 @@ mod sys {
         true
     }
 
-    /// 子类过程：只回一条消息，其余原样转给链上的下一个过程（也就是 GPUI 的窗口过程）。
+    /// 子类过程：改两条消息，其余原样转给链上的下一个过程（也就是 GPUI 的窗口过程）。
     unsafe extern "system" fn panel_proc(
         window: HWND,
         message: u32,
@@ -426,7 +428,63 @@ mod sys {
         if message == WM_NCCALCSIZE && wparam != 0 {
             return 0;
         }
+        // 四条边都要能拖。GPUI 只认**上边**（`events.rs` 的 `handle_hit_test_msg` 只比较
+        // `cursor_point.y <= frame_y`），左右和下边会落到 `DefWindowProc`，那儿给出的热区
+        // 只有一个像素，实际上拖不动。这里自己算一圈，命中就当场回答。
+        if message == WM_NCHITTEST
+            && let Some(hit) = unsafe { resize_hit_test(window, lparam) }
+        {
+            return hit;
+        }
         unsafe { DefSubclassProc(window, message, wparam, lparam) }
+    }
+
+    /// 光标是不是落在可拉伸的那一圈上；是就返回对应的命中码。
+    ///
+    /// 找不到（在中间）返回 `None`，让 GPUI 去回答——它那边有页头的拖动区。
+    unsafe fn resize_hit_test(window: HWND, lparam: LPARAM) -> Option<isize> {
+        let mut point = POINT {
+            x: i32::from((lparam & 0xffff) as u16 as i16),
+            y: i32::from(((lparam >> 16) & 0xffff) as u16 as i16),
+        };
+        if unsafe { ScreenToClient(window, &mut point) } == 0 {
+            return None;
+        }
+        let mut client = RECT::default();
+        if unsafe { GetClientRect(window, &mut client) } == 0 {
+            return None;
+        }
+
+        let dpi = unsafe { GetDpiForWindow(window) };
+        let frame_x = unsafe {
+            GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi)
+                + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+        };
+        let frame_y = unsafe {
+            GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi)
+                + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+        };
+        if frame_x <= 0 || frame_y <= 0 {
+            return None;
+        }
+
+        let left = point.x < frame_x;
+        let right = point.x >= client.right - frame_x;
+        let top = point.y < frame_y;
+        let bottom = point.y >= client.bottom - frame_y;
+
+        let hit = match (left, right, top, bottom) {
+            (true, _, true, _) => HTTOPLEFT,
+            (_, true, true, _) => HTTOPRIGHT,
+            (true, _, _, true) => HTBOTTOMLEFT,
+            (_, true, _, true) => HTBOTTOMRIGHT,
+            (true, _, _, _) => HTLEFT,
+            (_, true, _, _) => HTRIGHT,
+            (_, _, true, _) => HTTOP,
+            (_, _, _, true) => HTBOTTOM,
+            _ => return None,
+        };
+        Some(hit as isize)
     }
 
     pub fn set_client_size(handle: WindowHandle, width: f32, height: f32) -> bool {
