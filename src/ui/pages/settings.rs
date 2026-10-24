@@ -214,7 +214,7 @@ fn system_page(
         ))
         .child(action_row(
             "open-config",
-            strings::settings_page::CONFIG_NAME,
+            strings::settings_page::CONFIG_FOLDER,
             crate::app::about_directory(),
             strings::settings_page::CONFIG_OPEN,
             colors,

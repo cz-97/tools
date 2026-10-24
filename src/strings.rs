@@ -24,6 +24,8 @@ pub mod common {
     pub const COPIED: &str = "已复制";
     /// 程序所在位置（关于页那一行，也是主页上的命令名）。
     pub const PROGRAM_FOLDER: &str = "程序所在位置";
+    /// 程序所在位置（关于页那一行，也是主页上的命令名）。
+    pub const CONFIG_FOLDER: &str = "程序配置文件夹";
     /// 项目仓库（关于页那一行，也是主页上的命令名）。
     pub const REPOSITORY: &str = "项目仓库";
     /// 书签（主页上的命令名，也是书签页的标题）。
@@ -49,6 +51,7 @@ pub mod common {
 ///
 /// 名称尽量复用 [`common`] 里同功能的词，这里只放命令独有的那几句说明。
 pub mod commands {
+    pub const CONFIG_FOLDER_DESCRIPTION: &str = "打开启动器的配置文件夹";
     /// 主页「设置」命令。
     pub const OPEN_SETTINGS_DESCRIPTION: &str = "打开启动器设置";
     /// 主页「计算器」命令。
@@ -259,7 +262,7 @@ pub mod settings_page {
     /// 系统页：子页面保持的说明。
     pub const RESUME_DESCRIPTION: &str = "隐藏后短时间内再唤出，仍停在原页面";
     /// 系统页：配置文件夹的标题。
-    pub const CONFIG_NAME: &str = "配置文件夹";
+    pub const CONFIG_FOLDER: &str = super::common::CONFIG_FOLDER;
     /// 系统页：配置文件夹的按钮字。
     pub const CONFIG_OPEN: &str = super::common::OPEN;
     /// 系统页：退出启动器的标题。
@@ -371,9 +374,9 @@ pub mod settings_page {
 /// 托盘菜单与提示。
 pub mod tray {
     /// 鼠标悬停在托盘图标上的提示。
-    pub const TOOLTIP: &str = "GPUI Tools";
+    pub const TOOLTIP: &str = "工具箱";
     /// 菜单：打开启动器。
-    pub const OPEN: &str = "打开启动器";
+    pub const OPEN: &str = "显示";
     /// 菜单：设置。
     pub const SETTINGS: &str = super::common::SETTINGS;
     /// 菜单：重启。

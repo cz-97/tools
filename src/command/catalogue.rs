@@ -134,6 +134,15 @@ pub static COMMANDS: &[Command] = &[
         action: actions::open_program_folder,
     },
     Command {
+        id: "config-folder",
+        section: Section::System,
+        name: strings::common::CONFIG_FOLDER,
+        description: strings::commands::CONFIG_FOLDER_DESCRIPTION,
+        keyword: "program config settings 程序 配置 设置 文件夹 打开",
+        icon: IconName::FolderOpen,
+        action: actions::open_settings_folder,
+    },
+    Command {
         id: "repository",
         section: Section::About,
         name: strings::common::REPOSITORY,
