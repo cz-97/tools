@@ -40,8 +40,8 @@ const HEADER_MIN_HEIGHT: f32 = 52.;
 const HEADER_SLACK: f32 = 26.;
 /// 设置页左侧子模块列的宽度。
 pub(crate) const SIDEBAR_WIDTH: f32 = 148.;
-/// 命令页里左侧子模块列的宽度。
-pub(crate) const MODULE_WIDTH: f32 = 124.;
+/// 命令页里左侧子模块列的宽度。要放得下「GitHub 3/3」这种最长的组合。
+pub(crate) const MODULE_WIDTH: f32 = 136.;
 /// 输入框组件在内部画掉的左右留白（小号是 8 + 8），输入框得自己付这笔账。
 const SEARCH_FIELD_PADDING: f32 = 16.;
 /// 空输入框给光标留的宽度。再宽就是白占拖动区。

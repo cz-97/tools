@@ -541,15 +541,10 @@ impl ListDelegate for EntryDelegate {
 }
 
 /// 画出这一页的列表。
+///
+/// **不要再包一层 `flex_1` 的 div**：外层（`launcher/view.rs` 的 body）已经是按视口算出来
+/// 的确定高度，中间多一层会让 `List` 内部的 `size_full()` 落空，整页一行都不画。
 pub(crate) fn render(entries: &gpui_kit::Entity<ListState<EntryDelegate>>) -> AnyElement {
-    div()
-        .flex_1()
-        // `min_h_0` 是必须的：flex 项目的默认最小高度是内容高度，不加这一条，
-        // 行多了会把底下的页脚顶出窗口，而不是自己滚。
-        .min_h_0()
-        .min_w_0()
-        .overflow_hidden()
-        // 点击由行自己处理（要分单击和双击）；`ListState` 建的时候就把 selectable 关了。
-        .child(List::new(entries).px_1().py_1())
-        .into_any_element()
+    // 点击由行自己处理（要分单击和双击）；`ListState` 建的时候就把 selectable 关了。
+    List::new(entries).px_1().py_1().into_any_element()
 }
