@@ -29,10 +29,10 @@ use gpui_tools::settings::Settings;
 /// 这是整套配色唯一的「物理常数」：低于约 0.72，浅色壁纸会把面板冲成中灰，
 /// 白字怎么调都发虚——问题不在字色，在面板不够黑。所以宁可让滑块的下半程
 /// 变化小一点，也不允许面板掉出这个区间。
-const FROST_FLOOR: f32 = 0.6;
+const FROST_FLOOR: f32 = 0.0;
 
 /// 面板外沿那 1px 高光比面板本身亮/暗多少。
-const EDGE_MIX: f32 = 0.14;
+const EDGE_MIX: f32 = 0.0;
 
 /// 一套配色的具体值，浅色/深色各一份。颜色都带 alpha（纱就是这样来的）。
 struct Palette {

@@ -117,7 +117,7 @@ pub static COMMANDS: &[Command] = &[
     },
     Command {
         id: "open-calculator",
-        section: Section::System,
+        section: Section::Calculator,
         name: strings::common::CALCULATOR,
         description: strings::commands::OPEN_CALCULATOR_DESCRIPTION,
         keyword: "calculator calc 计算器 计算 表达式 算数",
