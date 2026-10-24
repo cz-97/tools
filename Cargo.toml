@@ -6,12 +6,10 @@ default-run = "gpui-tools"
 
 [dependencies]
 gpui-kit = "0.7.3"
-# 后台线程和主线程之间传「有事件了」用：一条 channel 比每 80ms 醒一次便宜得多。
 futures = "0.3"
 global-hotkey = "0.8"
 gpui-tray = { version = "0.1.4", default-features = false, features = ["gpui-kit"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
-# GitHub 接口回来的 JSON：只读字段，不需要 derive。
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
