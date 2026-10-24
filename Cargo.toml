@@ -1,6 +1,6 @@
 [package]
 name = "gpui-tools"
-version = "0.20.3"
+version = "0.20.4"
 edition = "2024"
 default-run = "gpui-tools"
 
@@ -29,6 +29,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[profile.dev]
+# 常驻跑的就是这个 dev 构建。完整 DWARF 会把 exe 撑到 58MB，进程里那些代码页全算在
+# 工作集上；只要行号级别的回溯就够了，不需要每个变量的信息。
+debug = "line-tables-only"
 
 [profile.release]
 opt-level = "z"

@@ -572,6 +572,12 @@ impl Launcher {
         self.recording = None;
         self.conflict = None;
         self.refresh_catalogue(cx);
+        // 上一次留下的列表数据先放掉：历史是 500 条、每行还挂着图标，不释放就一直占着。
+        // 下面按记忆回到那一页时会重新装一次。
+        self.entries.update(cx, |list, cx| {
+            list.delegate_mut().set_items(Vec::new());
+            cx.notify();
+        });
         self.list
             .update(cx, |list, cx| list.set_query("", window, cx));
         // 唤出时停在哪一页由记忆决定；列表页要重新装数据，所以走 `open_list`。
