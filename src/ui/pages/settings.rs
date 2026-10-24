@@ -85,15 +85,19 @@ pub(crate) fn render(
     // `h_flex` 默认在交叉轴居中，这样会把整页浮在面板中间；这里要顶对齐。
     h_flex()
         .flex_1()
+        .min_h_0()
         .min_w_0()
         .items_stretch()
         .overflow_hidden()
         .child(sections)
         .child(
+            // 面板可以被拖大拖小，内容比窗口高时就地滚，绝不给裁掉半截。
             v_flex()
+                .id("settings-content")
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
+                .overflow_y_scroll()
                 .px_4()
                 .py_4()
                 .child(content),
@@ -154,9 +158,11 @@ fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> 
         .child(tabs)
         .child(
             v_flex()
+                .id("tool-content")
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
+                .overflow_y_scroll()
                 .pl_3()
                 .gap_1()
                 .child(

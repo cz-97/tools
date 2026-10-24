@@ -25,7 +25,9 @@ pub(crate) fn render(
     cx: &Context<Launcher>,
 ) -> impl IntoElement {
     let settings = stored_settings(cx);
-    let selected = launcher.section.min(catalogue::Section::ALL.len() - 1);
+    // 子模块是从命令目录现算的：没有命令的分组不画（见 `catalogue::sections`）。
+    let listed = catalogue::sections();
+    let selected = launcher.section.min(listed.len().saturating_sub(1));
     let border = colors.border;
 
     let sections = v_flex()
@@ -35,61 +37,55 @@ pub(crate) fn render(
         .pr_3()
         .border_r_1()
         .border_color(border)
-        .children(
-            catalogue::Section::ALL
+        .children(listed.iter().enumerate().map(|(ix, section)| {
+            let current = ix == selected;
+            let owned = catalogue::commands(*section).collect::<Vec<_>>();
+            let shown = owned
                 .iter()
-                .enumerate()
-                .map(|(ix, section)| {
-                    let current = ix == selected;
-                    let owned = catalogue::commands(*section).collect::<Vec<_>>();
-                    let shown = owned
-                        .iter()
-                        .filter(|command| {
-                            settings.command_enabled(command.section.key(), command.id)
-                        })
-                        .count();
-                    h_flex()
-                        .id(SharedString::from(format!("section-{}", section.label())))
-                        .gap_2()
-                        .px_2()
-                        .py_1p5()
-                        .rounded(px(6.))
-                        .text_sm()
-                        .cursor_pointer()
+                .filter(|command| settings.command_enabled(command.section.key(), command.id))
+                .count();
+            h_flex()
+                .id(SharedString::from(format!("section-{}", section.label())))
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .rounded(px(6.))
+                .text_sm()
+                .cursor_pointer()
+                .text_color(if current {
+                    colors.accent_foreground
+                } else {
+                    colors.foreground
+                })
+                .when(current, move |this| this.bg(colors.accent))
+                .when(!current, move |this| {
+                    this.hover(move |style| style.bg(colors.hover))
+                })
+                .on_click(cx.listener(move |launcher, _, _, cx| launcher.select_section(ix, cx)))
+                .child(Icon::new(section.icon()).size_4())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_ellipsis()
+                        .child(section.label()),
+                )
+                .child(
+                    div()
+                        .text_xs()
                         .text_color(if current {
-                            colors.accent_foreground
+                            colors.on_accent_muted
                         } else {
-                            colors.foreground
+                            colors.muted_foreground
                         })
-                        .when(current, move |this| this.bg(colors.accent))
-                        .when(!current, move |this| {
-                            this.hover(move |style| style.bg(colors.hover))
-                        })
-                        .on_click(
-                            cx.listener(move |launcher, _, _, cx| launcher.select_section(ix, cx)),
-                        )
-                        .child(Icon::new(section.icon()).size_4())
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_ellipsis()
-                                .child(section.label()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(if current {
-                                    colors.on_accent_muted
-                                } else {
-                                    colors.muted_foreground
-                                })
-                                .child(strings::commands_page::enabled_ratio(shown, owned.len())),
-                        )
-                }),
-        );
+                        .child(strings::commands_page::enabled_ratio(shown, owned.len())),
+                )
+        }));
 
-    let section = catalogue::Section::ALL[selected];
+    let section = listed
+        .get(selected)
+        .copied()
+        .unwrap_or(catalogue::Section::System);
     let commands = catalogue::commands(section)
         .map(|command| {
             command_row(
@@ -110,10 +106,13 @@ pub(crate) fn render(
         .overflow_hidden()
         .child(sections)
         .child(
+            // 右列跟着窗口高度走：命令多了、窗口小了就地滚，不裁掉最后几条。
             v_flex()
+                .id("command-list")
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
+                .overflow_y_scroll()
                 .pl_3()
                 .gap_1()
                 .child(

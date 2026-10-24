@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::str::FromStr as _;
 use std::time::Duration;
 
+use futures::StreamExt as _;
 use global_hotkey::GlobalHotKeyManager;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use gpui_kit::{App, Keystroke};
@@ -18,10 +19,9 @@ use crate::app::{run_command, stored_settings, with_launcher};
 use crate::catalogue;
 use crate::strings;
 
-/// 轮询全局热键事件的间隔。
-const EVENT_POLL: Duration = Duration::from_millis(80);
-/// 唤出热键注册失败时的重试次数与间隔。
+/// 唤出热键注册失败时的重试次数。
 const SUMMON_RETRIES: u8 = 15;
+/// 每次重试之间隔多久。
 const SUMMON_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 /// 一个热键现在归谁。录制时拿它判断「这组键已经被占了」。
@@ -79,27 +79,45 @@ pub fn install(cx: &mut App) {
     let summon_ready = apply_summon_shortcut(cx);
     apply_command_shortcuts(cx);
 
-    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
-        let mut attempts = u8::from(!summon_ready);
-        while attempts > 0 && attempts < SUMMON_RETRIES {
-            cx.background_executor().timer(SUMMON_RETRY_DELAY).await;
-            attempts += 1;
-            if cx.update(apply_summon_shortcut) {
-                break;
+    // 启动时那次注册可能被拒（旧进程还没退干净、键被别人占着），隔一会儿重试几轮。
+    // 这段只在启动后三秒内醒几次，过了就再也不碰计时器了。
+    if !summon_ready {
+        cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+            for _ in 0..SUMMON_RETRIES {
+                cx.background_executor().timer(SUMMON_RETRY_DELAY).await;
+                if cx.update(apply_summon_shortcut) {
+                    return;
+                }
             }
-        }
-        if attempts >= SUMMON_RETRIES {
             eprintln!("gpui-tools: 唤出热键注册失败，可能被别的程序占用了");
-        }
+        })
+        .detach();
+    }
 
-        loop {
-            cx.background_executor().timer(EVENT_POLL).await;
-            while let Ok(event) = global_hotkey::GlobalHotKeyEvent::receiver().try_recv() {
+    // 热键事件从一条后台线程阻塞着收：系统把组合键从焦点窗口截走之后会送到那个
+    // 隐藏窗口的 `WM_HOTKEY`，`global_hotkey` 再把它塞进这个 channel。
+    //
+    // **不要改成定时 `try_recv`**：80ms 醒一次看着便宜，却是挂机时的主要 CPU 来源，
+    // 而这里本来就有一个会阻塞的 channel 可以用。
+    let (sender, mut receiver) = futures::channel::mpsc::unbounded::<u32>();
+    std::thread::Builder::new()
+        .name("hotkey".into())
+        .spawn(move || {
+            let events = global_hotkey::GlobalHotKeyEvent::receiver();
+            while let Ok(event) = events.recv() {
                 if event.state != global_hotkey::HotKeyState::Pressed {
                     continue;
                 }
-                cx.update(|cx| dispatch_hotkey(event.id, cx));
+                if sender.unbounded_send(event.id).is_err() {
+                    break;
+                }
             }
+        })
+        .ok();
+
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        while let Some(id) = receiver.next().await {
+            cx.update(|cx| dispatch_hotkey(id, cx));
         }
     })
     .detach();

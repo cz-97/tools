@@ -4,7 +4,8 @@ pub(crate) mod actions;
 pub(crate) mod tray_theme;
 
 use std::sync::Mutex;
-use std::time::Duration;
+
+use futures::StreamExt as _;
 
 use gpui_kit::base::Root;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
@@ -26,16 +27,12 @@ use crate::ui::launcher::Launcher;
 
 /// 面板窗口的标题，同时也是找窗口句柄用的键。
 pub const WINDOW_TITLE: &str = "GPUI Tools Launcher";
-/// 面板宽（逻辑像素）。
-const WINDOW_WIDTH: f32 = 720.;
-/// 面板高（逻辑像素）。
-const WINDOW_HEIGHT: f32 = 464.;
 /// `build.rs` 嵌进 exe 的图标资源 id，窗口和外壳都用它。
 const APP_ICON_ID: u16 = 1;
 /// 托盘图标的边长，单位像素。
 const TRAY_ICON_SIZE: u32 = 32;
-/// 多久看一眼「有没有别的进程在叫我们亮面板」。
-const WAKE_POLL: Duration = Duration::from_millis(200);
+/// 等事件循环转起来再跟 GPUI 对一次窗口尺寸，等多久都行，给足一两帧的余量。
+const VIEWPORT_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
 
 actions!(
     gpui_tools,
@@ -80,13 +77,23 @@ pub fn launch() {
             settings.launch_at_login = autostart::enabled();
             cx.set_global(SettingsStore(settings.clone()));
 
-            let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
+            // 面板多大由用户拖出来，尺寸记在设置里（逻辑像素）。
+            let (panel_width, panel_height) =
+                (settings.window_width as f32, settings.window_height as f32);
+            let bounds = Bounds::centered(None, size(px(panel_width), px(panel_height)), cx);
             let (window_handle, launcher) = gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     // 这三个选项与喝水提醒窗一致；默认 titlebar 会让 GPUI 走系统标题栏路径。
                     titlebar: None,
                     kind: WindowKind::PopUp,
+                    // 边缘拖动由 GPUI 自己算命中区，但样式里的拉伸边框仍要由宿主补上
+                    // （见 `NativeWindow::apply_panel_chrome`）。
+                    is_resizable: true,
+                    window_min_size: Some(size(
+                        px(Settings::WINDOW_WIDTH_MIN as f32),
+                        px(Settings::WINDOW_HEIGHT_MIN as f32),
+                    )),
                     // 亚克力由外观页的「半透明」开关决定，见 `apply_panel_appearance`。
                     window_background: panel_appearance(settings.translucent),
                     show: false,
@@ -115,7 +122,7 @@ pub fn launch() {
             // GPUI 不管窗口尺寸和位置，无边框外壳要自己上，失败也只报告、不致命。
             match NativeWindow::find(WINDOW_TITLE) {
                 Some(window) => {
-                    if !window.apply_panel_chrome(WINDOW_WIDTH, WINDOW_HEIGHT) {
+                    if !window.apply_panel_chrome(panel_width, panel_height) {
                         eprintln!("gpui-tools: 无边框外壳没有完全生效");
                     }
                     // Windows 11 的默认圆角：就是系统设置里「圆角」那一档的半径。
@@ -165,7 +172,33 @@ pub fn launch() {
             shortcuts::install(cx);
             // 别的进程又启动了一次，就是在叫我们把面板亮出来。
             watch_wakeup(cx);
+            // 窗口尺寸改在事件循环起来之后再跟 GPUI 对一次账（见函数说明）。
+            settle_viewport(cx);
         });
+}
+
+/// 启动时改窗口尺寸这件事，GPUI 要等事件循环转起来才认账。
+///
+/// 它的视口尺寸只在自己的平台回调里更新，而我们在 `run` 的回调里就把窗口摆好了——
+/// 那时候消息循环还没开始，回调落空，GPUI 会一直按创建时的显示器尺寸排版：界面右下角
+/// 被裁掉，页脚和行尾的元信息根本画不出来。
+///
+/// `Window::bounds_changed` 就是让窗口重新从平台读一次客户区。等循环跑起来调一次，
+/// 视口就跟真实客户区对上了；窗口还没显示，用户看不见这一步。
+fn settle_viewport(cx: &mut App) {
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        cx.background_executor().timer(VIEWPORT_SETTLE).await;
+        cx.update(|cx| {
+            let Some(handle) = cx.try_global::<LauncherWindow>().map(|handle| handle.0) else {
+                return;
+            };
+            // 不能悄悄失败：视口没同步的表现是「界面右下角缺一块」。
+            if let Err(error) = handle.update(cx, |_, window, cx| window.bounds_changed(cx)) {
+                eprintln!("gpui-tools: 视口尺寸没能同步：{error:?}");
+            }
+        });
+    })
+    .detach();
 }
 
 /// 单例身份，活到进程结束。丢掉它就等于放行第二个实例。
@@ -184,25 +217,42 @@ pub(crate) fn release_singleton(cx: &mut App) {
 
 /// 盯着「有人又启动了一次」这个信号：收到就把面板亮出来。
 ///
-/// 走的是命名的自动复位事件，和全局热键一样靠后台轮询——没有消息循环可以挂，
-/// 200ms 一次的空转也不值得为它开一个阻塞线程。
+/// 一条后台线程**阻塞**等那个自动复位事件，事件到手再把它丢进 channel；前台任务被
+/// 唤醒后才执行（GPUI 的 `App` 只能在主线程上碰）。
+///
+/// **这里不许轮询**：挂机时别的进程可能一整天都不叫我们，而每 200ms 醒一次看事件
+/// 是之前这个程序唯一的空闲开销。
 fn watch_wakeup(cx: &mut App) {
-    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
-        loop {
-            cx.background_executor().timer(WAKE_POLL).await;
-            cx.update(|cx| {
-                let woken = cx.try_global::<Singleton>().is_some_and(|singleton| {
-                    singleton
-                        .0
-                        .lock()
-                        .expect("单例锁不会中毒")
-                        .as_ref()
-                        .is_some_and(instance::Instance::take_wakeup)
-                });
-                if woken {
-                    show_launcher(cx);
+    let event = cx
+        .try_global::<Singleton>()
+        .and_then(|singleton| {
+            singleton
+                .0
+                .lock()
+                .expect("单例锁不会中毒")
+                .as_ref()
+                .map(instance::Instance::wake_handle)
+        })
+        .filter(|handle| *handle != 0);
+    let Some(event) = event else {
+        return;
+    };
+
+    let (sender, mut receiver) = futures::channel::mpsc::unbounded::<()>();
+    std::thread::Builder::new()
+        .name("wakeup".into())
+        .spawn(move || {
+            while instance::wait_wakeup(event) {
+                if sender.unbounded_send(()).is_err() {
+                    break;
                 }
-            });
+            }
+        })
+        .ok();
+
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        while receiver.next().await.is_some() {
+            cx.update(|cx| show_launcher(cx));
         }
     })
     .detach();
@@ -491,15 +541,26 @@ pub fn store_settings(settings: Settings, cx: &mut App) {
     cx.set_global(SettingsStore(settings));
 }
 
-/// 记住面板停的位置，下次从那儿打开。
+/// 记住面板停的位置和大小，下次从那儿打开。
 ///
 /// 只记顶边：横坐标每次重新居中，面板就不会总贴着屏幕某一侧。
+///
+/// 尺寸也在这儿回写：用户拖边框的过程中不动数据库，面板一收才结一次账。存的是
+/// **逻辑像素**（客户区 ÷ 缩放），换一台不同 DPI 的屏打开，面板看起来还是同样大。
 ///
 /// 调用次数也是在这里落盘的：它在内存里累加，收面板的这一刻才结账。
 pub fn remember_window_position(cx: &mut App) {
     let mut settings = stored_settings(cx);
     if let Some(panel) = cx.try_global::<LauncherPanel>() {
         settings.window_y = Some(panel.window.position().1);
+        let scale = panel.window.scale_factor();
+        let (width, height) = panel.window.client_size();
+        if scale > 0.0 && width > 0 && height > 0 {
+            settings.window_width = ((width as f32 / scale).round() as u32)
+                .clamp(Settings::WINDOW_WIDTH_MIN, Settings::WINDOW_WIDTH_MAX);
+            settings.window_height = ((height as f32 / scale).round() as u32)
+                .clamp(Settings::WINDOW_HEIGHT_MIN, Settings::WINDOW_HEIGHT_MAX);
+        }
     }
     store_settings(settings, cx);
 }

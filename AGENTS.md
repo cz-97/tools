@@ -14,7 +14,8 @@ Rust + GPUI 的 Windows 启动器，个人自用。这份文档是唯一的项�
 4. `Esc` 隐藏；在设置/计算器页里 `Esc` 先退回命令页。
 5. 面板失去前台（点了别的窗口）自动收起。
 6. 拖动搜索栏空白处移动面板（记住纵坐标）。
-7. 搜索栏右侧齿轮打开面板内设置。
+7. 拖动面板四边四角改大小（记住宽高；有下限，见 §4.8）。
+8. 搜索栏右侧齿轮打开面板内设置。
 
 不追求通用启动器框架，不做插件体系。命令是编译进主程序的静态表。
 
@@ -218,7 +219,8 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - 不想上主页的命令不删代码，在命令页关掉（`enabled = false`）。
 - 需要窗口的动作走 `with_launcher`，不要在按键分发里重入窗口。
 
-命令页（设置 → 命令）左右两栏：左列 `catalogue::Section::ALL`，右列该分组的命令行。
+命令页（设置 → 命令）左右两栏：左列**目录里真的有命令的子模块**（`catalogue::sections()`，
+从 `COMMANDS` 现算，没命令的分组不出现），右列该分组的命令行。
 每行：图标 + 名称/描述 + 调用次数 + 快捷键按钮 + 启用开关；左列每项显示「启用数/总数」。
 
 ### 4.7 快捷键
@@ -231,6 +233,27 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   报回（`report_conflict`）。**面板隐藏必须结束录制**（`leave`），否则所有热键静默失效。
 - 唤出热键和命令热键同源：`settings.summon_shortcut`；`none` 表示明确不绑（托盘兜底）。
 - 键名用 `keyboard-types` 的 `Code` 存，显示时才友好化。
+
+### 4.8 面板外壳、尺寸与空闲开销
+
+- 窗口是 `WindowKind::PopUp` + `titlebar: None`，边框由宿主自己摘
+  （`NativeWindow::apply_panel_chrome`）。**`WS_THICKFRAME` 必须留着**：系统只认它决定
+  窗口边缘能不能拖。它的那圈非客户区由 `window.rs` 里挂的子类过程吃掉（`WM_NCCALCSIZE`
+  直接返回 0，客户区铺满整扇窗），否则四周会露出一圈透明缝。
+- 尺寸存在 `Settings::window_width` / `window_height`（**逻辑像素**，换 DPI 打开还是同样大），
+  只在 `remember_window_position`（收起面板 / 退出）时回写；下限
+  `WINDOW_WIDTH_MIN` / `WINDOW_HEIGHT_MIN` 同时喂给 `WindowOptions::window_min_size`。
+- **视口要手动对账**：GPUI 的 `viewport_size` 只在它自己的平台回调里更新，而窗口是在
+  `run` 的回调里摆好的（消息循环还没开始），不等一下就会一直按创建时的显示器尺寸排版，
+  界面右下角被裁掉。`app::settle_viewport` 在循环跑起来之后调一次
+  `Window::bounds_changed` 把视口拉回真实客户区。
+- 正文高度按 `viewport - 页头 - 页脚` 算死（`launcher/view.rs` 的 `FOOTER_HEIGHT`），
+  不要指望 flex 收缩：`List` 内部是 `size_full()`，外层拿不到确定高度就按内容高度排版，
+  多出来的部分会盖住页脚。
+- **空闲时不许轮询**。全局热键（`global_hotkey` 的 channel）和「别的进程叫我们亮面板」
+  （命名事件）都走一条阻塞的后台线程 + `futures` channel 交给前台，删掉 80ms / 200ms
+  的 `try_recv` 循环。剩下的固定开销是 GPUI 自己的 VSync 线程（每帧 16.6ms 醒一次，
+  与窗口是否可见无关），那是库的行为，改不了。
 
 ## 5. 交互细节
 

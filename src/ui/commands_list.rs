@@ -635,10 +635,11 @@ mod tests {
                 "quit",
                 "bookmarks",
                 "history",
+                "open-calculator",
                 "github-projects",
                 "github-search",
                 "github-stars",
-                "open-calculator",
+                "config-folder",
                 "open-settings"
             ]
         );

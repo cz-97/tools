@@ -40,6 +40,14 @@ impl Instance {
         sys::take(&self.held)
     }
 
+    /// 唤醒事件的句柄值，交给一条后台线程死等。
+    ///
+    /// 句柄在 [`Instance`] 被丢弃后就失效了，但那时进程正准备退出（重启会让旧进程
+    /// 先交身份），等它的线程会拿到 `WAIT_FAILED` 自己退出，不会卡住。
+    pub fn wake_handle(&self) -> usize {
+        sys::handle(&self.held)
+    }
+
     /// 换一套名字抢身份。生产代码用 [`Instance::acquire`]，这里给测试一个独立命名空间：
     /// 机器上真跑着一个实例时，测试也不能被它挡掉。
     fn acquire_named(mutex: &str, wake: &str) -> Option<Self> {
@@ -47,14 +55,29 @@ impl Instance {
     }
 }
 
+/// 死等下一次唤醒，**不消耗 CPU**。
+///
+/// 参数是 [`Instance::wake_handle`] 交出来的句柄值；之所以走模块级自由函数，是因为
+/// 等它的线程不该攥着整个 [`Instance`]（那是主线程持有的身份）。
+///
+/// 面板挂机时别的进程可能永远不叫我们，所以这里必须阻塞等待、不能轮询：一个 200ms
+/// 的轮询循环看着不贵，却是之前这个程序挂机时唯一持续醒着的东西。
+pub fn wait_wakeup(event: usize) -> bool {
+    sys::wait(event)
+}
+
 #[cfg(windows)]
 mod sys {
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, SetLastError, WAIT_OBJECT_0,
+        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, SetLastError, WAIT_ABANDONED,
+        WAIT_FAILED, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Threading::{
         CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject,
     };
+
+    /// `WaitForSingleObject` 的「一直等」。
+    const INFINITE: u32 = 0xffff_ffff;
 
     /// 打开一个事件只需要「能 SetEvent」这一项权限。
     const EVENT_MODIFY_STATE: u32 = 0x0002;
@@ -116,6 +139,26 @@ mod sys {
         // 0 毫秒 = 只看一眼，别把 UI 线程挂住。
         (unsafe { WaitForSingleObject(held.event, 0) }) == WAIT_OBJECT_0
     }
+
+    pub fn handle(held: &Held) -> usize {
+        held.event as usize
+    }
+
+    pub fn wait(event: usize) -> bool {
+        let handle = event as HANDLE;
+        if handle.is_null() {
+            return false;
+        }
+        loop {
+            match unsafe { WaitForSingleObject(handle, INFINITE) } {
+                WAIT_OBJECT_0 => return true,
+                // 句柄已经随着旧进程的身份一起没了，线程该收工。
+                WAIT_FAILED | WAIT_ABANDONED => return false,
+                // `INFINITE` 不该超时；真遇上就接着等，别把线程放跑。
+                _ => continue,
+            }
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -131,6 +174,14 @@ mod sys {
     }
 
     pub fn take(_: &Held) -> bool {
+        false
+    }
+
+    pub fn handle(_: &Held) -> usize {
+        0
+    }
+
+    pub fn wait(_: usize) -> bool {
         false
     }
 }

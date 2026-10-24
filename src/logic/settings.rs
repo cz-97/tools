@@ -81,6 +81,10 @@ pub struct Settings {
     ///
     /// 横坐标故意不记：每次启动都按显示器重新居中。
     pub window_y: Option<i32>,
+    /// 面板宽度，逻辑像素。用户拖边框改，收起面板时回写。
+    pub window_width: u32,
+    /// 面板高度，逻辑像素。同样的来路。
+    pub window_height: u32,
     /// 搜索框高度，逻辑像素。
     pub search_height: u32,
     /// 登录启动项在不在。**注册表才是事实**，这里只是镜像一份，好在画设置页时
@@ -142,6 +146,19 @@ impl Settings {
     pub const SEARCH_HEIGHT_STEP: u32 = 4;
     /// 全新安装用的高度：小号输入框再加一点余量。
     pub const SEARCH_HEIGHT_DEFAULT: u32 = 26;
+
+    /// 面板默认宽度（逻辑像素）。
+    pub const WINDOW_WIDTH_DEFAULT: u32 = 720;
+    /// 面板默认高度（逻辑像素）。
+    pub const WINDOW_HEIGHT_DEFAULT: u32 = 464;
+    /// 面板最窄拖到这儿：再窄设置页左边那列和右边内容就叠在一起了。
+    pub const WINDOW_WIDTH_MIN: u32 = 520;
+    /// 面板最矮拖到这儿：页头加一行命令都得看得见。
+    pub const WINDOW_HEIGHT_MIN: u32 = 240;
+    /// 面板宽度上限。只是防手滑，真正拦着的是屏幕。
+    pub const WINDOW_WIDTH_MAX: u32 = 3840;
+    /// 面板高度上限。
+    pub const WINDOW_HEIGHT_MAX: u32 = 2160;
 
     /// 子页面能记多久，界面上按顺序给出这几档。
     pub const RESUME_CHOICES: [u32; 5] = [0, 15, 30, 60, 300];
@@ -273,6 +290,16 @@ impl Settings {
                         }
                     }
                     "window_y" => settings.window_y = value.parse().ok(),
+                    "window_width" => {
+                        if let Ok(width) = value.parse() {
+                            settings.window_width = width;
+                        }
+                    }
+                    "window_height" => {
+                        if let Ok(height) = value.parse() {
+                            settings.window_height = height;
+                        }
+                    }
                     "search_height" => {
                         if let Ok(height) = value.parse() {
                             settings.search_height = height;
@@ -380,6 +407,8 @@ impl Settings {
             if let Some(y) = self.window_y {
                 insert.execute(params!["window_y", y.to_string()])?;
             }
+            insert.execute(params!["window_width", self.window_width.to_string()])?;
+            insert.execute(params!["window_height", self.window_height.to_string()])?;
         }
 
         transaction.execute("DELETE FROM commands", [])?;
@@ -473,6 +502,12 @@ impl Settings {
             Self::CALCULATOR_PRECISION_MIN,
             Self::CALCULATOR_PRECISION_MAX,
         );
+        self.window_width = self
+            .window_width
+            .clamp(Self::WINDOW_WIDTH_MIN, Self::WINDOW_WIDTH_MAX);
+        self.window_height = self
+            .window_height
+            .clamp(Self::WINDOW_HEIGHT_MIN, Self::WINDOW_HEIGHT_MAX);
     }
 }
 
@@ -483,6 +518,8 @@ impl Default for Settings {
             translucent: false,
             panel_opacity: Self::PANEL_OPACITY_DEFAULT,
             window_y: None,
+            window_width: Self::WINDOW_WIDTH_DEFAULT,
+            window_height: Self::WINDOW_HEIGHT_DEFAULT,
             search_height: Self::SEARCH_HEIGHT_DEFAULT,
             launch_at_login: false,
             resume_seconds: 0,
@@ -635,6 +672,33 @@ mod tests {
         let mut settings = Settings::read(&connection).expect("读取").expect("有数据");
         settings.tidy();
         assert_eq!(settings.search_height, Settings::SEARCH_HEIGHT_MAX);
+    }
+
+    #[test]
+    fn a_panel_size_survives_a_round_trip() {
+        let mut settings = Settings::default();
+        settings.window_width = 900;
+        settings.window_height = 640;
+        let connection = database();
+        settings.write(&connection).expect("写入");
+        let read = Settings::read(&connection).expect("读取").expect("有数据");
+        assert_eq!(read.window_width, 900);
+        assert_eq!(read.window_height, 640);
+    }
+
+    #[test]
+    fn an_out_of_range_panel_size_is_pulled_back() {
+        let connection = database();
+        connection
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('window_width', '10'), ('window_height', '99999')",
+                [],
+            )
+            .expect("插入");
+        let mut settings = Settings::read(&connection).expect("读取").expect("有数据");
+        settings.tidy();
+        assert_eq!(settings.window_width, Settings::WINDOW_WIDTH_MIN);
+        assert_eq!(settings.window_height, Settings::WINDOW_HEIGHT_MAX);
     }
 
     #[test]

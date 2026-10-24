@@ -232,6 +232,9 @@ fn list_hint(kind: ListKind) -> &'static str {
     }
 }
 
+/// 页脚那一行的高度（逻辑像素）。正文高度按它扣，所以它必须是定值。
+const FOOTER_HEIGHT: f32 = 34.;
+
 /// 页头要多高才能放下一个 `height` 高的输入框，并且上下留出跟默认一样的余量。
 fn header_height(settings: Settings) -> Pixels {
     let needed = settings.search_height as f32 + HEADER_SLACK;
@@ -354,8 +357,10 @@ impl Render for Launcher {
         };
 
         let footer = h_flex()
+            .flex_shrink_0()
+            .h(px(FOOTER_HEIGHT))
+            .items_center()
             .px_3()
-            .py_2()
             .gap_4()
             .border_t_1()
             .border_color(border)
@@ -366,17 +371,22 @@ impl Render for Launcher {
                 this.child(div().text_color(muted_fg).child(trailing))
             });
 
-        let body = match self.page {
-            Page::Commands => div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .child(List::new(&self.list).px_1().py_1())
-                .into_any_element(),
+        // 正文高度直接算出来，不指望 flex 收缩：`List`（gpui-component 的）内部是
+        // `size_full()`，外层拿不到确定高度时它会按内容高度排版，多出来的部分直接盖住
+        // 页脚——面板能拖小之后这就是「底部提示不见了」的来源。
+        let header_px = header_height(stored_settings(cx));
+        let body_height = px((f32::from(window.viewport_size().height)
+            - f32::from(header_px)
+            - FOOTER_HEIGHT)
+            .max(0.));
+
+        let page = match self.page {
+            Page::Commands => List::new(&self.list).px_1().py_1().into_any_element(),
             Page::Settings(tab) => settings_page::render(self, tab, cx).into_any_element(),
             Page::Calculator => calculator_page::render(self, colors, cx).into_any_element(),
             Page::List(_) => lists::render(&self.entries),
         };
+        let body = div().h(body_height).min_w_0().overflow_hidden().child(page);
 
         // 面板自己的圆角必须和系统裁剪的圆角一模一样（8 物理像素，不随 DPI 缩放），
         // 否则面板的圆角和窗口的圆角会差出一个小小的缺口。

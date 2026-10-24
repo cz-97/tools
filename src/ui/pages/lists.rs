@@ -544,6 +544,9 @@ impl ListDelegate for EntryDelegate {
 pub(crate) fn render(entries: &gpui_kit::Entity<ListState<EntryDelegate>>) -> AnyElement {
     div()
         .flex_1()
+        // `min_h_0` 是必须的：flex 项目的默认最小高度是内容高度，不加这一条，
+        // 行多了会把底下的页脚顶出窗口，而不是自己滚。
+        .min_h_0()
         .min_w_0()
         .overflow_hidden()
         // 点击由行自己处理（要分单击和双击）；`ListState` 建的时候就把 selectable 关了。

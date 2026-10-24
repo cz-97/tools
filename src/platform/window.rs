@@ -107,10 +107,23 @@ impl NativeWindow {
 
     /// 去掉原生标题栏和边框，或者恢复它们。
     ///
-    /// 去掉之后用户没有可拖动的标题栏，也没有可拉伸的边框，窗口就变成一块固定面板。
+    /// 去掉之后用户没有可拖动的标题栏，窗口就变成一块固定面板。
     /// 宿主需要自己摆放它（见 [`Self::apply_panel_chrome`]），并自己给出关闭的方式。
+    ///
+    /// **拉伸边框留着**：`WS_THICKFRAME` 被摘掉之后系统就不再认窗口边缘的拖拽了，
+    /// 面板也就没法调大小。它带来的那圈非客户区由 [`Self::install_panel_proc`] 吃掉，
+    /// 客户区仍然铺满整扇窗，看上去还是一条边框都没有。
     pub fn set_borderless(self, borderless: bool) -> bool {
         sys::set_borderless(self.handle, borderless)
+    }
+
+    /// 接管窗口过程，让客户区铺满整扇窗。
+    ///
+    /// 只有带着 `WS_THICKFRAME` 的无边框窗口才需要它：系统会按拉伸边框给左右和底边
+    /// 各留一圈非客户区，那圈没人画（非客户区绘制已关），看上去就是一圈透明缝。
+    /// 重复调用只挂一次。
+    pub fn install_panel_proc(self) -> bool {
+        sys::install_panel_proc(self.handle)
     }
 
     /// 调整尺寸，让客户区是 `width` x `height` 个逻辑单位。
@@ -156,10 +169,13 @@ impl NativeWindow {
     /// 返回每一步是不是都成了；只成一部分的面板照样能用，所以调用方可以记一笔日志
     /// 继续往下走。
     pub fn apply_panel_chrome(self, width: f32, height: f32) -> bool {
+        // 先挂窗口过程再动样式：加 `WS_THICKFRAME` 会立刻触发一次 `WM_NCCALCSIZE`，
+        // 那一次就得由我们来回答，否则客户区先被扣掉一圈再也不会重算。
+        let proc = self.install_panel_proc();
         let borderless = self.set_borderless(true);
         let sized = self.set_client_size(width, height);
         let centered = self.center_on_monitor();
-        borderless && sized && centered
+        borderless && proc && sized && centered
     }
 }
 
@@ -168,7 +184,8 @@ mod sys {
     use super::WindowHandle;
     use std::mem::size_of;
     use std::ptr;
-    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Dwm::{
         DWMNCRP_DISABLED, DWMNCRP_USEWINDOWSTYLE, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT,
         DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -179,13 +196,14 @@ mod sys {
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, GWL_STYLE, GetClientRect, GetForegroundWindow, GetSystemMetrics,
         GetWindowLongPtrW, GetWindowRect, ICON_BIG, ICON_SMALL, IMAGE_ICON, IsWindow,
         IsWindowVisible, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXSMICON, SW_HIDE, SW_SHOW,
         SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW,
-        SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_SETICON, WS_CAPTION,
-        WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+        SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_NCCALCSIZE,
+        WM_SETICON, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
 
     /// 构成原生标题栏、它那几个按钮和可拉伸边框的样式位。全清掉就只剩客户区。
@@ -315,8 +333,10 @@ mod sys {
         }
         let window = hwnd(handle);
         let current = unsafe { GetWindowLongPtrW(window, GWL_STYLE) } as u32;
+        // 无边框也要留 `WS_THICKFRAME`：系统只认这个样式决定「窗口边缘能不能拖」。
+        // 它的那圈非客户区由窗口过程吃掉（见 `install_panel_proc`）。
         let wanted = if borderless {
-            current & !CHROME_STYLES
+            (current & !CHROME_STYLES) | WS_THICKFRAME
         } else {
             current | CHROME_STYLES
         };
@@ -370,11 +390,49 @@ mod sys {
         resized != 0
     }
 
+    /// 面板窗口过程在子类链里的 id；只要不是 0 就不会和别家撞。
+    const PANEL_SUBCLASS_ID: usize = 0x6770_746f;
+    /// 面板只有一个窗口，挂过就不必再挂。
+    static PANEL_PROC_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+    pub fn install_panel_proc(handle: WindowHandle) -> bool {
+        if !is_open(handle) {
+            return false;
+        }
+        if PANEL_PROC_INSTALLED.load(Ordering::Relaxed) {
+            return true;
+        }
+        let installed =
+            unsafe { SetWindowSubclass(hwnd(handle), Some(panel_proc), PANEL_SUBCLASS_ID, 0) };
+        if installed == 0 {
+            return false;
+        }
+        PANEL_PROC_INSTALLED.store(true, Ordering::Relaxed);
+        true
+    }
+
+    /// 子类过程：只回一条消息，其余原样转给链上的下一个过程（也就是 GPUI 的窗口过程）。
+    unsafe extern "system" fn panel_proc(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        // 客户区铺满整扇窗。带着 `WS_THICKFRAME` 时系统会在左右和底边各扣一圈非客户区，
+        // 而那圈没人画（非客户区绘制已关），看上去就是一圈透明缝。
+        // `wparam == 0` 是「只问客户区大小」，不该改结构，交给下一个过程。
+        if message == WM_NCCALCSIZE && wparam != 0 {
+            return 0;
+        }
+        unsafe { DefSubclassProc(window, message, wparam, lparam) }
+    }
+
     pub fn set_client_size(handle: WindowHandle, width: f32, height: f32) -> bool {
         if !is_open(handle) || width <= 0.0 || height <= 0.0 {
             return false;
         }
-
         let scale = scale_factor(handle);
         let target_width = (width * scale).round() as i32;
         let target_height = (height * scale).round() as i32;
@@ -539,6 +597,10 @@ mod sys {
         false
     }
 
+    pub fn install_panel_proc(_handle: WindowHandle) -> bool {
+        false
+    }
+
     pub fn set_client_size(_handle: WindowHandle, _width: f32, _height: f32) -> bool {
         false
     }
@@ -590,6 +652,7 @@ mod tests {
         assert!(!window.focus());
         assert!(!window.is_foreground());
         assert!(!window.set_borderless(true));
+        assert!(!window.install_panel_proc());
         assert!(!window.set_client_size(640.0, 480.0));
         assert!(!window.center_on_monitor());
         assert!(!window.center_x_at(240));
