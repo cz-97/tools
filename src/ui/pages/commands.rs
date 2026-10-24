@@ -180,7 +180,6 @@ fn command_row(
         .px_2()
         .py_2()
         .rounded(px(6.))
-        .bg(colors.surface)
         .child(
             div()
                 .flex_shrink_0()

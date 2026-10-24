@@ -624,7 +624,6 @@ pub(crate) fn action_row(
         h_flex()
             .id(id)
             .gap_1()
-            .px_2()
             .py_1()
             .rounded(px(6.))
             .cursor_pointer()
