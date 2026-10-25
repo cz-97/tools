@@ -8,9 +8,9 @@ use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Entity, IntoElement, MouseDownEvent, Pixels,
     SharedString, Window, div, prelude::*, px,
 };
-use gpui_tools::firefox;
-use gpui_tools::matcher::MatchKind;
-use gpui_tools::settings::{Settings, Theme as ColorScheme};
+use tools::firefox;
+use tools::matcher::MatchKind;
+use tools::settings::{Settings, Theme as ColorScheme};
 
 use crate::actions;
 use crate::app::stored_settings;

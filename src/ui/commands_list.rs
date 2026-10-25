@@ -9,8 +9,8 @@ use gpui_kit::{
     AnyElement, App, Context, FontWeight, IntoElement, RenderOnce, SharedString, Task, WeakEntity,
     Window, div, prelude::*, px,
 };
-use gpui_tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
-use gpui_tools::settings::Settings;
+use tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
+use tools::settings::Settings;
 
 use crate::app::run_command;
 use crate::catalogue;
@@ -402,7 +402,7 @@ impl ToolDelegate {
 
     /// 按当前搜索词和开关重算命中的指令匹配。
     fn recompute_matches(&mut self) {
-        self.matches = gpui_tools::matcher::matches(&self.query, &self.config);
+        self.matches = tools::matcher::matches(&self.query, &self.config);
     }
 
     /// 用户留在主页、且搜索词能对上的所有命令。
@@ -599,7 +599,7 @@ impl ListDelegate for ToolDelegate {
 #[cfg(test)]
 mod tests {
     use super::{CommandState, CommandStates, ToolDelegate};
-    use gpui_tools::matcher::MatchConfig;
+    use tools::matcher::MatchConfig;
 
     #[test]
     fn homepage_orders_by_uses_then_section_and_id() {

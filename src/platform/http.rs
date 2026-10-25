@@ -59,7 +59,7 @@ mod sys {
     }
 
     pub fn get(url: &str, headers: &[(&str, String)]) -> Result<Response, String> {
-        let agent = wide("gpui-tools");
+        let agent = wide("tools");
         // SAFETY: 每个句柄都判了空，交给 `Handle` 关闭；缓冲区都是本栈上的。
         unsafe {
             let session = Handle(InternetOpenW(

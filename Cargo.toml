@@ -1,8 +1,9 @@
 [package]
-name = "gpui-tools"
+name = "tools"
 version = "0.20.4"
 edition = "2024"
-default-run = "gpui-tools"
+default-run = "tools"
+repository = "https://github.com/cz-97/tools"
 
 [dependencies]
 gpui-kit = "0.7.3"

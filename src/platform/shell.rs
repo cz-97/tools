@@ -20,7 +20,7 @@ pub fn open(target: impl AsRef<OsStr>) {
         sys::prepare();
         if !sys::open(&target) {
             eprintln!(
-                "gpui-tools: could not open {}",
+                "tools: could not open {}",
                 std::path::Path::new(&target).display()
             );
         }

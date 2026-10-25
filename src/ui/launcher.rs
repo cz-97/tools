@@ -9,14 +9,14 @@ use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::{
     App, ClipboardItem, Context, Entity, Focusable, Subscription, Task, Window, prelude::*,
 };
-use gpui_tools::autostart;
-use gpui_tools::cache;
-use gpui_tools::calculator;
-use gpui_tools::firefox;
-use gpui_tools::github;
-use gpui_tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
-use gpui_tools::settings::Settings;
-use gpui_tools::shell;
+use tools::autostart;
+use tools::cache;
+use tools::calculator;
+use tools::firefox;
+use tools::github;
+use tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
+use tools::settings::Settings;
+use tools::shell;
 
 use crate::app::{
     LauncherPanel, apply_theme, hide_launcher, run_command, store_settings, stored_settings,
@@ -29,7 +29,7 @@ use crate::shortcuts::{
 use crate::strings;
 use crate::ui::commands_list::{ToolDelegate, command_states};
 use crate::ui::lists::{Entry, EntryDelegate, favicon_image};
-use gpui_tools::settings::Theme as ColorScheme;
+use tools::settings::Theme as ColorScheme;
 
 // 绘制拆到 `view.rs`：页头、页脚与整页骨架在那里，这里只管状态和行为。
 mod view;
@@ -1477,7 +1477,7 @@ impl Launcher {
     pub(crate) fn set_launch_at_login(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if !autostart::set_enabled(enabled) {
             // 开关是受控值，写失败它就停在原处：如实报告，别装作改成了。
-            eprintln!("gpui-tools: 开机启动项没能更新");
+            eprintln!("tools: 开机启动项没能更新");
             cx.notify();
             return;
         }
@@ -1639,7 +1639,7 @@ impl Launcher {
                 settings.set_summon_shortcut(chord);
                 store_settings(settings, cx);
                 if !apply_summon_shortcut(cx) {
-                    eprintln!("gpui-tools: 唤出热键这次没能绑定，要等下次启动再试");
+                    eprintln!("tools: 唤出热键这次没能绑定，要等下次启动再试");
                 }
             }
             RecordTarget::Command(command) => {

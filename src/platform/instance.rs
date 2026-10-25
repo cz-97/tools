@@ -10,9 +10,9 @@
 //! 名字带 `Local\` 前缀：只在当前登录会话里唯一，换个用户 / 会话各跑各的。
 
 /// 「把面板亮出来」这个请求的名字。
-const WAKE_NAME: &str = r"Local\gpui-tools.wake";
+const WAKE_NAME: &str = r"Local\tools.wake";
 /// 单例身份的名字。
-const MUTEX_NAME: &str = r"Local\gpui-tools.singleton";
+const MUTEX_NAME: &str = r"Local\tools.singleton";
 
 /// 拿到手的单例身份。活着就代表「我是唯一的那个」；丢弃（或进程退出）就放开。
 pub struct Instance {

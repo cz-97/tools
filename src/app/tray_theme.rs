@@ -1,6 +1,6 @@
 //! Best-effort Windows native menu appearance matching the in-app theme.
 
-use gpui_tools::settings::Theme;
+use tools::settings::Theme;
 
 /// Set Windows' preferred app-menu appearance when the OS exposes the API.
 /// Older Windows builds keep their native system menu appearance.

@@ -65,7 +65,7 @@ pub fn install(cx: &mut App) {
     let manager = match GlobalHotKeyManager::new() {
         Ok(manager) => manager,
         Err(error) => {
-            eprintln!("gpui-tools: 无法初始化全局热键管理器：{error}");
+            eprintln!("tools: 无法初始化全局热键管理器：{error}");
             return;
         }
     };
@@ -89,7 +89,7 @@ pub fn install(cx: &mut App) {
                     return;
                 }
             }
-            eprintln!("gpui-tools: 唤出热键注册失败，可能被别的程序占用了");
+            eprintln!("tools: 唤出热键注册失败，可能被别的程序占用了");
         })
         .detach();
     }
@@ -209,13 +209,13 @@ pub fn apply_summon_shortcut(cx: &mut App) -> bool {
     if let Some((_, hotkey)) = summon.take()
         && let Err(error) = shortcuts.manager.unregister(hotkey)
     {
-        eprintln!("gpui-tools: 释放旧唤出热键失败：{error}");
+        eprintln!("tools: 释放旧唤出热键失败：{error}");
     }
     let Some(chord) = wanted else {
         return true;
     };
     let Some(hotkey) = parse_chord(&chord) else {
-        eprintln!("gpui-tools: 认不出唤出热键 {chord}");
+        eprintln!("tools: 认不出唤出热键 {chord}");
         return false;
     };
     match shortcuts.manager.register(hotkey) {
@@ -224,7 +224,7 @@ pub fn apply_summon_shortcut(cx: &mut App) -> bool {
             true
         }
         Err(error) => {
-            eprintln!("gpui-tools: 唤出热键 {chord} 注册失败：{error}");
+            eprintln!("tools: 唤出热键 {chord} 注册失败：{error}");
             false
         }
     }
@@ -243,7 +243,7 @@ pub fn apply_command_shortcuts(cx: &mut App) {
             match parse_chord(chord) {
                 Some(hotkey) => Some((command, hotkey)),
                 None => {
-                    eprintln!("gpui-tools: 认不出快捷键 {chord}");
+                    eprintln!("tools: 认不出快捷键 {chord}");
                     None
                 }
             }
@@ -256,14 +256,14 @@ pub fn apply_command_shortcuts(cx: &mut App) {
     let mut held = shortcuts.commands.borrow_mut();
     for (hotkey, _) in held.drain(..) {
         if let Err(error) = shortcuts.manager.unregister(hotkey) {
-            eprintln!("gpui-tools: 释放旧快捷键失败：{error}");
+            eprintln!("tools: 释放旧快捷键失败：{error}");
         }
     }
     for (command, hotkey) in wanted {
         match shortcuts.manager.register(hotkey) {
             Ok(()) => held.push((hotkey, command)),
             Err(error) => eprintln!(
-                "gpui-tools: 绑定 {}/{} 的快捷键失败：{error}",
+                "tools: 绑定 {}/{} 的快捷键失败：{error}",
                 command.section.key(),
                 command.id
             ),

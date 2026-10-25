@@ -14,12 +14,12 @@ use gpui_kit::{
     Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
     WindowOptions, actions, prelude::*, px, size,
 };
-use gpui_tools::autostart;
-use gpui_tools::instance;
-use gpui_tools::logo;
-use gpui_tools::settings::{Settings, Theme as ColorScheme};
-use gpui_tools::vsync;
-use gpui_tools::window::NativeWindow;
+use tools::autostart;
+use tools::instance;
+use tools::logo;
+use tools::settings::{Settings, Theme as ColorScheme};
+use tools::vsync;
+use tools::window::NativeWindow;
 use gpui_tray::{Icon as TrayIcon, Tray};
 
 use crate::shortcuts;
@@ -27,7 +27,7 @@ use crate::strings;
 use crate::ui::launcher::Launcher;
 
 /// 面板窗口的标题，同时也是找窗口句柄用的键。
-pub const WINDOW_TITLE: &str = "GPUI Tools Launcher";
+pub const WINDOW_TITLE: &str = "Tools Launcher";
 /// `build.rs` 嵌进 exe 的图标资源 id，窗口和外壳都用它。
 const APP_ICON_ID: u16 = 1;
 /// 托盘图标的边长，单位像素。
@@ -38,7 +38,7 @@ const VIEWPORT_SETTLE: std::time::Duration = std::time::Duration::from_millis(20
 const RENDER_SUSPEND_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 actions!(
-    gpui_tools,
+    tools,
     [
         ShowLauncher,
         OpenSettings,
@@ -126,25 +126,25 @@ pub fn launch() {
             match NativeWindow::find(WINDOW_TITLE) {
                 Some(window) => {
                     if !window.apply_panel_chrome(panel_width, panel_height) {
-                        eprintln!("gpui-tools: 无边框外壳没有完全生效");
+                        eprintln!("tools: 无边框外壳没有完全生效");
                     }
                     // Windows 11 的默认圆角：就是系统设置里「圆角」那一档的半径。
                     if !window.round_corners() {
-                        // eprintln!("gpui-tools: 系统没采用默认圆角，窗口保持方角");
+                        // eprintln!("tools: 系统没采用默认圆角，窗口保持方角");
                     }
                     // 任务栏和 Alt-Tab 的图标取自窗口，GPUI 不管，得自己挂资源。
                     if !window.set_icon(APP_ICON_ID) {
-                        eprintln!("gpui-tools: 窗口图标挂载失败");
+                        eprintln!("tools: 窗口图标挂载失败");
                     }
                     // 横坐标故意用居中算出来的结果，只恢复记住的顶边。
                     if let Some(y) = settings.window_y
                         && !window.center_x_at(y)
                     {
-                        eprintln!("gpui-tools: 面板位置恢复失败");
+                        eprintln!("tools: 面板位置恢复失败");
                     }
                     cx.set_global(LauncherPanel { window });
                 }
-                None => eprintln!("gpui-tools: 创建后找不到面板窗口，保留系统边框"),
+                None => eprintln!("tools: 创建后找不到面板窗口，保留系统边框"),
             }
 
             // 上面改样式、发 SWP_FRAMECHANGED 会重启一次 DWM 边框计算，把创建时设好的
@@ -197,7 +197,7 @@ fn settle_viewport(cx: &mut App) {
             };
             // 不能悄悄失败：视口没同步的表现是「界面右下角缺一块」。
             if let Err(error) = handle.update(cx, |_, window, cx| window.bounds_changed(cx)) {
-                eprintln!("gpui-tools: 视口尺寸没能同步：{error:?}");
+                eprintln!("tools: 视口尺寸没能同步：{error:?}");
             }
         });
     })
@@ -289,7 +289,7 @@ pub(crate) fn apply_panel_appearance(cx: &mut App) {
         if let Err(error) = window.update(cx, |_, window, _| {
             window.set_background_appearance(panel_appearance(translucent))
         }) {
-            eprintln!("gpui-tools: 拿不到面板窗口，背景外观没有更新：{error:?}");
+            eprintln!("tools: 拿不到面板窗口，背景外观没有更新：{error:?}");
         }
     });
 }
@@ -485,10 +485,10 @@ pub fn with_launcher(
             if let Err(error) = view.update(cx, move |launcher, launcher_cx| {
                 action(launcher, window, launcher_cx);
             }) {
-                eprintln!("gpui-tools: 面板视图已不存在：{error:?}");
+                eprintln!("tools: 面板视图已不存在：{error:?}");
             }
         }) {
-            eprintln!("gpui-tools: 拿不到面板窗口：{error:?}");
+            eprintln!("tools: 拿不到面板窗口：{error:?}");
         }
     });
 }
@@ -498,7 +498,7 @@ pub fn show_launcher(cx: &mut App) {
     // 挂机时 GPUI 的渲染线程是被挂起的（见 `platform::vsync`），**必须**先放它出来，
     // 否则面板亮起来是黑的一块。
     if !vsync::resume() {
-        eprintln!("gpui-tools: 渲染线程没能恢复，面板可能不刷新");
+        eprintln!("tools: 渲染线程没能恢复，面板可能不刷新");
     }
     with_launcher(cx, |launcher, window, cx| launcher.reset(window, cx));
     if let Some(panel) = cx.try_global::<LauncherPanel>() {
@@ -539,7 +539,7 @@ fn schedule_render_suspend(cx: &mut App) {
                 return;
             }
             if !vsync::suspend() {
-                eprintln!("gpui-tools: 没找到 GPUI 的渲染线程，挂机时省不下那点 CPU");
+                eprintln!("tools: 没找到 GPUI 的渲染线程，挂机时省不下那点 CPU");
             }
         });
     })
@@ -569,7 +569,7 @@ pub fn stored_settings(cx: &App) -> Settings {
 /// 写进内存，同时落盘。
 pub fn store_settings(settings: Settings, cx: &mut App) {
     if !settings.save() {
-        eprintln!("gpui-tools: 设置没能写进数据库");
+        eprintln!("tools: 设置没能写进数据库");
     }
     cx.set_global(SettingsStore(settings));
 }
@@ -628,7 +628,7 @@ fn build_tray(cx: &mut App) {
         .build(cx)
     {
         Ok(tray) => cx.set_global(TrayRegistration { tray }),
-        Err(error) => eprintln!("gpui-tools: 托盘创建失败：{error}"),
+        Err(error) => eprintln!("tools: 托盘创建失败：{error}"),
     }
 }
 
@@ -639,7 +639,7 @@ fn refresh_tray_icon(cx: &mut App) {
         return;
     };
     if let Err(error) = tray.set_icon(Some(icon), cx) {
-        eprintln!("gpui-tools: 托盘图标更新失败：{error}");
+        eprintln!("tools: 托盘图标更新失败：{error}");
     }
 }
 
@@ -681,7 +681,7 @@ pub(crate) fn apply_root_background(cx: &mut App) {
                     .refine(&StyleRefinement::default().bg(backdrop));
             })
         }) {
-            eprintln!("gpui-tools: 拿不到面板窗口，Root 底色没有更新：{error:?}");
+            eprintln!("tools: 拿不到面板窗口，Root 底色没有更新：{error:?}");
         }
     });
 }
@@ -694,7 +694,7 @@ fn refresh_tray_menu(cx: &mut App) {
         return;
     };
     if let Err(error) = tray.refresh_menu(cx) {
-        eprintln!("gpui-tools: 托盘菜单主题更新失败：{error}");
+        eprintln!("tools: 托盘菜单主题更新失败：{error}");
     }
 }
 

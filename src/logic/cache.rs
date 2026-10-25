@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-/// 缓存文件放哪儿：`%APPDATA%\gpui-tools\cache`。
+/// 缓存文件放哪儿：`%APPDATA%\tools\cache`。
 fn directory() -> Option<PathBuf> {
     Some(super::settings::Settings::directory()?.join("cache"))
 }

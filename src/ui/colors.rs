@@ -16,7 +16,7 @@
 
 use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::{App, Hsla, Rgba, rgba};
-use gpui_tools::settings::Settings;
+use tools::settings::Settings;
 
 // ---------------------------------------------------------------------------
 // 1. 基础色：要换观感，改这一段

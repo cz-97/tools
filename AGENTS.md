@@ -29,7 +29,7 @@ Rust + GPUI 的 Windows 启动器，个人自用。这份文档是唯一的项�
 ## 3. 源码结构
 
 `lib` 放宿主侧服务（纯逻辑 + 平台细节），`bin` 放面板与界面。`lib.rs` / `main.rs` 用
-`pub use` 把子目录里的模块重新导出到顶层，所以旧的 `gpui_tools::settings`、
+`pub use` 把子目录里的模块重新导出到顶层，所以旧的 `tools::settings`、
 `crate::catalogue` 这类路径仍然有效——挪文件不必改调用点。
 
 ```text
@@ -199,7 +199,7 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   `List` 的 `confirm` 分不出单击双击）。**单击** = 选中 + 复制链接，**双击** = 打开。
 - 行是 `Entry`：标题 / 描述 / 右侧元信息 / 打开目标 / 站点图标。目标一律交给
   `shell::open`，**不要**在 UI 回调里直接 `ShellExecuteW`。
-- 缓存：`%APPDATA%\gpui-tools\cache\github-{projects|stars}-{user}.json`。进页面只读它，
+- 缓存：`%APPDATA%\tools\cache\github-{projects|stars}-{user}.json`。进页面只读它，
   有就摆出来、没有就留一句提示；要新的只有右上角那枚按钮。
 - 阻塞的读库和联网都走 `cx.background_executor().spawn`（网络用 `platform/http.rs` 的
   WinINet，不用 GPUI 的 `cx.http_client()`：桌面端那是空实现）；两者都装在
@@ -336,7 +336,7 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 
 ## 8. 设置持久化（`logic/settings.rs`）
 
-SQLite：`%APPDATA%\gpui-tools\gpui-tools.db`，`rusqlite` 的 `bundled`。两张表，整份一次
+SQLite：`%APPDATA%\tools\tools.db`，`rusqlite` 的 `bundled`。两张表，整份一次
 事务读、一次写：
 
 ```sql
@@ -351,7 +351,7 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
   明确不绑）、`calculator_precision`、`matcher_calculator` / `matcher_amount` /
   `matcher_url` / `matcher_path`、`firefox_profile`（缺这一行 = 自动探测 profile）、
   `github_user`、`github_token`。
-- 网络结果不进这张库：它们存在 `%APPDATA%\gpui-tools\cache\<键>.json`（见 `logic/cache.rs`），
+- 网络结果不进这张库：它们存在 `%APPDATA%\tools\cache\<键>.json`（见 `logic/cache.rs`），
   丢了从网上再抓一次就有。
 - `commands` 主键 `(section, id)`；只有用户改过的命令才有行。
 - 读不出来就退回默认并写 stderr，绝不让程序起不来。
@@ -362,7 +362,7 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
 ## 9. 外部程序调用
 
 - 调外部程序一律用参数数组（`Command::new(..).arg(..)`），不拼 Shell 命令。
-- **打开文件夹 / 链接一律 `gpui_tools::shell::open`**（`ShellExecuteW`，verb `open`）：
+- **打开文件夹 / 链接一律 `tools::shell::open`**（`ShellExecuteW`，verb `open`）：
   由 shell 解析关联。不要写死 `explorer.exe`、`cmd /c start`、`cx.open_url`。
 - `shell::open` 在**自己的线程**里跑（先 `CoInitializeEx` 成 STA）：`ShellExecuteW` 会起
   shell 消息泵，泵在 GPUI 持有 App 借用时回调面板会 `RefCell already borrowed` → abort。
@@ -419,9 +419,9 @@ cargo build          # debug
 ```
 
 - **不做 release 构建**；要看效果用 `cargo run`（debug，保留控制台）。
-- 验证前先杀掉正在跑的 `gpui-tools` 进程，再 `cargo run`，免得旧实例占着单例/热键。
+- 验证前先杀掉正在跑的 `tools` 进程，再 `cargo run`，免得旧实例占着单例/热键。
 - `cargo test` 里 `ui::colors::tests::text_stays_readable_on_a_white/black_wallpaper` 是
   正在调的对比度实验，可能失败，别当回归；`the_slider_never_thins...` 与
   `a_veil_lifts...` 必须过。
 - 若一次中断的构建让 `cargo build` 报 `STATUS_ACCESS_VIOLATION`，是增量缓存坏了：
-  `CARGO_INCREMENTAL=0 cargo build` 跑一次，或 `cargo clean -p gpui-tools` 后重来。
+  `CARGO_INCREMENTAL=0 cargo build` 跑一次，或 `cargo clean -p tools` 后重来。

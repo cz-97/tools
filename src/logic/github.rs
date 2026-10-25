@@ -131,7 +131,7 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
     let mut headers = vec![
         ("Accept", "application/vnd.github+json".to_string()),
         ("X-GitHub-Api-Version", "2022-11-28".to_string()),
-        ("User-Agent", "gpui-tools".to_string()),
+        ("User-Agent", "tools".to_string()),
     ];
     if !token.trim().is_empty() {
         headers.push(("Authorization", format!("Bearer {}", token.trim())));
@@ -217,15 +217,15 @@ mod tests {
     #[test]
     fn a_repo_keeps_only_what_the_list_shows() {
         let repo = repo_from_json(&json!({
-            "full_name": "cz-97/gpui-tools",
+            "full_name": "cz-97/tools",
             "description": null,
-            "html_url": "https://github.com/cz-97/gpui-tools",
+            "html_url": "https://github.com/cz-97/tools",
             "language": "Rust",
             "stargazers_count": 12,
             "owner": { "login": "cz-97" }
         }))
         .expect("有仓库");
-        assert_eq!(repo.full_name, "cz-97/gpui-tools");
+        assert_eq!(repo.full_name, "cz-97/tools");
         assert_eq!(repo.description, "");
         assert_eq!(repo.language, "Rust");
         assert_eq!(repo.stars, 12);
@@ -234,9 +234,9 @@ mod tests {
     #[test]
     fn a_cache_round_trip_keeps_every_repo() {
         let repos = vec![Repo {
-            full_name: "cz-97/gpui-tools".into(),
+            full_name: "cz-97/tools".into(),
             description: "启动器".into(),
-            url: "https://github.com/cz-97/gpui-tools".into(),
+            url: "https://github.com/cz-97/tools".into(),
             language: "Rust".into(),
             stars: 1,
         }];
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_query_is_percent_encoded() {
-        assert_eq!(encode("cz-97/gpui-tools"), "cz-97%2Fgpui-tools");
+        assert_eq!(encode("cz-97/tools"), "cz-97%2Ftools");
         assert_eq!(encode("中文"), "%E4%B8%AD%E6%96%87");
         assert_eq!(encode("a b"), "a%20b");
     }

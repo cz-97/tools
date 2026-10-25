@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn unknown_title_is_not_found() {
-        assert!(NativeWindow::find("gpui-tools no-such-window").is_none());
+        assert!(NativeWindow::find("tools no-such-window").is_none());
     }
 
     #[test]

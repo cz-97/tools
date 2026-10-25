@@ -10,7 +10,7 @@ use gpui_kit::{
     AnyElement, Context, Font, FontWeight, IntoElement, Pixels, Render, TextRun, Window,
     WindowControlArea, div, prelude::*, px,
 };
-use gpui_tools::settings::Settings;
+use tools::settings::Settings;
 
 use crate::app::stored_settings;
 use crate::strings;

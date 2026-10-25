@@ -420,7 +420,7 @@ fn with_places<T>(
     }
 
     // 只读打不开（WAL 的 `-shm` 没了、或者库正被独占）：复制一份再读。
-    let copy = std::env::temp_dir().join(format!("gpui-tools-places-{}", std::process::id()));
+    let copy = std::env::temp_dir().join(format!("tools-places-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&copy);
     std::fs::create_dir_all(&copy).map_err(|error| format!("建临时目录失败：{error}"))?;
     for name in [

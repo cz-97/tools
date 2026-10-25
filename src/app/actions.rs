@@ -6,13 +6,13 @@
 use std::path::PathBuf;
 
 use gpui_kit::App;
-use gpui_tools::settings::Settings;
-use gpui_tools::shell;
+use tools::settings::Settings;
+use tools::shell;
 
 use crate::app::{release_singleton, remember_window_position};
 
 /// 项目主页。
-pub const REPOSITORY_URL: &str = "https://github.com/cz-97/gpui-tools";
+pub const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// 启动器自己所在的目录。
 pub fn program_dir() -> PathBuf {
@@ -60,11 +60,11 @@ pub fn open_github_search(cx: &mut App) {
 /// 打开存设置的那个文件夹。
 pub fn open_settings_folder(_cx: &mut App) {
     let Some(dir) = Settings::directory() else {
-        eprintln!("gpui-tools: 找不到配置目录");
+        eprintln!("tools: 找不到配置目录");
         return;
     };
     if !dir.is_dir() {
-        eprintln!("gpui-tools: {} 还没被创建", dir.display());
+        eprintln!("tools: {} 还没被创建", dir.display());
         return;
     }
     open_folder(&dir);
@@ -88,10 +88,10 @@ pub fn restart_launcher(cx: &mut App) {
     match std::env::current_exe() {
         Ok(exe) => {
             if let Err(error) = std::process::Command::new(exe).spawn() {
-                eprintln!("gpui-tools: 重启失败：{error}");
+                eprintln!("tools: 重启失败：{error}");
             }
         }
-        Err(error) => eprintln!("gpui-tools: 找不到自身路径，无法重启：{error}"),
+        Err(error) => eprintln!("tools: 找不到自身路径，无法重启：{error}"),
     }
     cx.quit();
 }

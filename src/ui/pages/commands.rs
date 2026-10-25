@@ -6,7 +6,7 @@ use gpui_kit::{
     App, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, SharedString, Window, div,
     prelude::*, px,
 };
-use gpui_tools::settings::CommandSettings;
+use tools::settings::CommandSettings;
 
 use crate::app::stored_settings;
 use crate::catalogue;

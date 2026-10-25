@@ -1,6 +1,6 @@
 //! 跨次运行记下来的设置。
 //!
-//! 存在 SQLite 数据库 `%APPDATA%\gpui-tools\gpui-tools.db` 里：一张 `settings` 表放
+//! 存在 SQLite 数据库 `%APPDATA%\tools\tools.db` 里：一张 `settings` 表放
 //! 键值对，一张 `commands` 表放每条命令的开关、次数和快捷键。
 //!
 //! 命令由「子模块 + id」定位，这两列也是那一行的主键：两个子模块可以各有一条叫 `quit`
@@ -206,7 +206,7 @@ impl Settings {
             }
             Ok(None) => Self::default(),
             Err(error) => {
-                eprintln!("gpui-tools: 设置读不出来（{error}），改用默认值");
+                eprintln!("tools: 设置读不出来（{error}），改用默认值");
                 Self::default()
             }
         }
@@ -220,7 +220,7 @@ impl Settings {
         match self.write(&connection) {
             Ok(()) => true,
             Err(error) => {
-                eprintln!("gpui-tools: 设置没能写进数据库（{error}）");
+                eprintln!("tools: 设置没能写进数据库（{error}）");
                 false
             }
         }
@@ -228,7 +228,7 @@ impl Settings {
 
     /// 数据库文件的位置，在用户配置目录下。
     fn path() -> Option<PathBuf> {
-        Some(Self::directory()?.join("gpui-tools.db"))
+        Some(Self::directory()?.join("tools.db"))
     }
 
     /// 设置所在的文件夹，供界面指给用户看。
@@ -236,7 +236,7 @@ impl Settings {
     /// 这个函数不负责建目录：什么都没配过的时候这里也没东西可看，由调用方决定怎么办。
     pub fn directory() -> Option<PathBuf> {
         let profile = std::env::var_os("APPDATA")?;
-        Some(PathBuf::from(profile).join("gpui-tools"))
+        Some(PathBuf::from(profile).join("tools"))
     }
 
     /// 打开数据库，第一次用就把表建好。
@@ -250,14 +250,14 @@ impl Settings {
         let connection = match Connection::open(&path) {
             Ok(connection) => connection,
             Err(error) => {
-                eprintln!("gpui-tools: 打不开 {}（{error}）", path.display());
+                eprintln!("tools: 打不开 {}（{error}）", path.display());
                 return None;
             }
         };
         match connection.execute_batch(SCHEMA) {
             Ok(()) => Some(connection),
             Err(error) => {
-                eprintln!("gpui-tools: 建表失败（{error}）");
+                eprintln!("tools: 建表失败（{error}）");
                 None
             }
         }

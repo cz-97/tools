@@ -19,8 +19,8 @@ use gpui_kit::{
     AnyElement, ClickEvent, Context, FontWeight, Image, IntoElement, ObjectFit, RenderOnce,
     SharedString, Task, WeakEntity, Window, div, img, prelude::*, px,
 };
-use gpui_tools::firefox::{Favicon, IconKind};
-use gpui_tools::shell;
+use tools::firefox::{Favicon, IconKind};
+use tools::shell;
 
 use crate::strings;
 use crate::ui::colors::UiColors;

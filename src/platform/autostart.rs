@@ -7,7 +7,7 @@
 //! 别的平台上每个调用都是「失败的空操作」，调用方因此不必关心平台差异。
 
 /// 启动项的名字，也是用户在任务管理器里看到的那一行。
-const ENTRY_NAME: &str = "GPUI Tools";
+const ENTRY_NAME: &str = "Tools";
 
 /// 有没有一项在登录时启动这个可执行文件。
 pub fn enabled() -> bool {

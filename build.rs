@@ -17,7 +17,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR 一定存在"));
-    let icon = out_dir.join("gpui-tools.ico");
+    let icon = out_dir.join("tools.ico");
     if let Err(error) = std::fs::write(&icon, logo::ico()) {
         println!("cargo:warning=写不出生成的图标：{error}");
         return;
@@ -30,13 +30,13 @@ fn main() {
         println!("cargo:warning=找不到 rc.exe，可执行文件保留默认图标");
         return;
     };
-    let script = out_dir.join("gpui-tools.rc");
+    let script = out_dir.join("tools.rc");
     if let Err(error) = std::fs::write(&script, script_for(&icon)) {
         println!("cargo:warning=写不出资源脚本：{error}");
         return;
     }
 
-    let resource = out_dir.join("gpui-tools.res");
+    let resource = out_dir.join("tools.res");
     let status = Command::new(&compiler)
         .arg("/nologo")
         .arg("/fo")
@@ -80,11 +80,11 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "GPUI Tools launcher"
-      VALUE "ProductName", "GPUI Tools"
+      VALUE "FileDescription", "Tools launcher"
+      VALUE "ProductName", "Tools"
       VALUE "FileVersion", "{version}"
       VALUE "ProductVersion", "{version}"
-      VALUE "OriginalFilename", "gpui-tools.exe"
+      VALUE "OriginalFilename", "tools.exe"
     END
   END
   BLOCK "VarFileInfo"
