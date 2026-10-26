@@ -148,8 +148,9 @@ fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> 
         ToolTab::Calculator => calculator_settings_page(stored_settings(cx), colors, cx),
         ToolTab::Firefox => firefox_settings_page(launcher, colors, cx),
         ToolTab::Github => github_settings_page(launcher, colors, cx),
-        // 这两页是「用户自己加的条目」：上面一行新增按钮，下面是列表，需要时插一块编辑区。
-        ToolTab::Shortcuts => user_tools_page(launcher, ToolKind::Shortcut, colors, cx),
+        // 这三页是「用户自己加的条目」：上面一行新增按钮，下面是列表，需要时插一块编辑区。
+        ToolTab::Files => user_tools_page(launcher, ToolKind::File, colors, cx),
+        ToolTab::Folders => user_tools_page(launcher, ToolKind::Folder, colors, cx),
         ToolTab::Terminal => user_tools_page(launcher, ToolKind::Terminal, colors, cx),
     };
 
@@ -204,6 +205,19 @@ fn system_page(
                 .checked(settings.launch_at_login)
                 .on_change(cx.listener(|launcher, checked: &bool, _window, cx| {
                     launcher.set_launch_at_login(*checked, cx)
+                })),
+        ))
+        // 管理员模式：装/卸那条计划任务时占位的那句话顶掉原来的说明。
+        .child(settings_row(
+            strings::settings_page::ADMIN_NAME,
+            launcher
+                .admin_notice
+                .unwrap_or(strings::settings_page::ADMIN_DESCRIPTION),
+            colors,
+            Switch::new("run-as-admin")
+                .checked(settings.run_as_admin)
+                .on_change(cx.listener(|launcher, checked: &bool, _window, cx| {
+                    launcher.set_run_as_admin(*checked, cx)
                 })),
         ))
         .child(settings_row(
@@ -492,13 +506,23 @@ fn user_tools_page(
         .is_some_and(|editor| editor.kind == kind);
 
     let add: AnyElement = match kind {
-        ToolKind::Shortcut => small_button(
-            SharedString::from("tool-add-shortcut"),
+        ToolKind::File => small_button(
+            SharedString::from("tool-add-file"),
             strings::tools_page::add_label(kind).into(),
             colors,
             true,
             cx.listener(|launcher, _, _, cx| {
-                launcher.add_shortcut_tool(cx);
+                launcher.add_file_tool(cx);
+            }),
+        )
+        .into_any_element(),
+        ToolKind::Folder => small_button(
+            SharedString::from("tool-add-folder"),
+            strings::tools_page::add_label(kind).into(),
+            colors,
+            true,
+            cx.listener(|launcher, _, _, cx| {
+                launcher.add_folder_tool(cx);
             }),
         )
         .into_any_element(),
@@ -672,6 +696,9 @@ fn tool_row(
                                 .child(tool.target.clone()),
                         )
                         .child(div().flex_shrink_0().child(shortcut))
+                        .when(kind == ToolKind::File, |this| {
+                            this.child(mode_chip(id, tool.open_default, colors, cx))
+                        })
                         .child(icon_button(
                             SharedString::from(format!("tool-edit-{id}")),
                             gpui_kit::assets::IconName::Pencil,
@@ -690,15 +717,25 @@ fn tool_row(
         )
 }
 
-/// 编辑区：名字一行、路径（命令）一行，下面是保存/取消。
+/// 编辑区：名字一行、路径（命令）一行，终端再多一行起始目录，下面是保存/取消。
 fn tool_editor_block(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
     let Some(editor) = launcher.tool_editor.as_ref() else {
         return div().into_any_element();
     };
     let kind = editor.kind;
-    let target_label = match kind {
-        ToolKind::Shortcut => strings::tools_page::EDIT_PATH,
-        ToolKind::Terminal => strings::tools_page::EDIT_COMMAND,
+    let (target_label, pick_label) = match kind {
+        ToolKind::File => (
+            strings::tools_page::EDIT_PATH,
+            strings::tools_page::PICK_FILE,
+        ),
+        ToolKind::Folder => (
+            strings::tools_page::EDIT_FOLDER,
+            strings::tools_page::PICK_FOLDER,
+        ),
+        ToolKind::Terminal => (
+            strings::tools_page::EDIT_COMMAND,
+            strings::tools_page::PICK_FOLDER,
+        ),
     };
 
     v_flex()
@@ -717,7 +754,7 @@ fn tool_editor_block(launcher: &Launcher, colors: UiColors, cx: &Context<Launche
                 .gap_2()
                 .child(
                     div()
-                        .w(px(48.))
+                        .w(px(56.))
                         .flex_shrink_0()
                         .text_xs()
                         .text_color(colors.muted_foreground)
@@ -737,7 +774,7 @@ fn tool_editor_block(launcher: &Launcher, colors: UiColors, cx: &Context<Launche
                 .gap_2()
                 .child(
                     div()
-                        .w(px(48.))
+                        .w(px(56.))
                         .flex_shrink_0()
                         .text_xs()
                         .text_color(colors.muted_foreground)
@@ -749,16 +786,47 @@ fn tool_editor_block(launcher: &Launcher, colors: UiColors, cx: &Context<Launche
                         .min_w_0()
                         .child(filled_text_field(&editor.target)),
                 )
-                .when(kind == ToolKind::Shortcut, |this| {
+                // 终端不挑文件，只有文件和文件夹条目才给这枚「选择…」。
+                .when(kind.is_path(), |this| {
                     this.child(div().flex_shrink_0().child(small_button(
                         SharedString::from("tool-editor-pick"),
-                        strings::tools_page::PICK_FILE.into(),
+                        pick_label.into(),
                         colors,
                         false,
                         cx.listener(|launcher, _, _, cx| launcher.pick_editor_target(cx)),
                     )))
                 }),
         )
+        // 终端的工作目录：留空就是用户文件夹。
+        .when(kind == ToolKind::Terminal, |this| {
+            this.child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(56.))
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(strings::tools_page::EDIT_START_DIR),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(filled_text_field(&editor.start_dir)),
+                    )
+                    .child(div().flex_shrink_0().child(small_button(
+                        SharedString::from("tool-editor-start-dir"),
+                        strings::tools_page::PICK_FOLDER.into(),
+                        colors,
+                        false,
+                        cx.listener(|launcher, _, _, cx| launcher.pick_editor_start_dir(cx)),
+                    ))),
+            )
+        })
         .child(
             h_flex()
                 .w_full()
@@ -790,6 +858,40 @@ fn tool_editor_block(launcher: &Launcher, colors: UiColors, cx: &Context<Launche
                 }),
         )
         .into_any_element()
+}
+
+/// 文件条目行尾那枚胶囊：点一下在「打开所在位置」和「用默认应用打开」之间切。
+///
+/// **每条自己管自己**：同一个程序里，有的文件想直接开、有的只想看看它在哪。
+fn mode_chip(
+    id: i64,
+    open_default: bool,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("tool-mode-{id}")))
+        .flex_shrink_0()
+        .px_1p5()
+        .py_0p5()
+        .rounded(px(4.))
+        .border_1()
+        .border_color(colors.surface)
+        .text_xs()
+        .cursor_pointer()
+        .text_color(if open_default {
+            colors.foreground
+        } else {
+            colors.on_surface_muted
+        })
+        .when(open_default, move |this| this.bg(colors.surface))
+        .hover(move |style| style.bg(colors.hover))
+        .on_click(cx.listener(move |launcher, _, _, cx| launcher.toggle_tool_open_default(id, cx)))
+        .child(if open_default {
+            strings::tools_page::MODE_DEFAULT_APP
+        } else {
+            strings::tools_page::MODE_LOCATION
+        })
 }
 
 /// 一枚小按钮：`primary` 时是实心的（保存、新增），否则只是一圈淡边框。

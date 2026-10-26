@@ -50,12 +50,19 @@ pub fn open_location(path: impl AsRef<Path>) {
 /// 用的是 `cmd.exe /K`：命令跑完窗口留着，用户还能接着看输出、接着敲。
 /// 开新控制台交给系统，Windows 11 设的默认终端（Windows Terminal 之类）会自己接手，
 /// 这里不点名任何一个终端程序。
-pub fn run_in_terminal(command: &str) -> bool {
+///
+/// `dir` 是终端的工作目录；给了空值就落在**用户文件夹**（`%USERPROFILE%`）——
+/// 从启动器直接敲命令的人，八成是想在自己的地盘上干活，而不是程序所在目录。
+pub fn run_in_terminal(command: &str, dir: Option<&Path>) -> bool {
     let command = command.trim();
     if command.is_empty() {
         return false;
     }
-    match sys::spawn_console("cmd", command) {
+    let dir = dir
+        .map(Path::to_path_buf)
+        .filter(|path| path.is_dir())
+        .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from));
+    match sys::spawn_console("cmd", command, dir.as_deref()) {
         Ok(()) => true,
         Err(error) => {
             eprintln!("tools: 终端没能打开（{error}）");
@@ -119,15 +126,16 @@ mod sys {
         path.parent().map(Path::to_path_buf)
     }
 
-    pub fn spawn_console(program: &str, command: &str) -> std::io::Result<()> {
+    pub fn spawn_console(program: &str, command: &str, dir: Option<&Path>) -> std::io::Result<()> {
         use std::os::windows::process::CommandExt as _;
+        let mut builder = std::process::Command::new(program);
         // `raw_arg` 原样拼在命令行后面：`/K` 后面跟的是用户写的那一整条命令，
         // 中间再加一层引号，带空格的路径就会被 cmd 自己吃掉一层。
-        std::process::Command::new(program)
-            .arg("/K")
-            .raw_arg(command)
-            .creation_flags(CREATE_NEW_CONSOLE)
-            .spawn()?;
+        builder.arg("/K").raw_arg(command);
+        if let Some(dir) = dir {
+            builder.current_dir(dir);
+        }
+        builder.creation_flags(CREATE_NEW_CONSOLE).spawn()?;
         Ok(())
     }
 }
@@ -147,7 +155,11 @@ mod sys {
         None
     }
 
-    pub fn spawn_console(_program: &str, _command: &str) -> std::io::Result<()> {
+    pub fn spawn_console(
+        _program: &str,
+        _command: &str,
+        _dir: Option<&Path>,
+    ) -> std::io::Result<()> {
         Err(std::io::Error::other("这个平台上没有终端可开"))
     }
 }

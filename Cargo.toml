@@ -1,6 +1,6 @@
 [package]
 name = "tools"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2024"
 default-run = "tools"
 repository = "https://github.com/cz-97/tools"
@@ -29,6 +29,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

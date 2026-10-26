@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::App;
+use tools::admin;
 use tools::settings::Settings;
 use tools::shell;
 
@@ -82,9 +83,20 @@ pub fn quit_launcher(cx: &mut App) {
 /// 程序是全局单例，所以**先把自己那份单例身份交出去**再拉新的：新的启动时就能直接
 /// 抢到位置，不必等在单例上——那种跨进程的等待又慢又难判断卡在哪。
 /// 新的照旧靠 `shortcuts::install` 的重试去拿热键，旧的没退干净也只是晚几百毫秒。
+///
+/// **管理员模式下这条路径不一样**：直接 spawn 出来的是普通权限进程；要让新进程也是
+/// 管理员，得让计划任务去启动它（`schtasks /Run`），这样才不弹 UAC。
 pub fn restart_launcher(cx: &mut App) {
     remember_window_position(cx);
     release_singleton(cx);
+    if !admin::installed() || !admin::launch() {
+        spawn_self();
+    }
+    cx.quit();
+}
+
+/// 直接把当前的 exe 再拉起来（普通权限）。
+fn spawn_self() {
     match std::env::current_exe() {
         Ok(exe) => {
             if let Err(error) = std::process::Command::new(exe).spawn() {
@@ -93,7 +105,6 @@ pub fn restart_launcher(cx: &mut App) {
         }
         Err(error) => eprintln!("tools: 找不到自身路径，无法重启：{error}"),
     }
-    cx.quit();
 }
 
 /// 交给系统默认的文件管理器打开一个目录。

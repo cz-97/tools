@@ -15,6 +15,7 @@ use gpui_kit::{
     WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_tray::{Icon as TrayIcon, Tray};
+use tools::admin;
 use tools::autostart;
 use tools::instance;
 use tools::logo;
@@ -77,8 +78,10 @@ pub fn launch() {
                 settings.save();
             }
             // 是否开机启动以注册表为准：用户在任务管理器里删掉那一项后，
-            // 设置文件里的镜像不能把它「复活」。
-            settings.launch_at_login = autostart::enabled();
+            // 设置文件里的镜像不能把它「复活」。管理员模式下开机启动是那条计划任务
+            // 在管，注册表里本来就没有 Run 项，所以两处都要看。
+            settings.launch_at_login = autostart::enabled() || admin::installed();
+            settings.run_as_admin = admin::installed();
             cx.set_global(SettingsStore(settings.clone()));
 
             // 面板多大由用户拖出来，尺寸记在设置里（逻辑像素）。
@@ -438,7 +441,7 @@ fn typing_in_field(window: &Window, cx: &App) -> bool {
                 .iter()
                 .any(|row| row.input.read(cx).focus_handle(cx).is_focused(window));
             let in_editor = launcher.tool_editor.as_ref().is_some_and(|editor| {
-                [&editor.name, &editor.target]
+                [&editor.name, &editor.target, &editor.start_dir]
                     .into_iter()
                     .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
             });
@@ -626,7 +629,7 @@ pub fn run_tool(id: i64, cx: &mut App) {
     let Some(tool) = stored_settings(cx).tool(id).cloned() else {
         return;
     };
-    if tool.kind == ToolKind::Shortcut && !std::path::Path::new(&tool.target).exists() {
+    if tool.kind.is_path() && !std::path::Path::new(&tool.target).exists() {
         let visible = cx
             .try_global::<LauncherPanel>()
             .is_some_and(|panel| panel.window.is_visible());
@@ -645,9 +648,18 @@ pub fn run_tool(id: i64, cx: &mut App) {
     cx.set_global(SettingsStore(settings));
 
     match tool.kind {
-        ToolKind::Shortcut => shell::open_location(&tool.target),
+        ToolKind::File => {
+            if tool.open_default {
+                shell::open(&tool.target);
+            } else {
+                shell::open_location(&tool.target);
+            }
+        }
+        // 文件夹条目的动作就是打开它自己。
+        ToolKind::Folder => shell::open_location(&tool.target),
         ToolKind::Terminal => {
-            shell::run_in_terminal(&tool.target);
+            let dir = tool.start_dir.as_deref().map(std::path::Path::new);
+            shell::run_in_terminal(&tool.target, dir);
         }
     }
 }
@@ -679,6 +691,9 @@ fn build_tray(cx: &mut App) {
         .icon(tray_icon(cx))
         .title(strings::tray::TOOLTIP)
         .tooltip(strings::tray::TOOLTIP)
+        // 左键唤出面板、右键出菜单：不给这个 handler 时左键也会弹菜单（后端在有
+        // 菜单、又没配激活回调时是那么处理的）。
+        .on_activate(ShowLauncher)
         .menu(|_| {
             vec![
                 gpui_kit::MenuItem::action(strings::tray::OPEN, ShowLauncher),

@@ -9,6 +9,7 @@ use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::{
     App, ClipboardItem, Context, Entity, Focusable, Subscription, Task, Window, prelude::*,
 };
+use tools::admin;
 use tools::autostart;
 use tools::cache;
 use tools::calculator;
@@ -216,19 +217,22 @@ pub(crate) enum ToolTab {
     Firefox,
     /// GitHub：用户名和令牌。
     Github,
-    /// 文件快捷方式：用户自己加的那些。
-    Shortcuts,
+    /// 文件：用户自己加的那些（打开位置或按默认应用打开）。
+    Files,
+    /// 文件夹：用户自己加的那些（打开它自己）。
+    Folders,
     /// 快捷终端：用户自己加的那些命令行。
     Terminal,
 }
 
 impl ToolTab {
     /// 全部子标签，顺序就是左侧列表的顺序。
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Calculator,
         Self::Firefox,
         Self::Github,
-        Self::Shortcuts,
+        Self::Files,
+        Self::Folders,
         Self::Terminal,
     ];
 
@@ -238,7 +242,8 @@ impl ToolTab {
             Self::Calculator => strings::launcher::CALCULATOR_TITLE,
             Self::Firefox => strings::launcher::FIREFOX_TITLE,
             Self::Github => strings::launcher::GITHUB_TITLE,
-            Self::Shortcuts => strings::tools_page::SHORT_FILE_SHORTCUT,
+            Self::Files => strings::tools_page::FILE,
+            Self::Folders => strings::tools_page::FOLDER,
             Self::Terminal => strings::tools_page::QUICK_TERMINAL,
         }
     }
@@ -249,7 +254,8 @@ impl ToolTab {
             Self::Calculator => gpui_kit::assets::IconName::Calculator,
             Self::Firefox => gpui_kit::assets::IconName::Globe,
             Self::Github => gpui_kit::assets::IconName::Github,
-            Self::Shortcuts => gpui_kit::assets::IconName::FolderSymlink,
+            Self::Files => gpui_kit::assets::IconName::FileText,
+            Self::Folders => gpui_kit::assets::IconName::Folder,
             Self::Terminal => gpui_kit::assets::IconName::SquareTerminal,
         }
     }
@@ -257,7 +263,8 @@ impl ToolTab {
     /// 哪一种用户工具归这个子标签管（[`Self::tool_kind`] 的反查）。
     pub(crate) fn for_kind(kind: ToolKind) -> Self {
         match kind {
-            ToolKind::Shortcut => Self::Shortcuts,
+            ToolKind::File => Self::Files,
+            ToolKind::Folder => Self::Folders,
             ToolKind::Terminal => Self::Terminal,
         }
     }
@@ -315,14 +322,16 @@ pub(crate) struct CalculatorRow {
 
 /// 设置页里正在编辑的用户工具（新增，或者改名字/改路径）。
 ///
-/// 两个输入框自己就是状态：编辑区一关，里面没保存的内容跟着丢，不用另外回滚。
+/// 几个输入框自己就是状态：编辑区一关，里面没保存的内容跟着丢，不用另外回滚。
 pub(crate) struct ToolEditor {
     pub(crate) kind: ToolKind,
     /// 改的是哪一条；`None` 表示还没保存过的新条目。
     pub(crate) id: Option<i64>,
     pub(crate) name: Entity<InputState>,
     pub(crate) target: Entity<InputState>,
-    /// 两个输入框的回车订阅，跟着编辑区一起活。
+    /// 只有快捷终端用得上：终端的工作目录，留空 = 用户文件夹。
+    pub(crate) start_dir: Entity<InputState>,
+    /// 输入框的回车订阅，跟着编辑区一起活。
     _events: Vec<Subscription>,
 }
 
@@ -336,17 +345,26 @@ impl ToolEditor {
     pub(crate) fn target_text(&self, cx: &App) -> String {
         self.target.read(cx).value().trim().to_string()
     }
+
+    /// 起始目录输入框里现在的内容，去掉两头空白。
+    pub(crate) fn start_dir_text(&self, cx: &App) -> String {
+        self.start_dir.read(cx).value().trim().to_string()
+    }
 }
 
-/// 挑选文件的这次弹窗是为谁挑的。
+/// 这次挑东西是为谁挑的。
 #[derive(Clone, Copy)]
 pub(crate) enum PickFor {
-    /// 新增一条文件快捷方式。
-    NewShortcut,
-    /// 把某一条已有的快捷方式换个文件。
+    /// 新增一条文件。
+    NewFile,
+    /// 新增一条文件夹。
+    NewFolder,
+    /// 把某一条的路径换掉（按它自己的种类决定挑文件还是挑目录）。
     Replace(i64),
-    /// 只是想改编辑区里那行的路径，还没保存。
-    Editor,
+    /// 改编辑区里「文件 / 文件夹 / 命令」那一行，还没保存。
+    EditorTarget,
+    /// 改编辑区里「起始目录」那一行（只挑目录）。
+    EditorStartDir,
 }
 
 /// 「文件不在了」的那条提示。
@@ -410,6 +428,10 @@ pub struct Launcher {
     pub(crate) tool_notice: Option<&'static str>,
     /// 「文件不在了」的提示框。
     pub(crate) prompt: Option<MissingPrompt>,
+    /// 管理员模式正在装/正在卸的那一会儿，系统页上显示一句话。
+    pub(crate) admin_notice: Option<&'static str>,
+    /// 装/卸计划任务那条任务，留着它别被丢掉。
+    admin_task: Option<Task<()>>,
     /// 系统文件框那一次等待。`Some` 期间面板失去前台也**不收起来**：用户正在那个
     /// 框里挑文件，面板一消失，挑完回来页面就变了。
     ///
@@ -541,6 +563,8 @@ impl Launcher {
             tool_editor: None,
             tool_notice: None,
             prompt: None,
+            admin_notice: None,
+            admin_task: None,
             dialog: None,
             front_grace: None,
             _search_events: search_events,
@@ -1161,7 +1185,7 @@ impl Launcher {
             return true;
         }
         self.tool_editor.as_ref().is_some_and(|editor| {
-            [&editor.name, &editor.target]
+            [&editor.name, &editor.target, &editor.start_dir]
                 .into_iter()
                 .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
         })
@@ -1634,6 +1658,19 @@ impl Launcher {
 
     /// 加开机启动项，或者删掉它。
     pub(crate) fn set_launch_at_login(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        // 管理员模式下开机启动由那条计划任务负责，注册表那条 Run 反而是多余的。
+        // 关掉「开机启动」等于把任务也删掉（两者本来就是同一件事），所以先把这个
+        // 开关本身记成关，免得删完任务之后又被下面那句「换回注册表」重新打开。
+        if stored_settings(cx).run_as_admin {
+            let mut settings = stored_settings(cx);
+            settings.launch_at_login = enabled;
+            store_settings(settings, cx);
+            if !enabled {
+                self.set_run_as_admin(false, cx);
+            }
+            cx.notify();
+            return;
+        }
         if !autostart::set_enabled(enabled) {
             // 开关是受控值，写失败它就停在原处：如实报告，别装作改成了。
             eprintln!("tools: 开机启动项没能更新");
@@ -1832,9 +1869,14 @@ impl Launcher {
         self.toggle_recording(RecordTarget::Tool(id), cx);
     }
 
-    /// 加一条文件快捷方式：先让用户去系统文件框里挑，挑完再落库。
-    pub(crate) fn add_shortcut_tool(&mut self, cx: &mut Context<Self>) {
-        self.pick_file(PickFor::NewShortcut, cx);
+    /// 加一条文件：先让用户去系统文件框里挑，挑完再落库。
+    pub(crate) fn add_file_tool(&mut self, cx: &mut Context<Self>) {
+        self.pick(PickFor::NewFile, cx);
+    }
+
+    /// 加一条文件夹：挑的是目录。
+    pub(crate) fn add_folder_tool(&mut self, cx: &mut Context<Self>) {
+        self.pick(PickFor::NewFolder, cx);
     }
 
     /// 开一个空的快捷终端编辑区。
@@ -1852,10 +1894,12 @@ impl Launcher {
     ) {
         let existing = id.and_then(|id| stored_settings(cx).tool(id).cloned());
         let placeholder = match kind {
-            ToolKind::Shortcut => strings::tools_page::PICK_FILE,
+            ToolKind::File => strings::tools_page::FILE_PLACEHOLDER,
+            ToolKind::Folder => strings::tools_page::FOLDER_PLACEHOLDER,
             ToolKind::Terminal => strings::tools_page::COMMAND_PLACEHOLDER,
         };
         let name_placeholder = strings::tools_page::NAME_PLACEHOLDER;
+        let dir_placeholder = strings::tools_page::START_DIR_PLACEHOLDER;
         let name = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(name_placeholder)
@@ -1876,10 +1920,20 @@ impl Launcher {
                         .unwrap_or_default(),
                 )
         });
+        let start_dir = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(dir_placeholder)
+                .default_value(
+                    existing
+                        .as_ref()
+                        .and_then(|tool| tool.start_dir.clone())
+                        .unwrap_or_default(),
+                )
+        });
         name.read(cx).focus_handle(cx).focus(window, cx);
-        // 两个框里按回车都等于点「保存」：填表的手感就该是这样。事件回调里没有窗口，
+        // 几个框里按回车都等于点「保存」：填表的手感就该是这样。事件回调里没有窗口，
         // 所以走 `with_launcher` 推到下一拍。
-        let events = [&name, &target]
+        let events = [&name, &target, &start_dir]
             .into_iter()
             .map(|input| {
                 cx.subscribe(input, |_launcher, _input, event, cx| {
@@ -1896,6 +1950,7 @@ impl Launcher {
             id,
             name,
             target,
+            start_dir,
             _events: events,
         });
         self.tool_notice = None;
@@ -1905,8 +1960,8 @@ impl Launcher {
     /// 保存编辑区：新的就建一条，已有的就地改掉名字和路径。
     ///
     /// 名字和路径（命令）都得填：主页上那两行就是它们，空一个就等于建了条认不出来的
-    /// 命令。文件快捷方式从系统文件框**直接**加进来时另说，那时候名字由文件名兜底
-    /// （见 [`Self::finish_pick`]）。
+    /// 命令。文件 / 文件夹从系统对话框**直接**加进来时另说，那时候名字由文件（夹）名
+    /// 兜底（见 [`Self::finish_pick`]）。起始目录留空是合法的，含义是用户文件夹。
     pub(crate) fn save_tool_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.tool_editor.as_ref() else {
             return;
@@ -1914,6 +1969,7 @@ impl Launcher {
         let (kind, id) = (editor.kind, editor.id);
         let name = editor.name_text(cx);
         let target = editor.target_text(cx);
+        let start_dir = editor.start_dir_text(cx);
         if name.is_empty() {
             self.tool_notice = Some(strings::tools_page::NAME_REQUIRED);
             return;
@@ -1925,17 +1981,19 @@ impl Launcher {
         self.tool_editor = None;
 
         let mut settings = stored_settings(cx);
-        match id {
+        let id = match id {
             Some(id) => {
                 if !settings.update_tool(id, name, target) {
                     // 这一条在别处被删了，就当这次编辑没发生。
                     cx.notify();
                     return;
                 }
+                id
             }
-            None => {
-                settings.add_tool(kind, name, target);
-            }
+            None => settings.add_tool(kind, name, target),
+        };
+        if kind == ToolKind::Terminal {
+            settings.set_tool_start_dir(id, Some(start_dir));
         }
         store_settings(settings, cx);
         self.tool_notice = None;
@@ -2024,33 +2082,146 @@ impl Launcher {
         self.focus_active_input(window, cx);
     }
 
-    /// 提示框里的「修改」：再去挑一个文件，挑完把这一条的路径换掉。
+    /// 提示框里的「修改」：再去挑一次（文件条目挑文件，文件夹条目挑目录），
+    /// 挑完把这一条的路径换掉。
     pub(crate) fn prompt_relocate(&mut self, cx: &mut Context<Self>) {
         let Some(prompt) = self.prompt.take() else {
             return;
         };
-        self.pick_file(PickFor::Replace(prompt.id), cx);
+        self.pick(PickFor::Replace(prompt.id), cx);
         cx.notify();
     }
 
-    /// 编辑区里的「选择文件」：挑完只改输入框，保存才落库。
+    /// 编辑区里的「选择文件 / 选择文件夹」：挑完只改输入框，保存才落库。
     pub(crate) fn pick_editor_target(&mut self, cx: &mut Context<Self>) {
         if self.tool_editor.is_none() {
             return;
         }
-        self.pick_file(PickFor::Editor, cx);
+        self.pick(PickFor::EditorTarget, cx);
     }
 
-    /// 弹系统文件框挑一个文件。
+    /// 编辑区里的「起始目录」：只挑目录。
+    pub(crate) fn pick_editor_start_dir(&mut self, cx: &mut Context<Self>) {
+        if self.tool_editor.is_none() {
+            return;
+        }
+        self.pick(PickFor::EditorStartDir, cx);
+    }
+
+    /// 文件条目：切换「用默认应用打开 / 打开所在位置」。
+    pub(crate) fn toggle_tool_open_default(&mut self, id: i64, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        let Some(tool) = settings.tool(id) else {
+            return;
+        };
+        let next = !tool.open_default;
+        settings.set_tool_open_default(id, next);
+        store_settings(settings, cx);
+        self.refresh_catalogue(cx);
+        cx.notify();
+    }
+
+    /// 打开 / 关掉「以管理员身份启动」。
+    ///
+    /// 这条设置不是往数据库里写一个布尔值就完事：它对应系统里的一条计划任务。
+    /// 建任务本身要提权（`schtasks /RL HIGHEST`），所以**开启时会弹一次 UAC**；
+    /// 建成之后立刻用那条任务重启自己——新进程天生提权，用户不会再看到第二个弹窗。
+    /// 关掉就是把任务删掉，开机启动退回注册表那一条。
+    pub(crate) fn set_run_as_admin(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.admin_task.is_some() {
+            return;
+        }
+        if enabled == admin::installed() && enabled == stored_settings(cx).run_as_admin {
+            return;
+        }
+        self.admin_notice = Some(strings::settings_page::ADMIN_INSTALLING);
+        cx.notify();
+
+        let exe = std::env::current_exe().unwrap_or_default();
+        let work = cx.background_executor().spawn(async move {
+            if enabled {
+                admin::install(&exe)
+            } else {
+                admin::remove()
+            }
+        });
+        self.admin_task = Some(cx.spawn(async move |_this, cx| {
+            let ok = work.await;
+            cx.update(move |cx: &mut App| {
+                let mut settings = stored_settings(cx);
+                if enabled {
+                    // 任务在不在才是事实，成功与否都以它为准（schtasks 的退出码只是旁证）。
+                    let installed = admin::installed();
+                    if !installed {
+                        eprintln!(
+                            "tools: 计划任务没能建成（schtasks 返回 {ok}），管理员模式没打开"
+                        );
+                    }
+                    settings.run_as_admin = installed;
+                    if installed {
+                        // 任务带的是「登录时启动」，注册表那条 Run 就别再留一份。
+                        autostart::set_enabled(false);
+                        settings.launch_at_login = true;
+                    }
+                    store_settings(settings, cx);
+                    with_launcher(cx, move |launcher, _window, cx| {
+                        launcher.admin_notice =
+                            (!installed).then_some(strings::settings_page::ADMIN_FAILED);
+                        cx.notify();
+                    });
+                    if installed {
+                        // 用任务重启：新进程是提权的，而且不会再问一次。
+                        crate::actions::restart_launcher(cx);
+                    }
+                } else {
+                    let still = admin::installed();
+                    if still {
+                        eprintln!("tools: 计划任务没能删掉（schtasks 返回 {ok}）");
+                    }
+                    settings.run_as_admin = still;
+                    let launch_at_login = settings.launch_at_login;
+                    store_settings(settings, cx);
+                    // 开机启动还想要的话，换回注册表那条（普通权限）。
+                    if launch_at_login {
+                        autostart::set_enabled(true);
+                    }
+                    with_launcher(cx, move |launcher, _window, cx| {
+                        launcher.admin_notice =
+                            still.then_some(strings::settings_page::ADMIN_FAILED);
+                        cx.notify();
+                    });
+                }
+            });
+        }));
+    }
+
+    /// 弹系统的文件框（或文件夹框）挑一个目标。
     ///
     /// 对话框是阻塞的，所以整件事走后台线程：线程里挑完，再回界面线程把结果交回来。
     /// 这期间 [`Self::dialog`] 是 `Some`，面板不会因为失去前台而收起来。
-    fn pick_file(&mut self, purpose: PickFor, cx: &mut Context<Self>) {
+    fn pick(&mut self, purpose: PickFor, cx: &mut Context<Self>) {
         cx.notify();
         let owner = crate::app::panel_handle(cx);
-        let picking = cx
-            .background_executor()
-            .spawn(async move { tools::dialog::pick_file(owner, strings::tools_page::PICK_TITLE) });
+        let folder = match purpose {
+            PickFor::NewFolder | PickFor::EditorStartDir => true,
+            // 换路径时按这一条自己的种类走：文件夹条目不能再变成文件。
+            PickFor::Replace(id) => stored_settings(cx)
+                .tool(id)
+                .is_some_and(|tool| tool.kind == ToolKind::Folder),
+            PickFor::NewFile | PickFor::EditorTarget => false,
+        };
+        let title = if folder {
+            strings::tools_page::PICK_FOLDER_TITLE
+        } else {
+            strings::tools_page::PICK_TITLE
+        };
+        let picking = cx.background_executor().spawn(async move {
+            if folder {
+                tools::dialog::pick_folder(owner, title)
+            } else {
+                tools::dialog::pick_file(owner, title)
+            }
+        });
         self.dialog = Some(cx.spawn(async move |_this, cx| {
             let picked = picking.await;
             cx.update(move |cx: &mut App| {
@@ -2061,7 +2232,7 @@ impl Launcher {
         }));
     }
 
-    /// 文件框关掉了：把挑到的东西按原来的用途用掉。
+    /// 对话框关掉了：把挑到的东西按原来的用途用掉。
     fn finish_pick(
         &mut self,
         purpose: PickFor,
@@ -2079,10 +2250,15 @@ impl Launcher {
         };
         let target = path.display().to_string();
         match purpose {
-            PickFor::NewShortcut => {
+            PickFor::NewFile | PickFor::NewFolder => {
+                let kind = if matches!(purpose, PickFor::NewFile) {
+                    ToolKind::File
+                } else {
+                    ToolKind::Folder
+                };
                 let mut settings = stored_settings(cx);
-                let name = default_tool_name(ToolKind::Shortcut, &target);
-                settings.add_tool(ToolKind::Shortcut, name, target);
+                let name = default_tool_name(&target);
+                settings.add_tool(kind, name, target);
                 store_settings(settings, cx);
                 self.refresh_catalogue(cx);
             }
@@ -2094,10 +2270,17 @@ impl Launcher {
                     self.refresh_catalogue(cx);
                 }
             }
-            PickFor::Editor => {
+            PickFor::EditorTarget => {
                 if let Some(editor) = self.tool_editor.as_ref() {
                     editor
                         .target
+                        .update(cx, |input, cx| input.set_value(&target, window, cx));
+                }
+            }
+            PickFor::EditorStartDir => {
+                if let Some(editor) = self.tool_editor.as_ref() {
+                    editor
+                        .start_dir
                         .update(cx, |input, cx| input.set_value(&target, window, cx));
                 }
             }
@@ -2110,20 +2293,13 @@ impl Launcher {
     }
 }
 
-/// 不填名字时的默认名：文件取文件名（去掉扩展名），命令取第一段。
-fn default_tool_name(kind: ToolKind, target: &str) -> String {
-    match kind {
-        ToolKind::Shortcut => std::path::Path::new(target)
-            .file_stem()
-            .or_else(|| std::path::Path::new(target).file_name())
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| target.to_string()),
-        ToolKind::Terminal => target
-            .split_whitespace()
-            .next()
-            .unwrap_or(target)
-            .to_string(),
-    }
+/// 从对话框直接加条目时的默认名：文件取文件名（去掉扩展名），文件夹就取目录名。
+fn default_tool_name(target: &str) -> String {
+    let path = std::path::Path::new(target);
+    path.file_stem()
+        .or_else(|| path.file_name())
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| target.to_string())
 }
 
 /// 书签行：标题是书签名字，副行是网址，右边补一句页面标题（和书签名字不一样时才写）。

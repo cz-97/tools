@@ -40,24 +40,27 @@ impl Theme {
 
 /// 用户自己加的工具都有哪几种。
 ///
-/// 静态命令写在 `command/catalogue.rs` 里，编译期就定了；这两种是用户在设置页里
+/// 静态命令写在 `command/catalogue.rs` 里，编译期就定了；这几种是用户在设置页里
 /// 随手加的，存在数据库的 `tools` 表里。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToolKind {
-    /// 文件快捷方式：打开文件所在的文件夹。
-    Shortcut,
+    /// 文件：打开它所在的文件夹，或者按设置用默认应用打开。
+    File,
+    /// 文件夹：打开它自己。
+    Folder,
     /// 快捷终端：在系统默认终端里跑一条命令。
     Terminal,
 }
 
 impl ToolKind {
     /// 全部种类，顺序就是设置页里的顺序。
-    pub const ALL: [Self; 2] = [Self::Shortcut, Self::Terminal];
+    pub const ALL: [Self; 3] = [Self::File, Self::Folder, Self::Terminal];
 
     /// 存进数据库时写的值。
     pub fn key(self) -> &'static str {
         match self {
-            Self::Shortcut => "shortcut",
+            Self::File => "file",
+            Self::Folder => "folder",
             Self::Terminal => "terminal",
         }
     }
@@ -72,9 +75,15 @@ impl ToolKind {
     /// 和静态命令的 `Section::key()` 不会撞：那边全是英文单词，这边带 `tool-` 前缀。
     pub fn section_key(self) -> &'static str {
         match self {
-            Self::Shortcut => "tool-shortcut",
+            Self::File => "tool-file",
+            Self::Folder => "tool-folder",
             Self::Terminal => "tool-terminal",
         }
+    }
+
+    /// 这一种是不是「指着某个文件/文件夹」（要检查路径还在不在）。
+    pub fn is_path(self) -> bool {
+        matches!(self, Self::File | Self::Folder)
     }
 }
 
@@ -89,8 +98,7 @@ pub struct UserTool {
     pub kind: ToolKind,
     /// 主页和设置页上显示的名字，同时是搜索词。
     pub name: String,
-    /// 文件路径（[`ToolKind::Shortcut`]）或命令行（[`ToolKind::Terminal`]），
-    /// 同样参与搜索。
+    /// 文件路径 / 文件夹路径 / 命令行，同样参与搜索。
     pub target: String,
     /// 要不要出现在主页上。
     pub enabled: bool,
@@ -98,6 +106,11 @@ pub struct UserTool {
     pub uses: u64,
     /// 唤起它的全局快捷键，形如 `ctrl+alt+KeyP`。
     pub shortcut: Option<String>,
+    /// [`ToolKind::File`] 专用：执行时用**默认应用**打开文件（`true`），
+    /// 还是打开它所在的文件夹（`false`）。别的种类不用这个字段。
+    pub open_default: bool,
+    /// [`ToolKind::Terminal`] 专用：终端的工作目录；`None` 表示用户文件夹。
+    pub start_dir: Option<String>,
 }
 
 /// 用户对某一条命令的决定。
@@ -152,6 +165,9 @@ pub struct Settings {
     /// 登录启动项在不在。**注册表才是事实**，这里只是镜像一份，好在画设置页时
     /// 不用去读注册表。
     pub launch_at_login: bool,
+    /// 是否以管理员身份启动。**计划任务才是事实**（`%SystemRoot%\System32\schtasks`
+    /// 里那条 `tools-launcher`），这里同样只是镜像。
+    pub run_as_admin: bool,
     /// 收起面板后还能记住原页面多少秒。0 表示每次都回命令列表。
     pub resume_seconds: u32,
     /// 唤出面板的全局快捷键，形如 `ctrl+Space`；`None` 表示不绑，只能从托盘打开。
@@ -193,13 +209,15 @@ CREATE TABLE IF NOT EXISTS commands (
     PRIMARY KEY (section, id)
 );
 CREATE TABLE IF NOT EXISTS tools (
-    id       INTEGER PRIMARY KEY NOT NULL,
-    kind     TEXT NOT NULL,
-    name     TEXT NOT NULL,
-    target   TEXT NOT NULL,
-    enabled  INTEGER NOT NULL,
-    uses     INTEGER NOT NULL,
-    shortcut TEXT
+    id           INTEGER PRIMARY KEY NOT NULL,
+    kind         TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    target       TEXT NOT NULL,
+    enabled      INTEGER NOT NULL,
+    uses         INTEGER NOT NULL,
+    shortcut     TEXT,
+    open_default INTEGER NOT NULL,
+    start_dir    TEXT
 );
 ";
 
@@ -207,6 +225,19 @@ CREATE TABLE IF NOT EXISTS tools (
 ///
 /// 不能写空串：设置行不存在时读的是默认值，存的这一行必须在两种意思之间分得清。
 const SUMMON_NONE: &str = "none";
+
+/// `tools` 表必须有的列。少一列就说明这个库是旧结构，整个表丢掉重建（见 `prepare`）。
+const TOOL_COLUMNS: [&str; 9] = [
+    "id",
+    "kind",
+    "name",
+    "target",
+    "enabled",
+    "uses",
+    "shortcut",
+    "open_default",
+    "start_dir",
+];
 
 impl Settings {
     /// 全新安装时唤出面板用的快捷键。
@@ -327,13 +358,39 @@ impl Settings {
                 return None;
             }
         };
-        match connection.execute_batch(SCHEMA) {
+        match Self::prepare(&connection) {
             Ok(()) => Some(connection),
             Err(error) => {
                 eprintln!("tools: 建表失败（{error}）");
                 None
             }
         }
+    }
+
+    /// 建表，并且把结构过时的 `tools` 表**整个丢掉重建**。
+    ///
+    /// 用户工具是随手加的记录，没有值得迁移的东西，所以这里不写 ALTER：
+    /// 发现列对不上就删表重建（`SCHEMA` 里是 `IF NOT EXISTS`，删完再跑一遍就建新的）。
+    fn prepare(connection: &Connection) -> rusqlite::Result<()> {
+        connection.execute_batch(SCHEMA)?;
+        let mut columns = Vec::new();
+        {
+            let mut statement =
+                connection.prepare("SELECT name FROM pragma_table_info('tools')")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                columns.push(row.get::<_, String>(0)?);
+            }
+        }
+        let up_to_date = TOOL_COLUMNS
+            .iter()
+            .all(|wanted| columns.iter().any(|name| name == wanted));
+        if !up_to_date {
+            eprintln!("tools: 工具表结构变了，丢掉旧的重建");
+            connection.execute("DROP TABLE tools", [])?;
+            connection.execute_batch(SCHEMA)?;
+        }
+        Ok(())
     }
 
     /// 读出所有存下来的值；库还是空的时候返回 `None`。
@@ -379,6 +436,7 @@ impl Settings {
                         }
                     }
                     "launch_at_login" => settings.launch_at_login = value == "1",
+                    "run_as_admin" => settings.run_as_admin = value == "1",
                     "resume_seconds" => {
                         if let Ok(seconds) = value.parse() {
                             settings.resume_seconds = seconds;
@@ -428,7 +486,8 @@ impl Settings {
 
         {
             let mut statement = connection.prepare(
-                "SELECT id, kind, name, target, enabled, uses, shortcut FROM tools ORDER BY id",
+                "SELECT id, kind, name, target, enabled, uses, shortcut, open_default, start_dir \
+                 FROM tools ORDER BY id",
             )?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
@@ -445,6 +504,8 @@ impl Settings {
                     enabled: row.get::<_, i64>(4)? != 0,
                     uses: row.get::<_, i64>(5)?.max(0) as u64,
                     shortcut: row.get(6)?,
+                    open_default: row.get::<_, i64>(7)? != 0,
+                    start_dir: row.get(8)?,
                 });
             }
         }
@@ -469,6 +530,10 @@ impl Settings {
             insert.execute(params![
                 "launch_at_login",
                 u8::from(self.launch_at_login).to_string()
+            ])?;
+            insert.execute(params![
+                "run_as_admin",
+                u8::from(self.run_as_admin).to_string()
             ])?;
             insert.execute(params!["resume_seconds", self.resume_seconds.to_string()])?;
             insert.execute(params![
@@ -531,8 +596,8 @@ impl Settings {
         transaction.execute("DELETE FROM tools", [])?;
         {
             let mut insert = transaction.prepare(
-                "INSERT INTO tools (id, kind, name, target, enabled, uses, shortcut) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO tools (id, kind, name, target, enabled, uses, shortcut, open_default, start_dir) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for tool in &self.tools {
                 insert.execute(params![
@@ -543,6 +608,8 @@ impl Settings {
                     i64::from(tool.enabled),
                     tool.uses as i64,
                     tool.shortcut.as_deref(),
+                    i64::from(tool.open_default),
+                    tool.start_dir.as_deref(),
                 ])?;
             }
         }
@@ -570,6 +637,8 @@ impl Settings {
             enabled: true,
             uses: 0,
             shortcut: None,
+            open_default: false,
+            start_dir: None,
         });
         id
     }
@@ -582,6 +651,20 @@ impl Settings {
         tool.name = name;
         tool.target = target;
         true
+    }
+
+    /// 文件条目：用默认应用打开，还是打开所在位置。
+    pub fn set_tool_open_default(&mut self, id: i64, open_default: bool) {
+        if let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == id) {
+            tool.open_default = open_default;
+        }
+    }
+
+    /// 终端条目：工作目录；空串和 `None` 都表示用户文件夹。
+    pub fn set_tool_start_dir(&mut self, id: i64, dir: Option<String>) {
+        if let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == id) {
+            tool.start_dir = dir.filter(|dir| !dir.trim().is_empty());
+        }
     }
 
     /// 删掉一条工具，返回删掉的那条。
@@ -705,6 +788,7 @@ impl Default for Settings {
             window_height: Self::WINDOW_HEIGHT_DEFAULT,
             search_height: Self::SEARCH_HEIGHT_DEFAULT,
             launch_at_login: false,
+            run_as_admin: false,
             resume_seconds: 0,
             summon_shortcut: Some(Settings::SUMMON_DEFAULT.to_string()),
             calculator_precision: Self::CALCULATOR_PRECISION_DEFAULT,
@@ -723,13 +807,51 @@ impl Default for Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandSettings, SCHEMA, Settings, Theme, ToolKind};
+    use super::{CommandSettings, Settings, Theme, ToolKind};
     use rusqlite::Connection;
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("内存数据库");
-        connection.execute_batch(SCHEMA).expect("建表");
+        Settings::prepare(&connection).expect("建表");
         connection
+    }
+
+    #[test]
+    fn an_old_tool_table_is_dropped_and_rebuilt() {
+        let connection = Connection::open_in_memory().expect("内存数据库");
+        // 旧结构：没有 open_default / start_dir。
+        connection
+            .execute_batch(
+                "CREATE TABLE tools (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    uses INTEGER NOT NULL,
+                    shortcut TEXT
+                );
+                INSERT INTO tools VALUES (1, 'shortcut', '旧', 'C:/a', 1, 0, NULL);",
+            )
+            .expect("旧库");
+
+        Settings::prepare(&connection).expect("重建");
+        let settings = Settings::read(&connection)
+            .expect("读取")
+            .unwrap_or_default();
+        // 旧行跟着旧表一起没了：这类条目重加一次就行，不写迁移。
+        assert!(settings.tools.is_empty());
+
+        let mut settings = Settings::default();
+        settings.add_tool(ToolKind::File, "新".to_string(), "C:/b".to_string());
+        settings.write(&connection).expect("写入新结构");
+        assert_eq!(
+            Settings::read(&connection)
+                .expect("读取")
+                .expect("有数据")
+                .tools,
+            settings.tools
+        );
     }
 
     fn sample() -> Settings {
@@ -979,7 +1101,7 @@ mod tests {
     fn user_tools_survive_a_round_trip() {
         let mut settings = Settings::default();
         let file = settings.add_tool(
-            ToolKind::Shortcut,
+            ToolKind::File,
             "账单".to_string(),
             r"D:\文档\账单.xlsx".to_string(),
         );
@@ -989,7 +1111,9 @@ mod tests {
             "cargo build".to_string(),
         );
         settings.set_tool_enabled(file, false);
+        settings.set_tool_open_default(file, true);
         settings.set_tool_shortcut(terminal, Some("ctrl+alt+KeyB".to_string()));
+        settings.set_tool_start_dir(terminal, Some(r"D:\code\tools".to_string()));
         settings.count_tool_use(terminal);
         settings.count_tool_use(terminal);
 
@@ -1003,13 +1127,18 @@ mod tests {
         assert_eq!(restored.target, "cargo build");
         assert_eq!(restored.uses, 2);
         assert_eq!(restored.shortcut.as_deref(), Some("ctrl+alt+KeyB"));
-        assert!(!read.tool(file).expect("文件条目还在").enabled);
+        assert_eq!(restored.start_dir.as_deref(), Some(r"D:\code\tools"));
+
+        let restored = read.tool(file).expect("文件条目还在");
+        assert!(!restored.enabled);
+        assert!(restored.open_default, "「用默认应用打开」这一项得跟着存");
+        assert_eq!(restored.start_dir, None);
     }
 
     #[test]
     fn removing_a_tool_leaves_the_rest_alone() {
         let mut settings = Settings::default();
-        let first = settings.add_tool(ToolKind::Shortcut, "一".to_string(), "a.txt".to_string());
+        let first = settings.add_tool(ToolKind::File, "一".to_string(), "a.txt".to_string());
         let second = settings.add_tool(ToolKind::Terminal, "二".to_string(), "dir".to_string());
         assert!(settings.remove_tool(first).is_some());
         assert!(settings.remove_tool(first).is_none());
@@ -1023,7 +1152,8 @@ mod tests {
     #[test]
     fn a_tool_keeps_its_kind_on_the_way_back() {
         let mut settings = Settings::default();
-        settings.add_tool(ToolKind::Shortcut, "文件".to_string(), "C:/a".to_string());
+        settings.add_tool(ToolKind::File, "文件".to_string(), "C:/a".to_string());
+        settings.add_tool(ToolKind::Folder, "文件夹".to_string(), "C:/b".to_string());
         settings.add_tool(
             ToolKind::Terminal,
             "终端".to_string(),
@@ -1032,12 +1162,25 @@ mod tests {
         let connection = database();
         settings.write(&connection).expect("写入");
         let read = Settings::read(&connection).expect("读取").expect("有数据");
-        assert_eq!(read.tools_of(ToolKind::Shortcut).count(), 1);
+        assert_eq!(read.tools_of(ToolKind::File).count(), 1);
+        assert_eq!(read.tools_of(ToolKind::Folder).count(), 1);
         let terminal = read
             .tools_of(ToolKind::Terminal)
             .next()
             .expect("有一条终端");
         assert_eq!(terminal.target, "ipconfig");
-        assert_eq!(read.tools_of(ToolKind::Shortcut).count(), 1);
+    }
+
+    #[test]
+    fn an_empty_start_dir_means_the_user_folder() {
+        let mut settings = Settings::default();
+        let id = settings.add_tool(ToolKind::Terminal, "看".to_string(), "dir".to_string());
+        settings.set_tool_start_dir(id, Some("   ".to_string()));
+        assert_eq!(settings.tool(id).expect("还在").start_dir, None);
+        settings.set_tool_start_dir(id, Some(r"C:\Windows".to_string()));
+        assert_eq!(
+            settings.tool(id).expect("还在").start_dir.as_deref(),
+            Some(r"C:\Windows")
+        );
     }
 }

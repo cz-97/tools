@@ -212,30 +212,29 @@ pub mod tools_page {
     use tools::settings::ToolKind;
 
     /// 工具的名字，用在**窄**的地方：设置左列那个子标签、主页行尾的「所属分类」。
-    ///
-    /// 全名「文件快捷方式」在 136px 的子标签列里放不下（会被省略号截成「文件快捷方…」），
-    /// 所以这里和 `FIREFOX_TITLE` 一个路子，给个短名；全名留在 [`FILE_SHORTCUT`]。
     pub fn kind_label(kind: ToolKind) -> &'static str {
         match kind {
-            ToolKind::Shortcut => SHORT_FILE_SHORTCUT,
+            ToolKind::File => FILE,
+            ToolKind::Folder => FOLDER,
             ToolKind::Terminal => QUICK_TERMINAL,
         }
     }
 
-    /// 文件快捷方式：名字。
-    pub const FILE_SHORTCUT: &str = "文件快捷方式";
-    /// 文件快捷方式：窄地方用的短名字。
-    pub const SHORT_FILE_SHORTCUT: &str = "快捷方式";
-    /// 快捷终端：名字。
+    /// 文件。
+    pub const FILE: &str = "文件";
+    /// 文件夹。
+    pub const FOLDER: &str = "文件夹";
+    /// 快捷终端。
     pub const QUICK_TERMINAL: &str = "快捷终端";
 
     /// 工具条目已经不存在了（快捷键还记着它的号）。
     pub const UNKNOWN_TOOL: &str = "已删除的工具";
 
-    /// 新增按钮：文件快捷方式是先挑文件，终端是先填名字和命令。
+    /// 新增按钮：文件和文件夹是先挑，终端是先填名字和命令。
     pub fn add_label(kind: ToolKind) -> &'static str {
         match kind {
-            ToolKind::Shortcut => "选择文件添加",
+            ToolKind::File => "选择文件添加",
+            ToolKind::Folder => "选择文件夹添加",
             ToolKind::Terminal => "新增",
         }
     }
@@ -243,15 +242,17 @@ pub mod tools_page {
     /// 一条都还没有时的提示。
     pub fn empty_hint(kind: ToolKind) -> &'static str {
         match kind {
-            ToolKind::Shortcut => "还没有文件快捷方式，点上面「选择文件添加」挑一个文件",
+            ToolKind::File => "还没有文件条目，点上面「选择文件添加」挑一个文件",
+            ToolKind::Folder => "还没有文件夹条目，点上面「选择文件夹添加」挑一个目录",
             ToolKind::Terminal => "还没有快捷终端，点上面「新增」起一条",
         }
     }
 
-    /// 编辑区的标题：「新增文件快捷方式」「修改快捷终端」。
+    /// 编辑区标题：「新增文件」「修改快捷终端」。
     pub fn editor_heading(kind: ToolKind, existing: bool) -> String {
         let name = match kind {
-            ToolKind::Shortcut => FILE_SHORTCUT,
+            ToolKind::File => FILE,
+            ToolKind::Folder => FOLDER,
             ToolKind::Terminal => QUICK_TERMINAL,
         };
         let verb = if existing { "修改" } else { "新增" };
@@ -260,19 +261,33 @@ pub mod tools_page {
 
     /// 编辑区里名称那一行的标签。
     pub const EDIT_NAME: &str = "名称";
-    /// 编辑区里文件名那一行的标签。
+    /// 编辑区里文件那一行的标签。
     pub const EDIT_PATH: &str = "文件";
+    /// 编辑区里文件夹那一行的标签。
+    pub const EDIT_FOLDER: &str = "文件夹";
     /// 编辑区里命令行那一行的标签。
     pub const EDIT_COMMAND: &str = "命令";
+    /// 编辑区里起始目录那一行的标签。
+    pub const EDIT_START_DIR: &str = "起始目录";
     /// 名称输入框的占位字。
     pub const NAME_PLACEHOLDER: &str = "主页上显示的名字，也用来搜索";
+    /// 文件输入框的占位字。
+    pub const FILE_PLACEHOLDER: &str = "文件的完整路径";
+    /// 文件夹输入框的占位字。
+    pub const FOLDER_PLACEHOLDER: &str = "文件夹的完整路径";
     /// 命令输入框的占位字。
     pub const COMMAND_PLACEHOLDER: &str = "比如 cargo build 或 ipconfig /all";
+    /// 起始目录输入框的占位字。
+    pub const START_DIR_PLACEHOLDER: &str = "留空就是用户文件夹";
 
     /// 编辑区：重新挑文件。
     pub const PICK_FILE: &str = "选择文件";
+    /// 编辑区：重新挑文件夹。
+    pub const PICK_FOLDER: &str = "选择文件夹";
     /// 系统文件框的标题。
     pub const PICK_TITLE: &str = "选择文件";
+    /// 系统的文件夹框的标题。
+    pub const PICK_FOLDER_TITLE: &str = "选择文件夹";
     /// 编辑区：保存。
     pub const SAVE: &str = "保存";
     /// 编辑区：取消。
@@ -282,16 +297,22 @@ pub mod tools_page {
     /// 编辑区：路径/命令为空时的提示。
     pub fn target_required(kind: ToolKind) -> &'static str {
         match kind {
-            ToolKind::Shortcut => "路径不能为空",
+            ToolKind::File => "路径不能为空",
+            ToolKind::Folder => "路径不能为空",
             ToolKind::Terminal => "命令不能为空",
         }
     }
+
+    /// 文件条目的动作：用默认应用打开。
+    pub const MODE_DEFAULT_APP: &str = "默认应用打开";
+    /// 文件条目的动作：打开所在位置。
+    pub const MODE_LOCATION: &str = "打开所在位置";
 
     /// 路径不存在时的提示标题。
     pub const MISSING_TITLE: &str = "文件不在了";
     /// 路径不存在时的说明。
     pub const MISSING_HINT: &str = "这条快捷方式指向的文件或文件夹已经不在这个位置。";
-    /// 提示框：重新挑文件。
+    /// 提示框：重新挑。
     pub const MISSING_RELOCATE: &str = "修改";
     /// 提示框：删掉这一条。
     pub const MISSING_DELETE: &str = "删除";
@@ -351,6 +372,15 @@ pub mod settings_page {
     pub const AUTOSTART_NAME: &str = "开机启动";
     /// 系统页：开机启动的说明。
     pub const AUTOSTART_DESCRIPTION: &str = "登录 Windows 后自动在后台运行";
+    /// 系统页：管理员方式启动的标题。
+    pub const ADMIN_NAME: &str = "以管理员身份启动";
+    /// 系统页：管理员方式启动的说明。
+    pub const ADMIN_DESCRIPTION: &str =
+        "建一条最高权限的计划任务来启动，以后不再弹授权窗口；开启时会问一次";
+    /// 系统页：管理员模式正在安装那一会儿。
+    pub const ADMIN_INSTALLING: &str = "正在创建计划任务…";
+    /// 系统页：管理员模式没建成（用户点了「否」或者被策略拦了）。
+    pub const ADMIN_FAILED: &str = "没建成计划任务，授权被拒或没有权限";
     /// 系统页：子页面保持的标题。
     pub const RESUME_NAME: &str = "子页面保持";
     /// 系统页：子页面保持的说明。

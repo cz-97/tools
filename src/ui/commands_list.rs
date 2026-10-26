@@ -276,7 +276,8 @@ impl RenderOnce for ToolItemRow {
             colors.surface
         };
         let icon = match self.tool.kind {
-            ToolKind::Shortcut => gpui_kit::assets::IconName::FolderSymlink,
+            ToolKind::File => gpui_kit::assets::IconName::FileText,
+            ToolKind::Folder => gpui_kit::assets::IconName::Folder,
             ToolKind::Terminal => gpui_kit::assets::IconName::SquareTerminal,
         };
         let shortcut = match self.tool.shortcut.clone() {
@@ -881,12 +882,14 @@ mod tests {
         let tools = vec![
             UserTool {
                 id: 1,
-                kind: ToolKind::Shortcut,
+                kind: ToolKind::File,
                 name: "账单".to_string(),
                 target: r"D:\文档\账单.xlsx".to_string(),
                 enabled: true,
                 uses: 9,
                 shortcut: None,
+                open_default: false,
+                start_dir: None,
             },
             UserTool {
                 id: 2,
@@ -896,6 +899,8 @@ mod tests {
                 enabled: true,
                 uses: 0,
                 shortcut: None,
+                open_default: false,
+                start_dir: None,
             },
         ];
         let mut delegate = ToolDelegate::new(two_used_commands(), MatchConfig::default());
@@ -913,12 +918,14 @@ mod tests {
         let tools = vec![
             UserTool {
                 id: 1,
-                kind: ToolKind::Shortcut,
+                kind: ToolKind::File,
                 name: "账单".to_string(),
                 target: r"D:\文档\账单.xlsx".to_string(),
                 enabled: false,
                 uses: 9,
                 shortcut: None,
+                open_default: false,
+                start_dir: None,
             },
             UserTool {
                 id: 2,
@@ -928,6 +935,8 @@ mod tests {
                 enabled: true,
                 uses: 0,
                 shortcut: None,
+                open_default: false,
+                start_dir: None,
             },
         ];
         let mut delegate = ToolDelegate::new(CommandStates::new(), MatchConfig::default());
