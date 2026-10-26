@@ -205,6 +205,100 @@ pub mod commands_page {
     }
 }
 
+/// 设置 → 工具里的两个「可增删改」的工具：文件快捷方式、快捷终端。
+///
+/// 名字、说明、按钮都在这里；主页行尾显示的种类名也从 [`kind_label`] 取。
+pub mod tools_page {
+    use tools::settings::ToolKind;
+
+    /// 工具的名字，用在**窄**的地方：设置左列那个子标签、主页行尾的「所属分类」。
+    ///
+    /// 全名「文件快捷方式」在 136px 的子标签列里放不下（会被省略号截成「文件快捷方…」），
+    /// 所以这里和 `FIREFOX_TITLE` 一个路子，给个短名；全名留在 [`FILE_SHORTCUT`]。
+    pub fn kind_label(kind: ToolKind) -> &'static str {
+        match kind {
+            ToolKind::Shortcut => SHORT_FILE_SHORTCUT,
+            ToolKind::Terminal => QUICK_TERMINAL,
+        }
+    }
+
+    /// 文件快捷方式：名字。
+    pub const FILE_SHORTCUT: &str = "文件快捷方式";
+    /// 文件快捷方式：窄地方用的短名字。
+    pub const SHORT_FILE_SHORTCUT: &str = "快捷方式";
+    /// 快捷终端：名字。
+    pub const QUICK_TERMINAL: &str = "快捷终端";
+
+    /// 工具条目已经不存在了（快捷键还记着它的号）。
+    pub const UNKNOWN_TOOL: &str = "已删除的工具";
+
+    /// 新增按钮：文件快捷方式是先挑文件，终端是先填名字和命令。
+    pub fn add_label(kind: ToolKind) -> &'static str {
+        match kind {
+            ToolKind::Shortcut => "选择文件添加",
+            ToolKind::Terminal => "新增",
+        }
+    }
+
+    /// 一条都还没有时的提示。
+    pub fn empty_hint(kind: ToolKind) -> &'static str {
+        match kind {
+            ToolKind::Shortcut => "还没有文件快捷方式，点上面「选择文件添加」挑一个文件",
+            ToolKind::Terminal => "还没有快捷终端，点上面「新增」起一条",
+        }
+    }
+
+    /// 编辑区的标题：「新增文件快捷方式」「修改快捷终端」。
+    pub fn editor_heading(kind: ToolKind, existing: bool) -> String {
+        let name = match kind {
+            ToolKind::Shortcut => FILE_SHORTCUT,
+            ToolKind::Terminal => QUICK_TERMINAL,
+        };
+        let verb = if existing { "修改" } else { "新增" };
+        format!("{verb}{name}")
+    }
+
+    /// 编辑区里名称那一行的标签。
+    pub const EDIT_NAME: &str = "名称";
+    /// 编辑区里文件名那一行的标签。
+    pub const EDIT_PATH: &str = "文件";
+    /// 编辑区里命令行那一行的标签。
+    pub const EDIT_COMMAND: &str = "命令";
+    /// 名称输入框的占位字。
+    pub const NAME_PLACEHOLDER: &str = "主页上显示的名字，也用来搜索";
+    /// 命令输入框的占位字。
+    pub const COMMAND_PLACEHOLDER: &str = "比如 cargo build 或 ipconfig /all";
+
+    /// 编辑区：重新挑文件。
+    pub const PICK_FILE: &str = "选择文件";
+    /// 系统文件框的标题。
+    pub const PICK_TITLE: &str = "选择文件";
+    /// 编辑区：保存。
+    pub const SAVE: &str = "保存";
+    /// 编辑区：取消。
+    pub const CANCEL: &str = "取消";
+    /// 编辑区：名字空着不能保存（主页上总得有个能认的名字）。
+    pub const NAME_REQUIRED: &str = "名称不能为空";
+    /// 编辑区：路径/命令为空时的提示。
+    pub fn target_required(kind: ToolKind) -> &'static str {
+        match kind {
+            ToolKind::Shortcut => "路径不能为空",
+            ToolKind::Terminal => "命令不能为空",
+        }
+    }
+
+    /// 路径不存在时的提示标题。
+    pub const MISSING_TITLE: &str = "文件不在了";
+    /// 路径不存在时的说明。
+    pub const MISSING_HINT: &str = "这条快捷方式指向的文件或文件夹已经不在这个位置。";
+    /// 提示框：重新挑文件。
+    pub const MISSING_RELOCATE: &str = "修改";
+    /// 提示框：删掉这一条。
+    pub const MISSING_DELETE: &str = "删除";
+    /// 提示框：什么都不做。
+    pub const MISSING_CANCEL: &str = CANCEL;
+}
+
 /// 计算器页（主程序的一级页面，与设置平级）。
 pub mod calculator {
     /// 空行输入框里的提示。

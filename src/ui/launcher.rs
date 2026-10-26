@@ -15,7 +15,7 @@ use tools::calculator;
 use tools::firefox;
 use tools::github;
 use tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
-use tools::settings::Settings;
+use tools::settings::{Settings, ToolKind};
 use tools::shell;
 
 use crate::app::{
@@ -24,7 +24,7 @@ use crate::app::{
 };
 use crate::catalogue;
 use crate::shortcuts::{
-    ShortcutOwner, apply_command_shortcuts, apply_summon_shortcut, chord_from_keystroke,
+    ShortcutOwner, apply_shortcuts, apply_summon_shortcut, chord_from_keystroke,
 };
 use crate::strings;
 use crate::ui::commands_list::{ToolDelegate, command_states};
@@ -66,6 +66,8 @@ const CORNER_RADIUS: f32 = 8.;
 const CALCULATOR_MAX_ROWS: usize = 8;
 /// 「已复制」这四个字亮多久。
 const COPY_FEEDBACK: Duration = Duration::from_millis(1200);
+/// 系统文件框关掉之后，再给前台多久才允许按「失去前台」收起面板。
+const FRONT_GRACE: Duration = Duration::from_millis(1200);
 
 /// 面板当前显示哪一页。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,11 +216,21 @@ pub(crate) enum ToolTab {
     Firefox,
     /// GitHub：用户名和令牌。
     Github,
+    /// 文件快捷方式：用户自己加的那些。
+    Shortcuts,
+    /// 快捷终端：用户自己加的那些命令行。
+    Terminal,
 }
 
 impl ToolTab {
     /// 全部子标签，顺序就是左侧列表的顺序。
-    pub(crate) const ALL: [Self; 3] = [Self::Calculator, Self::Firefox, Self::Github];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Calculator,
+        Self::Firefox,
+        Self::Github,
+        Self::Shortcuts,
+        Self::Terminal,
+    ];
 
     /// 界面上的名字。
     pub(crate) fn label(self) -> &'static str {
@@ -226,6 +238,8 @@ impl ToolTab {
             Self::Calculator => strings::launcher::CALCULATOR_TITLE,
             Self::Firefox => strings::launcher::FIREFOX_TITLE,
             Self::Github => strings::launcher::GITHUB_TITLE,
+            Self::Shortcuts => strings::tools_page::SHORT_FILE_SHORTCUT,
+            Self::Terminal => strings::tools_page::QUICK_TERMINAL,
         }
     }
 
@@ -235,6 +249,16 @@ impl ToolTab {
             Self::Calculator => gpui_kit::assets::IconName::Calculator,
             Self::Firefox => gpui_kit::assets::IconName::Globe,
             Self::Github => gpui_kit::assets::IconName::Github,
+            Self::Shortcuts => gpui_kit::assets::IconName::FolderSymlink,
+            Self::Terminal => gpui_kit::assets::IconName::SquareTerminal,
+        }
+    }
+
+    /// 哪一种用户工具归这个子标签管（[`Self::tool_kind`] 的反查）。
+    pub(crate) fn for_kind(kind: ToolKind) -> Self {
+        match kind {
+            ToolKind::Shortcut => Self::Shortcuts,
+            ToolKind::Terminal => Self::Terminal,
         }
     }
 }
@@ -244,8 +268,10 @@ impl ToolTab {
 pub(crate) enum RecordTarget {
     /// 唤出面板的全局热键。
     Summon,
-    /// 某一条命令。
+    /// 某一条静态命令。
     Command(&'static catalogue::Command),
+    /// 用户自己加的一条工具，按 id 认。
+    Tool(i64),
 }
 
 impl RecordTarget {
@@ -254,6 +280,7 @@ impl RecordTarget {
         match (self, other) {
             (Self::Summon, Self::Summon) => true,
             (Self::Command(a), Self::Command(b)) => std::ptr::eq(a, b),
+            (Self::Tool(a), Self::Tool(b)) => a == b,
             _ => false,
         }
     }
@@ -263,6 +290,7 @@ impl RecordTarget {
         match (self, owner) {
             (Self::Summon, ShortcutOwner::Summon) => true,
             (Self::Command(a), ShortcutOwner::Command(b)) => std::ptr::eq(a, b),
+            (Self::Tool(a), ShortcutOwner::Tool(b)) => a == b,
             _ => false,
         }
     }
@@ -283,6 +311,49 @@ pub(crate) struct CalculatorRow {
     pub(crate) input: Entity<TextareaState>,
     /// 订阅跟着行一起活；行没了它也没了。
     _events: Subscription,
+}
+
+/// 设置页里正在编辑的用户工具（新增，或者改名字/改路径）。
+///
+/// 两个输入框自己就是状态：编辑区一关，里面没保存的内容跟着丢，不用另外回滚。
+pub(crate) struct ToolEditor {
+    pub(crate) kind: ToolKind,
+    /// 改的是哪一条；`None` 表示还没保存过的新条目。
+    pub(crate) id: Option<i64>,
+    pub(crate) name: Entity<InputState>,
+    pub(crate) target: Entity<InputState>,
+    /// 两个输入框的回车订阅，跟着编辑区一起活。
+    _events: Vec<Subscription>,
+}
+
+impl ToolEditor {
+    /// 名字输入框里现在的内容，去掉两头空白。
+    pub(crate) fn name_text(&self, cx: &App) -> String {
+        self.name.read(cx).value().trim().to_string()
+    }
+
+    /// 路径/命令输入框里现在的内容，去掉两头空白。
+    pub(crate) fn target_text(&self, cx: &App) -> String {
+        self.target.read(cx).value().trim().to_string()
+    }
+}
+
+/// 挑选文件的这次弹窗是为谁挑的。
+#[derive(Clone, Copy)]
+pub(crate) enum PickFor {
+    /// 新增一条文件快捷方式。
+    NewShortcut,
+    /// 把某一条已有的快捷方式换个文件。
+    Replace(i64),
+    /// 只是想改编辑区里那行的路径，还没保存。
+    Editor,
+}
+
+/// 「文件不在了」的那条提示。
+pub(crate) struct MissingPrompt {
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    pub(crate) target: String,
 }
 
 /// 面板视图。
@@ -333,6 +404,23 @@ pub struct Launcher {
     pub(crate) firefox_input: Entity<InputState>,
     pub(crate) github_user_input: Entity<InputState>,
     pub(crate) github_token_input: Entity<InputState>,
+    /// 正在编辑的用户工具（设置 → 工具 → 文件快捷方式 / 快捷终端）。`None` 表示没有编辑区。
+    pub(crate) tool_editor: Option<ToolEditor>,
+    /// 编辑区里那句校验不过的提示，比如「命令不能为空」。
+    pub(crate) tool_notice: Option<&'static str>,
+    /// 「文件不在了」的提示框。
+    pub(crate) prompt: Option<MissingPrompt>,
+    /// 系统文件框那一次等待。`Some` 期间面板失去前台也**不收起来**：用户正在那个
+    /// 框里挑文件，面板一消失，挑完回来页面就变了。
+    ///
+    /// 单独一个字段、不塞进 `pending`：`pending` 会跟着换页被丢掉，而这个任务被
+    /// 丢掉就等于「对话框永远开着」，面板以后再也不自动收起了。
+    dialog: Option<Task<()>>,
+    /// 对话框刚关上的这一小会儿，别因为「还没拿到前台」就收起面板。
+    ///
+    /// 框关掉到前台转回来之间有一两百毫秒的空档，正好够失焦检查数满三次；不拦一下，
+    /// 用户挑完文件/取消之后会看到面板自己消失。
+    front_grace: Option<Instant>,
     /// 跟着视图活着的订阅，丢了输入框就不再上报用户敲了什么。
     _search_events: Subscription,
     _opacity_events: Subscription,
@@ -450,6 +538,11 @@ impl Launcher {
             firefox_input,
             github_user_input,
             github_token_input,
+            tool_editor: None,
+            tool_notice: None,
+            prompt: None,
+            dialog: None,
+            front_grace: None,
             _search_events: search_events,
             _opacity_events: opacity_events,
             _search_observation: search_observation,
@@ -469,10 +562,18 @@ impl Launcher {
         self.recording
     }
 
-    /// 正在录制的命令；录的是唤出热键时为 `None`。
+    /// 正在录制的命令；录的是唤出热键时、或者在给用户工具录制时为 `None`。
     pub(crate) fn recording_command(&self) -> Option<&'static catalogue::Command> {
         match self.recording {
             Some(RecordTarget::Command(command)) => Some(command),
+            _ => None,
+        }
+    }
+
+    /// 正在录制的用户工具 id。
+    pub(crate) fn recording_tool(&self) -> Option<i64> {
+        match self.recording {
+            Some(RecordTarget::Tool(id)) => Some(id),
             _ => None,
         }
     }
@@ -571,6 +672,12 @@ impl Launcher {
         }
         self.recording = None;
         self.conflict = None;
+        self.prompt = None;
+        self.tool_editor = None;
+        self.tool_notice = None;
+        // 新的会话从干净状态开始：上一次要是还挂着系统文件框（那不可能在面板可见时
+        // 完成），这里把等它的那条任务放掉，免得自动收起一直被它挡着。
+        self.dialog = None;
         self.refresh_catalogue(cx);
         // 上一次留下的列表数据先放掉：历史是 500 条、每行还挂着图标，不释放就一直占着。
         // 下面按记忆回到那一页时会重新装一次。
@@ -619,6 +726,15 @@ impl Launcher {
                     }
                     if panel.window.is_foreground() {
                         was_in_front = true;
+                        misses = 0;
+                        return true;
+                    }
+                    // 系统文件框开着（或者刚关上、前台还在路上）的时候不算「用户跑了」：
+                    // 挑完文件回来还要接着填这条快捷方式，面板得原地等着。
+                    let grace = launcher
+                        .front_grace
+                        .is_some_and(|until| Instant::now() < until);
+                    if launcher.dialog.is_some() || grace {
                         misses = 0;
                         return true;
                     }
@@ -690,10 +806,19 @@ impl Launcher {
     /// 执行高亮的那一项：指令匹配（复制/打开）、一条命令、列表页的一行，或者设置页
     /// 顺手把改过的文本框存下来。
     pub(crate) fn activate_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 提示框开着的时候回车不许穿透到后面的列表上：那时候用户该先回答删还是改。
+        if self.prompt.is_some() {
+            return;
+        }
         match self.page {
             Page::Commands => {}
             Page::Settings(_) => {
-                self.commit_settings_inputs(cx);
+                // 编辑区开着时回车 = 保存，和填表一个手感。
+                if self.tool_editor.is_some() {
+                    self.save_tool_editor(window, cx);
+                } else {
+                    self.commit_settings_inputs(cx);
+                }
                 return;
             }
             Page::Calculator => return,
@@ -717,6 +842,9 @@ impl Launcher {
                 self.activate_match(matched, window, cx);
             }
             Some(crate::ui::commands_list::HomeItem::Command(command)) => run_command(command, cx),
+            Some(crate::ui::commands_list::HomeItem::Tool(tool)) => {
+                crate::app::run_tool(tool.id, cx)
+            }
             None => {}
         }
     }
@@ -824,8 +952,16 @@ impl Launcher {
         cx.notify();
     }
 
-    /// Esc 先从设置/计算器/列表页退出来，再收面板。
+    /// Esc 先关掉提示框、编辑区，再从设置/计算器/列表页退出来，最后才收面板。
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prompt.is_some() {
+            self.dismiss_prompt(window, cx);
+            return;
+        }
+        if self.tool_editor.is_some() {
+            self.cancel_tool_editor(cx);
+            return;
+        }
         if matches!(
             self.page,
             Page::Settings(_) | Page::Calculator | Page::List(_)
@@ -853,6 +989,10 @@ impl Launcher {
         self.pending = None;
         // 回到主页就是离开搜索了，现场不再留着。
         self.search_state = None;
+        // 编辑区里没保存的内容跟着走；提示框也一样，它只对当前这一刻有意义。
+        self.tool_editor = None;
+        self.tool_notice = None;
+        self.prompt = None;
         self.page = Page::Commands;
         self.focus_search(window, cx);
         cx.notify();
@@ -870,12 +1010,15 @@ impl Launcher {
         }
         // 换标签之前把文本框里改过的值存下来，顺手把焦点收干净。
         self.commit_settings_inputs(cx);
+        // 编辑区没点「保存」就走人，等于放弃这次改动。
+        self.tool_editor = None;
+        self.tool_notice = None;
         window.blur(cx);
         self.page = Page::Settings(tab);
         cx.notify();
     }
 
-    /// 工具标签里切到某个子标签（计算器、火狐、GitHub）。
+    /// 工具标签里切到某个子标签（计算器、火狐、GitHub、文件快捷方式、快捷终端）。
     pub(crate) fn select_tool_tab(
         &mut self,
         tab: ToolTab,
@@ -886,6 +1029,8 @@ impl Launcher {
             return;
         }
         self.commit_settings_inputs(cx);
+        self.tool_editor = None;
+        self.tool_notice = None;
         window.blur(cx);
         self.tool_tab = tab;
         cx.notify();
@@ -971,11 +1116,17 @@ impl Launcher {
             Page::Commands => self.focus_search(window, cx),
             Page::List(_) => self.focus_list_search(window, cx),
             Page::Calculator => self.focus_calculator_last(window, cx),
-            // 设置页只有那三个文本框吃键盘，没有哪个算「默认」的，焦点留空。
+            // 设置页只有那几个文本框吃键盘，没有哪个算「默认」的，焦点留空。
             Page::Settings(_) => {
-                if !self.settings_input_focused(window, cx) {
-                    window.blur(cx);
+                if self.settings_input_focused(window, cx) {
+                    return;
                 }
+                // 编辑区开着就把焦点送回名字框，用户接着改就行。
+                if let Some(editor) = self.tool_editor.as_ref() {
+                    editor.name.read(cx).focus_handle(cx).focus(window, cx);
+                    return;
+                }
+                window.blur(cx);
             }
         }
     }
@@ -997,15 +1148,23 @@ impl Launcher {
         }
     }
 
-    /// 设置页那三个文本框里有没有一个拿着焦点。
+    /// 设置页那几个文本框里有没有一个拿着焦点（固定的三个 + 工具编辑区那两个）。
     fn settings_input_focused(&self, window: &Window, cx: &App) -> bool {
-        [
+        let fixed = [
             &self.firefox_input,
             &self.github_user_input,
             &self.github_token_input,
         ]
         .into_iter()
-        .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
+        if fixed {
+            return true;
+        }
+        self.tool_editor.as_ref().is_some_and(|editor| {
+            [&editor.name, &editor.target]
+                .into_iter()
+                .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        })
     }
 
     /// 焦点给列表页的搜索框。进出页面、点完行、点完按钮都调它。
@@ -1487,11 +1646,13 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 重新读一遍设置里关于每条命令的内容。
+    /// 重新读一遍设置里关于每条命令（以及每条用户工具）的内容。
     pub(crate) fn refresh_catalogue(&mut self, cx: &mut Context<Self>) {
-        let states = command_states(&stored_settings(cx));
+        let settings = stored_settings(cx);
+        let states = command_states(&settings);
+        let tools = settings.tools;
         self.list.update(cx, |list, cx| {
-            list.delegate_mut().states = states;
+            list.delegate_mut().set_catalogue(states, tools);
             cx.notify();
         });
     }
@@ -1606,7 +1767,7 @@ impl Launcher {
             self.recording = None;
             self.conflict = None;
         } else {
-            self.conflict = Some(strings::commands_page::conflict(owner.label()));
+            self.conflict = Some(strings::commands_page::conflict(&owner.label(cx)));
         }
         cx.notify();
     }
@@ -1649,12 +1810,319 @@ impl Launcher {
                 }
                 settings.set_command_shortcut(section, id, chord);
                 store_settings(settings, cx);
-                apply_command_shortcuts(cx);
+                apply_shortcuts(cx);
+                self.refresh_catalogue(cx);
+            }
+            RecordTarget::Tool(id) => {
+                if settings.tool(id).and_then(|tool| tool.shortcut.clone()) == chord {
+                    return;
+                }
+                settings.set_tool_shortcut(id, chord);
+                store_settings(settings, cx);
+                apply_shortcuts(cx);
                 self.refresh_catalogue(cx);
             }
         }
         self.conflict = None;
         cx.notify();
+    }
+
+    /// 开始听下一组按键，作为某条用户工具的快捷键；再点一次取消。
+    pub(crate) fn toggle_tool_recording(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.toggle_recording(RecordTarget::Tool(id), cx);
+    }
+
+    /// 加一条文件快捷方式：先让用户去系统文件框里挑，挑完再落库。
+    pub(crate) fn add_shortcut_tool(&mut self, cx: &mut Context<Self>) {
+        self.pick_file(PickFor::NewShortcut, cx);
+    }
+
+    /// 开一个空的快捷终端编辑区。
+    pub(crate) fn new_terminal_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_tool_editor(ToolKind::Terminal, None, window, cx);
+    }
+
+    /// 打开编辑区：`id` 为 `None` 时是新增，否则把那一条的内容填进去。
+    pub(crate) fn start_tool_editor(
+        &mut self,
+        kind: ToolKind,
+        id: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let existing = id.and_then(|id| stored_settings(cx).tool(id).cloned());
+        let placeholder = match kind {
+            ToolKind::Shortcut => strings::tools_page::PICK_FILE,
+            ToolKind::Terminal => strings::tools_page::COMMAND_PLACEHOLDER,
+        };
+        let name_placeholder = strings::tools_page::NAME_PLACEHOLDER;
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(name_placeholder)
+                .default_value(
+                    existing
+                        .as_ref()
+                        .map(|tool| tool.name.clone())
+                        .unwrap_or_default(),
+                )
+        });
+        let target = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(placeholder)
+                .default_value(
+                    existing
+                        .as_ref()
+                        .map(|tool| tool.target.clone())
+                        .unwrap_or_default(),
+                )
+        });
+        name.read(cx).focus_handle(cx).focus(window, cx);
+        // 两个框里按回车都等于点「保存」：填表的手感就该是这样。事件回调里没有窗口，
+        // 所以走 `with_launcher` 推到下一拍。
+        let events = [&name, &target]
+            .into_iter()
+            .map(|input| {
+                cx.subscribe(input, |_launcher, _input, event, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        with_launcher(cx, |launcher, window, cx| {
+                            launcher.save_tool_editor(window, cx)
+                        });
+                    }
+                })
+            })
+            .collect();
+        self.tool_editor = Some(ToolEditor {
+            kind,
+            id,
+            name,
+            target,
+            _events: events,
+        });
+        self.tool_notice = None;
+        cx.notify();
+    }
+
+    /// 保存编辑区：新的就建一条，已有的就地改掉名字和路径。
+    ///
+    /// 名字和路径（命令）都得填：主页上那两行就是它们，空一个就等于建了条认不出来的
+    /// 命令。文件快捷方式从系统文件框**直接**加进来时另说，那时候名字由文件名兜底
+    /// （见 [`Self::finish_pick`]）。
+    pub(crate) fn save_tool_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.tool_editor.as_ref() else {
+            return;
+        };
+        let (kind, id) = (editor.kind, editor.id);
+        let name = editor.name_text(cx);
+        let target = editor.target_text(cx);
+        if name.is_empty() {
+            self.tool_notice = Some(strings::tools_page::NAME_REQUIRED);
+            return;
+        }
+        if target.is_empty() {
+            self.tool_notice = Some(strings::tools_page::target_required(kind));
+            return;
+        }
+        self.tool_editor = None;
+
+        let mut settings = stored_settings(cx);
+        match id {
+            Some(id) => {
+                if !settings.update_tool(id, name, target) {
+                    // 这一条在别处被删了，就当这次编辑没发生。
+                    cx.notify();
+                    return;
+                }
+            }
+            None => {
+                settings.add_tool(kind, name, target);
+            }
+        }
+        store_settings(settings, cx);
+        self.tool_notice = None;
+        self.refresh_catalogue(cx);
+        window.blur(cx);
+        cx.notify();
+    }
+
+    /// 放弃编辑区里的内容。
+    pub(crate) fn cancel_tool_editor(&mut self, cx: &mut Context<Self>) {
+        self.tool_editor = None;
+        self.tool_notice = None;
+        cx.notify();
+    }
+
+    /// 删掉一条用户工具：库里删掉，还挂在它身上的快捷键也放掉。
+    pub(crate) fn delete_tool(&mut self, id: i64, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        if settings.remove_tool(id).is_none() {
+            return;
+        }
+        store_settings(settings, cx);
+        apply_shortcuts(cx);
+        if self
+            .tool_editor
+            .as_ref()
+            .is_some_and(|editor| editor.id == Some(id))
+        {
+            self.tool_editor = None;
+        }
+        if self.prompt.as_ref().is_some_and(|prompt| prompt.id == id) {
+            self.prompt = None;
+        }
+        self.refresh_catalogue(cx);
+        cx.notify();
+    }
+
+    /// 把一条用户工具放上主页，或者从主页拿掉。
+    pub(crate) fn set_tool_enabled(&mut self, id: i64, enabled: bool, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        if settings
+            .tool(id)
+            .is_some_and(|tool| tool.enabled == enabled)
+        {
+            return;
+        }
+        settings.set_tool_enabled(id, enabled);
+        store_settings(settings, cx);
+        self.refresh_catalogue(cx);
+        cx.notify();
+    }
+
+    /// 路径不在了：把「删还是改」的提示摆出来（面板上那张卡片）。
+    pub(crate) fn prompt_missing_path(
+        &mut self,
+        id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tool) = stored_settings(cx).tool(id).cloned() else {
+            return;
+        };
+        self.prompt = Some(MissingPrompt {
+            id,
+            name: tool.name,
+            target: tool.target,
+        });
+        // 提示框靠鼠标点：焦点不能留在看不见的搜索框上。
+        window.blur(cx);
+        cx.notify();
+    }
+
+    /// 收起提示框，什么都不做。
+    pub(crate) fn dismiss_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prompt = None;
+        self.focus_active_input(window, cx);
+        cx.notify();
+    }
+
+    /// 提示框里的「删除」：这一条从库里拿掉。
+    pub(crate) fn prompt_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.prompt.take() else {
+            return;
+        };
+        self.delete_tool(prompt.id, cx);
+        self.focus_active_input(window, cx);
+    }
+
+    /// 提示框里的「修改」：再去挑一个文件，挑完把这一条的路径换掉。
+    pub(crate) fn prompt_relocate(&mut self, cx: &mut Context<Self>) {
+        let Some(prompt) = self.prompt.take() else {
+            return;
+        };
+        self.pick_file(PickFor::Replace(prompt.id), cx);
+        cx.notify();
+    }
+
+    /// 编辑区里的「选择文件」：挑完只改输入框，保存才落库。
+    pub(crate) fn pick_editor_target(&mut self, cx: &mut Context<Self>) {
+        if self.tool_editor.is_none() {
+            return;
+        }
+        self.pick_file(PickFor::Editor, cx);
+    }
+
+    /// 弹系统文件框挑一个文件。
+    ///
+    /// 对话框是阻塞的，所以整件事走后台线程：线程里挑完，再回界面线程把结果交回来。
+    /// 这期间 [`Self::dialog`] 是 `Some`，面板不会因为失去前台而收起来。
+    fn pick_file(&mut self, purpose: PickFor, cx: &mut Context<Self>) {
+        cx.notify();
+        let owner = crate::app::panel_handle(cx);
+        let picking = cx
+            .background_executor()
+            .spawn(async move { tools::dialog::pick_file(owner, strings::tools_page::PICK_TITLE) });
+        self.dialog = Some(cx.spawn(async move |_this, cx| {
+            let picked = picking.await;
+            cx.update(move |cx: &mut App| {
+                with_launcher(cx, move |launcher, window, cx| {
+                    launcher.finish_pick(purpose, picked, window, cx)
+                });
+            });
+        }));
+    }
+
+    /// 文件框关掉了：把挑到的东西按原来的用途用掉。
+    fn finish_pick(
+        &mut self,
+        purpose: PickFor,
+        picked: Option<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dialog = None;
+        // 给前台留一点回来的时间，这期间失焦检查不算数。
+        self.front_grace = Some(Instant::now() + FRONT_GRACE);
+        crate::app::reclaim_foreground(cx);
+        let Some(path) = picked else {
+            cx.notify();
+            return;
+        };
+        let target = path.display().to_string();
+        match purpose {
+            PickFor::NewShortcut => {
+                let mut settings = stored_settings(cx);
+                let name = default_tool_name(ToolKind::Shortcut, &target);
+                settings.add_tool(ToolKind::Shortcut, name, target);
+                store_settings(settings, cx);
+                self.refresh_catalogue(cx);
+            }
+            PickFor::Replace(id) => {
+                let mut settings = stored_settings(cx);
+                if let Some(tool) = settings.tool(id).cloned() {
+                    settings.update_tool(id, tool.name, target);
+                    store_settings(settings, cx);
+                    self.refresh_catalogue(cx);
+                }
+            }
+            PickFor::Editor => {
+                if let Some(editor) = self.tool_editor.as_ref() {
+                    editor
+                        .target
+                        .update(cx, |input, cx| input.set_value(&target, window, cx));
+                }
+            }
+        }
+        // 挑完文件，焦点还给编辑区（名字框），接着就能改名字。
+        if let Some(editor) = self.tool_editor.as_ref() {
+            editor.name.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+}
+
+/// 不填名字时的默认名：文件取文件名（去掉扩展名），命令取第一段。
+fn default_tool_name(kind: ToolKind, target: &str) -> String {
+    match kind {
+        ToolKind::Shortcut => std::path::Path::new(target)
+            .file_stem()
+            .or_else(|| std::path::Path::new(target).file_name())
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| target.to_string()),
+        ToolKind::Terminal => target
+            .split_whitespace()
+            .next()
+            .unwrap_or(target)
+            .to_string(),
     }
 }
 

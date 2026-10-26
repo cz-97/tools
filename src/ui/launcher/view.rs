@@ -5,7 +5,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::list::List;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, Context, Font, FontWeight, IntoElement, Pixels, Render, TextRun, Window,
     WindowControlArea, div, prelude::*, px,
@@ -17,7 +17,7 @@ use crate::strings;
 use crate::ui::calculator_page;
 use crate::ui::colors::UiColors;
 use crate::ui::lists;
-use crate::ui::settings_page;
+use crate::ui::settings_page::{self, small_button};
 
 use super::{
     CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_CARET,
@@ -415,5 +415,101 @@ impl Render for Launcher {
             .child(self.header(window, cx))
             .child(body)
             .child(footer)
+            // 提示框盖在整页上，占用的是同一块地方，不改变版面。
+            .child(self.prompt_layer(colors, cx))
+    }
+}
+
+impl Launcher {
+    /// 「文件不在了」那一层：暗底 + 一张小卡片，问用户是删掉还是换个文件。
+    ///
+    /// 盖住整页是必须的，不然用户会以为后面那个列表还能点；`occlude` 让点击落在
+    /// 这一层上而不是穿透到列表去。
+    fn prompt_layer(&self, colors: UiColors, cx: &Context<Self>) -> AnyElement {
+        let Some(prompt) = self.prompt.as_ref() else {
+            return div().into_any_element();
+        };
+        let backdrop = cx.theme().background;
+        let card = v_flex()
+            .w(px(360.))
+            .gap_2()
+            .p_4()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(colors.border)
+            .bg(backdrop)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors.foreground)
+                    .child(strings::tools_page::MISSING_TITLE),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_sm()
+                    .text_color(colors.foreground)
+                    .child(prompt.name.clone()),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_xs()
+                    .text_color(colors.on_surface_muted)
+                    .child(prompt.target.clone()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(strings::tools_page::MISSING_HINT),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .mt_1()
+                    .child(small_button(
+                        "prompt-relocate".into(),
+                        strings::tools_page::MISSING_RELOCATE.into(),
+                        colors,
+                        true,
+                        cx.listener(|launcher, _, _, cx| launcher.prompt_relocate(cx)),
+                    ))
+                    .child(small_button(
+                        "prompt-delete".into(),
+                        strings::tools_page::MISSING_DELETE.into(),
+                        colors,
+                        false,
+                        cx.listener(|launcher, _, window, cx| launcher.prompt_delete(window, cx)),
+                    ))
+                    .child(div().flex_1())
+                    .child(small_button(
+                        "prompt-cancel".into(),
+                        strings::tools_page::MISSING_CANCEL.into(),
+                        colors,
+                        false,
+                        cx.listener(|launcher, _, window, cx| launcher.dismiss_prompt(window, cx)),
+                    )),
+            );
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(backdrop.opacity(0.72))
+            .child(card)
+            .into_any_element()
     }
 }

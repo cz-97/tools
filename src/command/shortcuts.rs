@@ -29,16 +29,24 @@ const SUMMON_RETRY_DELAY: Duration = Duration::from_millis(200);
 pub(crate) enum ShortcutOwner {
     /// 唤出面板的那个热键。
     Summon,
-    /// 某一条命令。
+    /// 某一条静态命令。
     Command(&'static catalogue::Command),
+    /// 用户自己加的一条工具（文件快捷方式 / 快捷终端），按 id 认。
+    Tool(i64),
 }
 
 impl ShortcutOwner {
     /// 界面上怎么称呼这个占用者。
-    pub(crate) fn label(self) -> &'static str {
+    ///
+    /// 工具的名字是用户起的、存在数据库里，所以这里要拿 `App` 去查。
+    pub(crate) fn label(self, cx: &App) -> String {
         match self {
-            Self::Summon => strings::settings_page::HOTKEY_NAME,
-            Self::Command(command) => command.name,
+            Self::Summon => strings::settings_page::HOTKEY_NAME.to_string(),
+            Self::Command(command) => command.name.to_string(),
+            Self::Tool(id) => stored_settings(cx).tool(id).map_or_else(
+                || strings::tools_page::UNKNOWN_TOOL.to_string(),
+                |tool| tool.name.clone(),
+            ),
         }
     }
 }
@@ -51,8 +59,8 @@ pub struct Shortcuts {
     /// 存一份组合键是为了判断「要不要重绑」：`HotKey` 反解不回字符串，而重绑要先注销
     /// 旧的，判断错了就会把好好的热键弄丢。
     summon: RefCell<Option<(String, HotKey)>>,
-    /// 各命令当前绑定的组合键，以及它驱动的命令。
-    pub(crate) commands: RefCell<Vec<(HotKey, &'static catalogue::Command)>>,
+    /// 各命令（含用户工具）当前绑定的组合键，以及这组键驱动的是谁。
+    pub(crate) slots: RefCell<Vec<(HotKey, ShortcutOwner)>>,
 }
 
 impl gpui_kit::Global for Shortcuts {}
@@ -73,11 +81,11 @@ pub fn install(cx: &mut App) {
     cx.set_global(Shortcuts {
         manager,
         summon: RefCell::new(None),
-        commands: RefCell::new(Vec::new()),
+        slots: RefCell::new(Vec::new()),
     });
     // 先按当前的设置绑一遍，免得第一下按键落空。
     let summon_ready = apply_summon_shortcut(cx);
-    apply_command_shortcuts(cx);
+    apply_shortcuts(cx);
 
     // 启动时那次注册可能被拒（旧进程还没退干净、键被别人占着），隔一会儿重试几轮。
     // 这段只在启动后三秒内醒几次，过了就再也不碰计时器了。
@@ -138,6 +146,7 @@ fn dispatch_hotkey(id: u32, cx: &mut App) {
     match owner {
         Some(ShortcutOwner::Summon) => crate::app::show_launcher(cx),
         Some(ShortcutOwner::Command(command)) => run_command(command, cx),
+        Some(ShortcutOwner::Tool(id)) => crate::app::run_tool(id, cx),
         None => {}
     }
 }
@@ -154,11 +163,11 @@ fn hotkey_owner(id: u32, cx: &App) -> Option<ShortcutOwner> {
         return Some(ShortcutOwner::Summon);
     }
     shortcuts
-        .commands
+        .slots
         .borrow()
         .iter()
         .find(|(hotkey, _)| hotkey.id() == id)
-        .map(|(_, command)| ShortcutOwner::Command(command))
+        .map(|(_, owner)| *owner)
 }
 
 /// 设置里这组组合键归谁——录制时先查冲突，别等绑定完才发现键被占了。
@@ -172,10 +181,14 @@ pub(crate) fn owner_of_chord(chord: &str, cx: &App) -> Option<ShortcutOwner> {
         settings.summon_shortcut.as_deref(),
         catalogue::COMMANDS.iter().map(|command| {
             (
-                command,
+                ShortcutOwner::Command(command),
                 settings.command_shortcut(command.section.key(), command.id),
             )
         }),
+        settings
+            .tools
+            .iter()
+            .map(|tool| (ShortcutOwner::Tool(tool.id), tool.shortcut.as_deref())),
     )
 }
 
@@ -183,15 +196,16 @@ pub(crate) fn owner_of_chord(chord: &str, cx: &App) -> Option<ShortcutOwner> {
 fn find_owner<'a>(
     chord: &str,
     summon: Option<&str>,
-    commands: impl Iterator<Item = (&'static catalogue::Command, Option<&'a str>)>,
+    commands: impl Iterator<Item = (ShortcutOwner, Option<&'a str>)>,
+    tools: impl Iterator<Item = (ShortcutOwner, Option<&'a str>)>,
 ) -> Option<ShortcutOwner> {
     if summon == Some(chord) {
         return Some(ShortcutOwner::Summon);
     }
     commands
-        .into_iter()
+        .chain(tools)
         .find(|(_, shortcut)| *shortcut == Some(chord))
-        .map(|(command, _)| ShortcutOwner::Command(command))
+        .map(|(owner, _)| owner)
 }
 
 /// 按设置重新绑定唤出热键，返回「当前状态是否已经就位」。
@@ -230,44 +244,49 @@ pub fn apply_summon_shortcut(cx: &mut App) -> bool {
     }
 }
 
-/// 按设置重建命令快捷键。
+/// 按设置重建命令快捷键（静态命令和用户工具一起）。
 ///
 /// 全部注销再全量注册：集合很小，局部更新反而要维护「哪个键属于哪条命令」的账。
 /// 某个键被系统拒绝只跳过那一条，不影响其它。
-pub fn apply_command_shortcuts(cx: &mut App) {
+pub fn apply_shortcuts(cx: &mut App) {
     let settings = stored_settings(cx);
-    let wanted = catalogue::COMMANDS
-        .iter()
-        .filter_map(|command| {
-            let chord = settings.command_shortcut(command.section.key(), command.id)?;
-            match parse_chord(chord) {
-                Some(hotkey) => Some((command, hotkey)),
-                None => {
-                    eprintln!("tools: 认不出快捷键 {chord}");
-                    None
-                }
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut wanted = Vec::new();
+    for command in catalogue::COMMANDS {
+        if let Some(chord) = settings.command_shortcut(command.section.key(), command.id) {
+            push_wanted(&mut wanted, chord, ShortcutOwner::Command(command));
+        }
+    }
+    for tool in &settings.tools {
+        if let Some(chord) = tool.shortcut.as_deref() {
+            push_wanted(&mut wanted, chord, ShortcutOwner::Tool(tool.id));
+        }
+    }
 
     let Some(shortcuts) = cx.try_global::<Shortcuts>() else {
         return;
     };
-    let mut held = shortcuts.commands.borrow_mut();
+    let mut held = shortcuts.slots.borrow_mut();
     for (hotkey, _) in held.drain(..) {
         if let Err(error) = shortcuts.manager.unregister(hotkey) {
             eprintln!("tools: 释放旧快捷键失败：{error}");
         }
     }
-    for (command, hotkey) in wanted {
+    for (owner, hotkey) in wanted {
         match shortcuts.manager.register(hotkey) {
-            Ok(()) => held.push((hotkey, command)),
+            Ok(()) => held.push((hotkey, owner)),
             Err(error) => eprintln!(
-                "tools: 绑定 {}/{} 的快捷键失败：{error}",
-                command.section.key(),
-                command.id
+                "tools: 绑定\u{201c}{}\u{201d}的快捷键失败：{error}",
+                owner.label(cx)
             ),
         }
+    }
+}
+
+/// 把一个组合键解析成热键并排进待注册的队列；认不出的只报告，不拦别的。
+fn push_wanted(wanted: &mut Vec<(ShortcutOwner, HotKey)>, chord: &str, owner: ShortcutOwner) {
+    match parse_chord(chord) {
+        Some(hotkey) => wanted.push((owner, hotkey)),
+        None => eprintln!("tools: 认不出快捷键 {chord}"),
     }
 }
 
@@ -396,12 +415,19 @@ mod tests {
     use super::*;
     use crate::catalogue;
 
+    fn none_tools() -> impl Iterator<Item = (ShortcutOwner, Option<&'static str>)> {
+        std::iter::empty()
+    }
+
     #[test]
     fn a_chord_belongs_to_the_first_claimant() {
         let first = &catalogue::COMMANDS[0];
         let second = &catalogue::COMMANDS[1];
-        let owners = [(first, Some("ctrl+KeyP")), (second, Some("ctrl+KeyP"))];
-        match find_owner("ctrl+KeyP", None, owners.into_iter()) {
+        let owners = [
+            (ShortcutOwner::Command(first), Some("ctrl+KeyP")),
+            (ShortcutOwner::Command(second), Some("ctrl+KeyP")),
+        ];
+        match find_owner("ctrl+KeyP", None, owners.into_iter(), none_tools()) {
             Some(ShortcutOwner::Command(command)) => assert_eq!(command.id, first.id),
             _ => panic!("这组键应该归先占住的那条命令"),
         }
@@ -409,17 +435,43 @@ mod tests {
 
     #[test]
     fn the_summon_hotkey_claims_its_chord_before_commands() {
-        let owners = [(&catalogue::COMMANDS[0], Some("ctrl+Space"))];
+        let owners = [(
+            ShortcutOwner::Command(&catalogue::COMMANDS[0]),
+            Some("ctrl+Space"),
+        )];
         assert!(matches!(
-            find_owner("ctrl+Space", Some("ctrl+Space"), owners.into_iter()),
+            find_owner(
+                "ctrl+Space",
+                Some("ctrl+Space"),
+                owners.into_iter(),
+                none_tools()
+            ),
             Some(ShortcutOwner::Summon)
         ));
     }
 
     #[test]
     fn a_free_chord_has_no_owner() {
-        let owners = [(&catalogue::COMMANDS[0], None)];
-        assert!(find_owner("ctrl+KeyP", None, owners.into_iter()).is_none());
-        assert!(find_owner("ctrl+KeyP", Some("ctrl+Space"), owners.into_iter()).is_none());
+        let owners = [(ShortcutOwner::Command(&catalogue::COMMANDS[0]), None)];
+        assert!(find_owner("ctrl+KeyP", None, owners.into_iter(), none_tools()).is_none());
+        assert!(
+            find_owner(
+                "ctrl+KeyP",
+                Some("ctrl+Space"),
+                owners.into_iter(),
+                none_tools()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_user_tool_can_claim_a_chord_too() {
+        let owners = [(ShortcutOwner::Command(&catalogue::COMMANDS[0]), None)];
+        let tools = [(ShortcutOwner::Tool(7), Some("ctrl+alt+KeyT"))];
+        match find_owner("ctrl+alt+KeyT", None, owners.into_iter(), tools.into_iter()) {
+            Some(ShortcutOwner::Tool(id)) => assert_eq!(id, 7),
+            _ => panic!("这组键应该归那条用户工具"),
+        }
     }
 }

@@ -16,8 +16,11 @@ Rust + GPUI 的 Windows 启动器，个人自用。这份文档是唯一的项�
 6. 拖动搜索栏空白处移动面板（记住纵坐标）。
 7. 拖动面板四边四角改大小（记住宽高；有下限，见 §4.8）。
 8. 搜索栏右侧齿轮打开面板内设置。
+9. 设置里可以自己加「文件快捷方式」（打开文件所在的文件夹）和「快捷终端」（在系统默认
+   终端里跑一条命令），能改、能删、能绑快捷键、能决定上不上主页（见 §4.9）。
 
-不追求通用启动器框架，不做插件体系。命令是编译进主程序的静态表。
+不追求通用启动器框架，不做插件体系。内置命令是编译进主程序的静态表；用户自己加的那两类
+是数据库里的几条记录。
 
 ## 2. 技术原则
 
@@ -53,14 +56,15 @@ src/
     settings.rs           SQLite 持久化
   platform/               Windows 平台细节
     autostart.rs          HKCU Run 开机启动
+    dialog.rs             系统的「打开文件」对话框（用户挑文件用）
     instance.rs           单例（命名互斥量 + 唤醒事件）
     logo.rs               纯计算图标光栅化
-    shell.rs              ShellExecuteW 打开外部目标
+    shell.rs              ShellExecuteW 打开外部目标、开新终端
     window.rs             无边框窗口外壳
   ui/                     界面
     mod.rs
     colors.rs             配色表 DARK / LIGHT
-    commands_list.rs      主页列表（命令 + 指令匹配）及其 ListDelegate
+    commands_list.rs      主页列表（命令 + 用户工具 + 指令匹配）及其 ListDelegate
     launcher/
       mod.rs              面板状态与行为：导航、换页、动作
       view.rs             绘制：页头、页脚、整页骨架、impl Render
@@ -104,13 +108,15 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 `text_ellipsis`，控件 `flex_shrink_0`：宁可截断描述，也不挤掉控件。
 
 **「工具」是容器标签**：它自己不画设置项，而是把工具收在子标签页里（`ToolTab`：计算器 /
-火狐系浏览器 / GitHub），左右两栏布局照命令页：左列子标签、右列内容。加工具 = 给
-`SettingsTab::Tools` 下的 `ToolTab` 加一项。
+火狐系浏览器 / GitHub / 文件快捷方式 / 快捷终端），左右两栏布局照命令页：左列子标签、
+右列内容。加工具 = 给 `SettingsTab::Tools` 下的 `ToolTab` 加一项。
 
 工具页里的文本框（火狐 profile 目录、GitHub 用户名和令牌）**失焦或回车时保存**
 （`Launcher::commit_settings_inputs`），不设「保存」按钮；换标签、回主页也会先存一次。
 
 **「指令匹配」标签**：四个匹配各一行开关，见 4.4。
+
+「工具」里的后两个子标签管的是用户自己加的条目，见 4.9。
 
 ### 4.3 计算器
 
@@ -223,6 +229,9 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 从 `COMMANDS` 现算，没命令的分组不出现），右列该分组的命令行。
 每行：图标 + 名称/描述 + 调用次数 + 快捷键按钮 + 启用开关；左列每项显示「启用数/总数」。
 
+用户自己加的工具（文件快捷方式 / 快捷终端）不进这张表，它们在「设置 → 工具」里管，
+但**在主页上和命令同池排序**（见 4.9）。
+
 ### 4.7 快捷键
 
 - 左键录制 / 右键清除（`command/shortcuts.rs` + `ui/pages/commands.rs` 的
@@ -232,6 +241,8 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - **冲突不靠拦截判**：`RegisterHotKey` 会把组合键从焦点窗口截走，冲突从热键事件那条路
   报回（`report_conflict`）。**面板隐藏必须结束录制**（`leave`），否则所有热键静默失效。
 - 唤出热键和命令热键同源：`settings.summon_shortcut`；`none` 表示明确不绑（托盘兜底）。
+- 用户工具的快捷键也走这一套（`ShortcutOwner::Tool(id)`）；`apply_shortcuts` 一次把
+  静态命令和工具全部注销再全量注册，删掉一条工具时也要调它（那个键得放出来）。
 - 键名用 `keyboard-types` 的 `Code` 存，显示时才友好化。
 
 ### 4.8 面板外壳、尺寸与空闲开销
@@ -264,6 +275,35 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   就是 `resume`）。挂起期间主线程不渲染，恢复一定早于显示。实测隐藏态从 4~6% 降到
   **0.000%**（单核，debug 构建）。
 
+### 4.9 用户工具（文件快捷方式 / 快捷终端）
+
+静态命令写在 `COMMANDS` 里，编译期就定了；这两类是**用户在设置页里自己加的**，存在
+`tools` 表里（`Settings::tools`），能增、能删、能改：
+
+| 种类 | `target` 存什么 | 执行时做什么 |
+| --- | --- | --- |
+| `ToolKind::Shortcut` | 文件路径 | `shell::open_location`：是文件夹就打开它，是文件就打开它所在的文件夹 |
+| `ToolKind::Terminal` | 一整条命令行 | `shell::run_in_terminal`：`cmd /K <命令>` + `CREATE_NEW_CONSOLE`，由系统的默认终端接手 |
+
+- **数据在 `UserTool` 上自己兜着**：名字、`target`、开关、次数、快捷键都在这一条里，
+  不去挤 `commands` 表的键空间（那张表按「子模块 + id」定位静态命令）。id 只增不回收。
+- **主页上与静态命令同池排序**：`ToolDelegate` 把命令和工具收进同一张 `Vec<HomeItem>`
+  按次数排（`rebuild` 里排序，结果缓存在 `rows`——一次渲染里 `item_count` /
+  `item_at` / `render_item` 都会问它，现算就是每轮重排一次）。
+  搜索词同时匹配名字和 `target`（路径或命令），两个都该能搜到。
+- 快捷键：`ShortcutOwner::Tool(id)` / `RecordTarget::Tool(id)`，和命令共用一套录制、
+  冲突检测和 `apply_shortcuts` 全量重绑。
+- 新增文件快捷方式**先弹系统文件框**（`platform/dialog.rs` 的 `pick_file`，阻塞接口、
+  跑在后台线程），选完按文件名（去扩展名）建一条；名字想改就点行尾那支笔。
+- 对话框开着时 `Launcher::dialog` 是 `Some`，`watch_focus` 据此**不收起面板**——用户
+  正在挑文件，面板一消失就白挑。这个字段**不要和 `pending` 合并**：`pending` 会跟着
+  换页被丢掉，丢了这个任务就等于对话框永远开着，自动收起从此失效。
+- 执行时路径不在了：不计数，弹 `Launcher::prompt`（盖在整页上的那张卡片），
+  三个出口——`修改`（再弹一次文件框、换掉 `target`）、`删除`（连带放掉它的快捷键）、
+  `取消`。
+- 编辑区（`Launcher::tool_editor`）是就地插在列表上方的一块表单，名字和 `target`
+  两个框，**名字或 `target` 空着不保存**；回车等于保存，换标签/回主页等于放弃。
+
 ## 5. 交互细节
 
 ### 5.1 搜索栏与拖动
@@ -285,8 +325,9 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - `enter`：执行高亮项（`activate_selected`，分派匹配或命令）；列表页里打开高亮那一行。
 - 列表页的搜索框常驻焦点，`↑↓` 仍由拦截器收走做选中移动，不进输入框。
 - `escape`：设置/计算器页先回命令页，否则收面板。
-- **计算器行有焦点时 `up/down/enter` 一律放行**（`app::calculator_typing`），那三个键在公式
-  框里是光标移动和换行。
+- **计算器行、工具编辑区的输入框有焦点时 `up/down/enter` 一律放行**
+  （`app::typing_in_field`），那几个键在框里是光标移动、换行、提交表单。
+- `enter` 在设置页里：编辑区开着就是「保存」，否则把改过的文本框落盘。
 - 拦截器用 `owns_window` 确认按键属于面板窗口。
 
 ### 5.3 页面保持（resume）
@@ -305,6 +346,8 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 
 - 连续 `FOCUS_LOST_SAMPLES`(3) 次拿不到前台才收。
 - **必须先前台成功过一次**（`was_in_front`），避免刚出现就被收。
+- **系统文件框开着时不收**（`Launcher::dialog` 是 `Some`）：前台在对话框身上，
+  那不是用户跑掉了。
 - 面板收起后循环 `break`，下次 `reset` 重新 `spawn` 顶掉旧 Task。
 
 ## 6. 外观

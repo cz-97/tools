@@ -38,6 +38,68 @@ impl Theme {
     }
 }
 
+/// 用户自己加的工具都有哪几种。
+///
+/// 静态命令写在 `command/catalogue.rs` 里，编译期就定了；这两种是用户在设置页里
+/// 随手加的，存在数据库的 `tools` 表里。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ToolKind {
+    /// 文件快捷方式：打开文件所在的文件夹。
+    Shortcut,
+    /// 快捷终端：在系统默认终端里跑一条命令。
+    Terminal,
+}
+
+impl ToolKind {
+    /// 全部种类，顺序就是设置页里的顺序。
+    pub const ALL: [Self; 2] = [Self::Shortcut, Self::Terminal];
+
+    /// 存进数据库时写的值。
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Shortcut => "shortcut",
+            Self::Terminal => "terminal",
+        }
+    }
+
+    /// 从数据库读回来；认不出的值返回 `None`（那一条就当不存在）。
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.key() == key)
+    }
+
+    /// 记调用次数、绑快捷键时用的「子模块」键。
+    ///
+    /// 和静态命令的 `Section::key()` 不会撞：那边全是英文单词，这边带 `tool-` 前缀。
+    pub fn section_key(self) -> &'static str {
+        match self {
+            Self::Shortcut => "tool-shortcut",
+            Self::Terminal => "tool-terminal",
+        }
+    }
+}
+
+/// 用户自己加的一条工具。
+///
+/// 名字、目标、开关、次数、快捷键全在这一个结构里：它和静态命令一样参与主页的
+/// 排序与搜索，但存在自己那张表里，不占 `commands` 表的键空间。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserTool {
+    /// 主键，只在工具表里唯一。发布后不再复用。
+    pub id: i64,
+    pub kind: ToolKind,
+    /// 主页和设置页上显示的名字，同时是搜索词。
+    pub name: String,
+    /// 文件路径（[`ToolKind::Shortcut`]）或命令行（[`ToolKind::Terminal`]），
+    /// 同样参与搜索。
+    pub target: String,
+    /// 要不要出现在主页上。
+    pub enabled: bool,
+    /// 跑过多少次。
+    pub uses: u64,
+    /// 唤起它的全局快捷键，形如 `ctrl+alt+KeyP`。
+    pub shortcut: Option<String>,
+}
+
 /// 用户对某一条命令的决定。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSettings {
@@ -112,6 +174,8 @@ pub struct Settings {
     pub github_token: String,
     /// 每条命令的状态，键是（子模块键, 命令 id）。
     pub commands: BTreeMap<(String, String), CommandSettings>,
+    /// 用户自己加的工具（文件快捷方式、快捷终端），按 id 升序。
+    pub tools: Vec<UserTool>,
 }
 
 /// 程序需要的表，第一次用时建好，之后不再动。
@@ -127,6 +191,15 @@ CREATE TABLE IF NOT EXISTS commands (
     uses     INTEGER NOT NULL,
     shortcut TEXT,
     PRIMARY KEY (section, id)
+);
+CREATE TABLE IF NOT EXISTS tools (
+    id       INTEGER PRIMARY KEY NOT NULL,
+    kind     TEXT NOT NULL,
+    name     TEXT NOT NULL,
+    target   TEXT NOT NULL,
+    enabled  INTEGER NOT NULL,
+    uses     INTEGER NOT NULL,
+    shortcut TEXT
 );
 ";
 
@@ -353,6 +426,29 @@ impl Settings {
             }
         }
 
+        {
+            let mut statement = connection.prepare(
+                "SELECT id, kind, name, target, enabled, uses, shortcut FROM tools ORDER BY id",
+            )?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let Some(kind) = ToolKind::from_key(&row.get::<_, String>(1)?) else {
+                    // 认不出的种类（手改过的库、或降级运行）当它不存在。
+                    continue;
+                };
+                found = true;
+                settings.tools.push(UserTool {
+                    id: row.get(0)?,
+                    kind,
+                    name: row.get(2)?,
+                    target: row.get(3)?,
+                    enabled: row.get::<_, i64>(4)? != 0,
+                    uses: row.get::<_, i64>(5)?.max(0) as u64,
+                    shortcut: row.get(6)?,
+                });
+            }
+        }
+
         Ok(found.then_some(settings))
     }
 
@@ -430,7 +526,94 @@ impl Settings {
                 ])?;
             }
         }
+
+        // 工具条目本来就少，和命令一样整表重写：不用维护「改哪行、删哪行」的账。
+        transaction.execute("DELETE FROM tools", [])?;
+        {
+            let mut insert = transaction.prepare(
+                "INSERT INTO tools (id, kind, name, target, enabled, uses, shortcut) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            for tool in &self.tools {
+                insert.execute(params![
+                    tool.id,
+                    tool.kind.key(),
+                    tool.name,
+                    tool.target,
+                    i64::from(tool.enabled),
+                    tool.uses as i64,
+                    tool.shortcut.as_deref(),
+                ])?;
+            }
+        }
         transaction.commit()
+    }
+
+    /// 按 id 取一条用户工具。
+    pub fn tool(&self, id: i64) -> Option<&UserTool> {
+        self.tools.iter().find(|tool| tool.id == id)
+    }
+
+    /// 某一种工具的全部条目，顺序和存的一样（按 id 升序）。
+    pub fn tools_of(&self, kind: ToolKind) -> impl Iterator<Item = &UserTool> {
+        self.tools.iter().filter(move |tool| tool.kind == kind)
+    }
+
+    /// 加一条工具，返回新 id。id 只增不回收：删掉的 id 不会被后来者占用。
+    pub fn add_tool(&mut self, kind: ToolKind, name: String, target: String) -> i64 {
+        let id = self.next_tool_id();
+        self.tools.push(UserTool {
+            id,
+            kind,
+            name,
+            target,
+            enabled: true,
+            uses: 0,
+            shortcut: None,
+        });
+        id
+    }
+
+    /// 改名字和路径/命令，返回这条工具还在不在。
+    pub fn update_tool(&mut self, id: i64, name: String, target: String) -> bool {
+        let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == id) else {
+            return false;
+        };
+        tool.name = name;
+        tool.target = target;
+        true
+    }
+
+    /// 删掉一条工具，返回删掉的那条。
+    pub fn remove_tool(&mut self, id: i64) -> Option<UserTool> {
+        let index = self.tools.iter().position(|tool| tool.id == id)?;
+        Some(self.tools.remove(index))
+    }
+
+    /// 把工具放上主页，或从主页拿掉。
+    pub fn set_tool_enabled(&mut self, id: i64, enabled: bool) {
+        if let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == id) {
+            tool.enabled = enabled;
+        }
+    }
+
+    /// 给工具绑一个全局快捷键，或者解绑。
+    pub fn set_tool_shortcut(&mut self, id: i64, shortcut: Option<String>) {
+        if let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == id) {
+            tool.shortcut = shortcut;
+        }
+    }
+
+    /// 给这条工具记一次运行。
+    pub fn count_tool_use(&mut self, id: i64) {
+        if let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == id) {
+            tool.uses = tool.uses.saturating_add(1);
+        }
+    }
+
+    /// 下一条工具的 id：现有最大值 + 1。空表从 1 开始。
+    fn next_tool_id(&self) -> i64 {
+        self.tools.iter().map(|tool| tool.id).max().unwrap_or(0) + 1
     }
 
     /// 用户对这条命令的决定，缺的项补默认值。
@@ -533,13 +716,14 @@ impl Default for Settings {
             github_user: String::new(),
             github_token: String::new(),
             commands: BTreeMap::new(),
+            tools: Vec::new(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandSettings, SCHEMA, Settings, Theme};
+    use super::{CommandSettings, SCHEMA, Settings, Theme, ToolKind};
     use rusqlite::Connection;
 
     fn database() -> Connection {
@@ -789,5 +973,71 @@ mod tests {
             settings.summon_shortcut.as_deref(),
             Some(Settings::SUMMON_DEFAULT)
         );
+    }
+
+    #[test]
+    fn user_tools_survive_a_round_trip() {
+        let mut settings = Settings::default();
+        let file = settings.add_tool(
+            ToolKind::Shortcut,
+            "账单".to_string(),
+            r"D:\文档\账单.xlsx".to_string(),
+        );
+        let terminal = settings.add_tool(
+            ToolKind::Terminal,
+            "构建".to_string(),
+            "cargo build".to_string(),
+        );
+        settings.set_tool_enabled(file, false);
+        settings.set_tool_shortcut(terminal, Some("ctrl+alt+KeyB".to_string()));
+        settings.count_tool_use(terminal);
+        settings.count_tool_use(terminal);
+
+        let connection = database();
+        settings.write(&connection).expect("写入");
+        let read = Settings::read(&connection).expect("读取").expect("有数据");
+        assert_eq!(read.tools, settings.tools);
+
+        let restored = read.tool(terminal).expect("终端条目还在");
+        assert_eq!(restored.kind, ToolKind::Terminal);
+        assert_eq!(restored.target, "cargo build");
+        assert_eq!(restored.uses, 2);
+        assert_eq!(restored.shortcut.as_deref(), Some("ctrl+alt+KeyB"));
+        assert!(!read.tool(file).expect("文件条目还在").enabled);
+    }
+
+    #[test]
+    fn removing_a_tool_leaves_the_rest_alone() {
+        let mut settings = Settings::default();
+        let first = settings.add_tool(ToolKind::Shortcut, "一".to_string(), "a.txt".to_string());
+        let second = settings.add_tool(ToolKind::Terminal, "二".to_string(), "dir".to_string());
+        assert!(settings.remove_tool(first).is_some());
+        assert!(settings.remove_tool(first).is_none());
+        assert_eq!(settings.tools.len(), 1);
+        assert!(settings.tool(second).is_some());
+        // id 不回收：下一条不能顶掉刚删掉的那个号。
+        let third = settings.add_tool(ToolKind::Terminal, "三".to_string(), "cd".to_string());
+        assert!(third > second);
+    }
+
+    #[test]
+    fn a_tool_keeps_its_kind_on_the_way_back() {
+        let mut settings = Settings::default();
+        settings.add_tool(ToolKind::Shortcut, "文件".to_string(), "C:/a".to_string());
+        settings.add_tool(
+            ToolKind::Terminal,
+            "终端".to_string(),
+            "ipconfig".to_string(),
+        );
+        let connection = database();
+        settings.write(&connection).expect("写入");
+        let read = Settings::read(&connection).expect("读取").expect("有数据");
+        assert_eq!(read.tools_of(ToolKind::Shortcut).count(), 1);
+        let terminal = read
+            .tools_of(ToolKind::Terminal)
+            .next()
+            .expect("有一条终端");
+        assert_eq!(terminal.target, "ipconfig");
+        assert_eq!(read.tools_of(ToolKind::Shortcut).count(), 1);
     }
 }

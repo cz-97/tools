@@ -24,6 +24,11 @@ impl WindowHandle {
     pub fn is_valid(self) -> bool {
         self != Self::INVALID
     }
+
+    /// 原始句柄值，交给别的 Win32 代码当 `HWND` 用（系统对话框要宿主窗口时用得上）。
+    pub fn raw(self) -> usize {
+        self.0
+    }
 }
 
 /// 宿主持有的顶层窗口，按句柄寻址。

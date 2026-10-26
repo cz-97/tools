@@ -10,6 +10,7 @@
 //! 处理器接手。开一个初始化过 COM 的短命线程，两件事都离开了 UI 线程。
 
 use std::ffi::OsStr;
+use std::path::Path;
 
 /// 让 shell 用默认处理器打开 `target`。
 ///
@@ -27,9 +28,46 @@ pub fn open(target: impl AsRef<OsStr>) {
     });
 }
 
+/// 打开 `path` 的「位置」：是文件夹就打开它，是文件就打开它所在的文件夹。
+///
+/// 同样交给 shell 解析关联，用户换过文件管理器也照样是他选的那个。
+pub fn open_location(path: impl AsRef<Path>) {
+    let path = path.as_ref().to_path_buf();
+    std::thread::spawn(move || {
+        sys::prepare();
+        let Some(folder) = sys::location(&path) else {
+            eprintln!("tools: {} 打不开，路径已经不在", path.display());
+            return;
+        };
+        if !sys::open(folder.as_os_str()) {
+            eprintln!("tools: could not open {}", folder.display());
+        }
+    });
+}
+
+/// 在系统默认终端里跑一条命令，返回控制台窗口有没有被拉起来。
+///
+/// 用的是 `cmd.exe /K`：命令跑完窗口留着，用户还能接着看输出、接着敲。
+/// 开新控制台交给系统，Windows 11 设的默认终端（Windows Terminal 之类）会自己接手，
+/// 这里不点名任何一个终端程序。
+pub fn run_in_terminal(command: &str) -> bool {
+    let command = command.trim();
+    if command.is_empty() {
+        return false;
+    }
+    match sys::spawn_console("cmd", command) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("tools: 终端没能打开（{error}）");
+            false
+        }
+    }
+}
+
 #[cfg(windows)]
 mod sys {
     use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
     use std::ptr;
     use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
@@ -37,6 +75,8 @@ mod sys {
 
     /// `ShellExecuteW` 用「大于 32」表示成功；更小的值是它自己的错误码。
     const SHELL_SUCCESS: isize = 32;
+    /// `CreateProcess` 的「开一个新的控制台窗口」标志。
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 
     /// 把这个线程设成 shell 期待的单线程套间。
     ///
@@ -67,15 +107,47 @@ mod sys {
         };
         result as isize > SHELL_SUCCESS
     }
+
+    /// 该打开哪个文件夹：文件夹返回它自己，文件返回它的上级目录。
+    ///
+    /// 路径不在了返回 `None`——这种情况由界面上那条提示去问用户删还是改。
+    pub fn location(path: &Path) -> Option<PathBuf> {
+        let metadata = std::fs::metadata(path).ok()?;
+        if metadata.is_dir() {
+            return Some(path.to_path_buf());
+        }
+        path.parent().map(Path::to_path_buf)
+    }
+
+    pub fn spawn_console(program: &str, command: &str) -> std::io::Result<()> {
+        use std::os::windows::process::CommandExt as _;
+        // `raw_arg` 原样拼在命令行后面：`/K` 后面跟的是用户写的那一整条命令，
+        // 中间再加一层引号，带空格的路径就会被 cmd 自己吃掉一层。
+        std::process::Command::new(program)
+            .arg("/K")
+            .raw_arg(command)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()?;
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
 mod sys {
     use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
 
     pub fn prepare() {}
 
     pub fn open(_target: &OsStr) -> bool {
         false
+    }
+
+    pub fn location(_path: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    pub fn spawn_console(_program: &str, _command: &str) -> std::io::Result<()> {
+        Err(std::io::Error::other("这个平台上没有终端可开"))
     }
 }

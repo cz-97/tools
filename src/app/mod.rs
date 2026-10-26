@@ -14,13 +14,14 @@ use gpui_kit::{
     Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
     WindowOptions, actions, prelude::*, px, size,
 };
+use gpui_tray::{Icon as TrayIcon, Tray};
 use tools::autostart;
 use tools::instance;
 use tools::logo;
-use tools::settings::{Settings, Theme as ColorScheme};
+use tools::settings::{Settings, Theme as ColorScheme, ToolKind};
+use tools::shell;
 use tools::vsync;
 use tools::window::NativeWindow;
-use gpui_tray::{Icon as TrayIcon, Tray};
 
 use crate::shortcuts;
 use crate::strings;
@@ -353,9 +354,9 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
         cx.stop_propagation();
         return;
     }
-    // 计算器行里正在打字：上下键归光标移动、回车归换行。不放过的话，用户在公式里
-    // 按一下上箭头，面板就切到「关于」页去了。
-    let typing = calculator_typing(window, cx);
+    // 计算器行、用户工具编辑区里正在打字：上下键归光标移动、回车归换行。不放过的话，
+    // 用户在公式里按一下上箭头，面板就切到「关于」页去了。
+    let typing = typing_in_field(window, cx);
     // 焦点绝不能被 `Tab` 带走：gpui-base 的 `Root` 把 `tab` 绑成了切焦点，切走之后
     // 敲字母数字全都没反应（用户报过两次）。这里直接吞掉，再把焦点还给本页输入框。
     if event.keystroke.key == "tab" && !typing {
@@ -422,18 +423,26 @@ fn active_input_focused(window: &Window, cx: &App) -> bool {
         .unwrap_or(true)
 }
 
-/// 计算器里是不是有一行正打着字（焦点在它的公式框里）。
-fn calculator_typing(window: &Window, cx: &App) -> bool {
+/// 面板里是不是有个「多行/编辑中」的输入框正拿着焦点（计算器公式行、工具编辑区）。
+///
+/// 这两种框自己要用上下键和回车，面板就不能把它们截走。
+fn typing_in_field(window: &Window, cx: &App) -> bool {
     let Some(handle) = cx.try_global::<LauncherHandle>() else {
         return false;
     };
     handle
         .view
         .read_with(cx, |launcher, cx| {
-            launcher
+            let in_calculator = launcher
                 .calculator
                 .iter()
-                .any(|row| row.input.read(cx).focus_handle(cx).is_focused(window))
+                .any(|row| row.input.read(cx).focus_handle(cx).is_focused(window));
+            let in_editor = launcher.tool_editor.as_ref().is_some_and(|editor| {
+                [&editor.name, &editor.target]
+                    .into_iter()
+                    .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+            });
+            in_calculator || in_editor
         })
         .unwrap_or(false)
 }
@@ -607,6 +616,60 @@ pub fn run_command(command: &'static crate::catalogue::Command, cx: &mut App) {
     settings.count_use(command.section.key(), command.id);
     cx.set_global(SettingsStore(settings));
     (command.action)(cx);
+}
+
+/// 执行用户自己加的一条工具（文件快捷方式 / 快捷终端）。
+///
+/// 文件快捷方式先确认目标还在：不在了就别装没事，把「删还是改」的提示摆到面板上。
+/// 提示必须画在面板里，所以这时候面板得先亮出来。
+pub fn run_tool(id: i64, cx: &mut App) {
+    let Some(tool) = stored_settings(cx).tool(id).cloned() else {
+        return;
+    };
+    if tool.kind == ToolKind::Shortcut && !std::path::Path::new(&tool.target).exists() {
+        let visible = cx
+            .try_global::<LauncherPanel>()
+            .is_some_and(|panel| panel.window.is_visible());
+        if !visible {
+            show_launcher(cx);
+        }
+        with_launcher(cx, move |launcher, window, cx| {
+            launcher.prompt_missing_path(id, window, cx)
+        });
+        return;
+    }
+
+    // 和静态命令一样，次数只记在内存里，面板收起时统一落盘。
+    let mut settings = stored_settings(cx);
+    settings.count_tool_use(id);
+    cx.set_global(SettingsStore(settings));
+
+    match tool.kind {
+        ToolKind::Shortcut => shell::open_location(&tool.target),
+        ToolKind::Terminal => {
+            shell::run_in_terminal(&tool.target);
+        }
+    }
+}
+
+/// 面板窗口的原生句柄，系统对话框要拿它当宿主窗口。拿不到时是 `0`。
+pub fn panel_handle(cx: &App) -> usize {
+    cx.try_global::<LauncherPanel>()
+        .map_or(0, |panel| panel.window.handle().raw())
+}
+
+/// 系统对话框关掉之后把前台要回来。
+///
+/// 对话框是面板的模态子窗，正常情况下系统会自己把焦点还回来；但面板是个
+/// `PopUp` 工具窗，偶尔会被别的窗口截走，所以这里再要一次——不然用户挑完文件
+/// 会得到一块在背后、敲字没反应的面板。`show` 也一起调：对话框要是把宿主窗口
+/// 一起带走了，光 `focus` 是叫不回来的。
+pub fn reclaim_foreground(cx: &mut App) {
+    if let Some(panel) = cx.try_global::<LauncherPanel>() {
+        panel.window.show();
+        panel.window.focus();
+    }
+    cx.activate(true);
 }
 
 /// 建托盘图标与菜单。

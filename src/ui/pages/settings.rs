@@ -10,7 +10,7 @@ use gpui_kit::{
 };
 use tools::firefox;
 use tools::matcher::MatchKind;
-use tools::settings::{Settings, Theme as ColorScheme};
+use tools::settings::{Settings, Theme as ColorScheme, ToolKind, UserTool};
 
 use crate::actions;
 use crate::app::stored_settings;
@@ -148,6 +148,9 @@ fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> 
         ToolTab::Calculator => calculator_settings_page(stored_settings(cx), colors, cx),
         ToolTab::Firefox => firefox_settings_page(launcher, colors, cx),
         ToolTab::Github => github_settings_page(launcher, colors, cx),
+        // 这两页是「用户自己加的条目」：上面一行新增按钮，下面是列表，需要时插一块编辑区。
+        ToolTab::Shortcuts => user_tools_page(launcher, ToolKind::Shortcut, colors, cx),
+        ToolTab::Terminal => user_tools_page(launcher, ToolKind::Terminal, colors, cx),
     };
 
     h_flex()
@@ -266,6 +269,7 @@ fn summon_button(
         label,
         recording,
         colors,
+        px(240.),
         cx.listener(|launcher, _, _, cx| launcher.toggle_summon_recording(cx)),
         cx.listener(|launcher, _: &MouseDownEvent, _, cx| {
             launcher.clear_shortcut(RecordTarget::Summon, cx)
@@ -470,6 +474,380 @@ fn github_settings_page(
         .into_any_element()
 }
 
+/// 文件快捷方式 / 快捷终端这两页：上面是新增按钮，下面是条目列表。
+///
+/// 编辑区就地插在新增按钮和列表之间，不另开窗口：面板本身就只有这么一块地方，
+/// 再弹一层界面反而更容易点错。
+fn user_tools_page(
+    launcher: &Launcher,
+    kind: ToolKind,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> AnyElement {
+    let settings = stored_settings(cx);
+    let tools = settings.tools_of(kind).cloned().collect::<Vec<_>>();
+    let editor_here = launcher
+        .tool_editor
+        .as_ref()
+        .is_some_and(|editor| editor.kind == kind);
+
+    let add: AnyElement = match kind {
+        ToolKind::Shortcut => small_button(
+            SharedString::from("tool-add-shortcut"),
+            strings::tools_page::add_label(kind).into(),
+            colors,
+            true,
+            cx.listener(|launcher, _, _, cx| {
+                launcher.add_shortcut_tool(cx);
+            }),
+        )
+        .into_any_element(),
+        ToolKind::Terminal => small_button(
+            SharedString::from("tool-add-terminal"),
+            strings::tools_page::add_label(kind).into(),
+            colors,
+            true,
+            cx.listener(|launcher, _, window, cx| {
+                launcher.new_terminal_tool(window, cx);
+            }),
+        )
+        .into_any_element(),
+    };
+
+    let rows = tools
+        .iter()
+        .map(|tool| tool_row(launcher, tool, colors, cx).into_any_element())
+        .collect::<Vec<_>>();
+
+    v_flex()
+        .gap_1()
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .pb_1()
+                // 新增按钮排在左边，跟着列表的阅读顺序走。
+                .child(div().flex_shrink_0().child(add))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(strings::lists::count(tools.len())),
+                ),
+        )
+        .when(editor_here, |this| {
+            this.child(tool_editor_block(launcher, colors, cx))
+        })
+        .children(rows)
+        .when(tools.is_empty() && !editor_here, |this| {
+            this.child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(strings::tools_page::empty_hint(kind)),
+            )
+        })
+        .into_any_element()
+}
+
+/// 一条用户工具：名字、路径（命令）、次数、快捷键、开关键、改/删。
+///
+/// 两行排：第一行名字加次数和开关，第二行路径（命令）加快捷键和两个图标按钮。
+/// 右列本来就不宽，塞成一行的话名字只能剩半个字。
+fn tool_row(
+    launcher: &Launcher,
+    tool: &UserTool,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> impl IntoElement {
+    let recording = launcher.recording_tool() == Some(tool.id);
+    let label: SharedString = if recording {
+        launcher
+            .recording_conflict()
+            .map_or_else(
+                || strings::commands_page::RECORDING.to_string(),
+                str::to_string,
+            )
+            .into()
+    } else {
+        match tool.shortcut.as_deref() {
+            Some(chord) => shortcut_label(chord).into(),
+            None => strings::commands_page::SHORTCUT_EMPTY.into(),
+        }
+    };
+    let id = tool.id;
+    let kind = tool.kind;
+    let shortcut = shortcut_button(
+        SharedString::from(format!("tool-shortcut-{id}")),
+        label,
+        recording,
+        colors,
+        px(96.),
+        cx.listener(move |launcher, _, _, cx| launcher.toggle_tool_recording(id, cx)),
+        cx.listener(move |launcher, _: &MouseDownEvent, _, cx| {
+            launcher.clear_shortcut(RecordTarget::Tool(id), cx)
+        }),
+    );
+
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_2()
+        .px_2()
+        .py_2()
+        .rounded(px(6.))
+        .hover(move |style| style.bg(colors.hover))
+        .child(
+            div()
+                .flex_shrink_0()
+                .size_6()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .child(
+                    Icon::new(ToolTab::for_kind(tool.kind).icon())
+                        .size_3()
+                        .text_color(colors.foreground),
+                ),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_sm()
+                                .text_color(colors.foreground)
+                                .child(tool.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(colors.on_surface_muted)
+                                .child(strings::common::uses(tool.uses)),
+                        )
+                        .child(
+                            div().flex_shrink_0().child(
+                                Switch::new(SharedString::from(format!("tool-enabled-{id}")))
+                                    .checked(tool.enabled)
+                                    .on_change(cx.listener(
+                                        move |launcher, checked: &bool, _window, cx| {
+                                            launcher.set_tool_enabled(id, *checked, cx)
+                                        },
+                                    )),
+                            ),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_xs()
+                                .text_color(colors.on_surface_muted)
+                                .child(tool.target.clone()),
+                        )
+                        .child(div().flex_shrink_0().child(shortcut))
+                        .child(icon_button(
+                            SharedString::from(format!("tool-edit-{id}")),
+                            gpui_kit::assets::IconName::Pencil,
+                            colors,
+                            cx.listener(move |launcher, _, window, cx| {
+                                launcher.start_tool_editor(kind, Some(id), window, cx)
+                            }),
+                        ))
+                        .child(icon_button(
+                            SharedString::from(format!("tool-delete-{id}")),
+                            gpui_kit::assets::IconName::Trash,
+                            colors,
+                            cx.listener(move |launcher, _, _, cx| launcher.delete_tool(id, cx)),
+                        )),
+                ),
+        )
+}
+
+/// 编辑区：名字一行、路径（命令）一行，下面是保存/取消。
+fn tool_editor_block(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
+    let Some(editor) = launcher.tool_editor.as_ref() else {
+        return div().into_any_element();
+    };
+    let kind = editor.kind;
+    let target_label = match kind {
+        ToolKind::Shortcut => strings::tools_page::EDIT_PATH,
+        ToolKind::Terminal => strings::tools_page::EDIT_COMMAND,
+    };
+
+    v_flex()
+        .gap_2()
+        .p_3()
+        .mb_1()
+        .rounded(px(8.))
+        .bg(colors.control)
+        .child(div().text_xs().text_color(colors.muted_foreground).child(
+            strings::tools_page::editor_heading(kind, editor.id.is_some()),
+        ))
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(48.))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(strings::tools_page::EDIT_NAME),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(filled_text_field(&editor.name)),
+                ),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(48.))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(target_label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(filled_text_field(&editor.target)),
+                )
+                .when(kind == ToolKind::Shortcut, |this| {
+                    this.child(div().flex_shrink_0().child(small_button(
+                        SharedString::from("tool-editor-pick"),
+                        strings::tools_page::PICK_FILE.into(),
+                        colors,
+                        false,
+                        cx.listener(|launcher, _, _, cx| launcher.pick_editor_target(cx)),
+                    )))
+                }),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .child(small_button(
+                    SharedString::from("tool-editor-save"),
+                    strings::tools_page::SAVE.into(),
+                    colors,
+                    true,
+                    cx.listener(|launcher, _, window, cx| launcher.save_tool_editor(window, cx)),
+                ))
+                .child(small_button(
+                    SharedString::from("tool-editor-cancel"),
+                    strings::tools_page::CANCEL.into(),
+                    colors,
+                    false,
+                    cx.listener(|launcher, _, _, cx| launcher.cancel_tool_editor(cx)),
+                ))
+                .child(div().flex_1())
+                .when_some(launcher.tool_notice, |this, notice| {
+                    this.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(notice),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
+/// 一枚小按钮：`primary` 时是实心的（保存、新增），否则只是一圈淡边框。
+pub(crate) fn small_button(
+    id: SharedString,
+    label: SharedString,
+    colors: UiColors,
+    primary: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .px_2()
+        .py_1()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(if primary {
+            colors.accent
+        } else {
+            colors.surface
+        })
+        .text_xs()
+        .cursor_pointer()
+        .text_color(if primary {
+            colors.accent_foreground
+        } else {
+            colors.on_surface_muted
+        })
+        .when(primary, move |this| this.bg(colors.accent))
+        .when(!primary, move |this| {
+            this.hover(move |style| style.bg(colors.hover))
+        })
+        .on_click(on_click)
+        .child(label)
+}
+
+/// 一枚只有图标的按钮（行尾的改 / 删）。
+fn icon_button(
+    id: SharedString,
+    icon: gpui_kit::assets::IconName,
+    colors: UiColors,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .size_5()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.))
+        .cursor_pointer()
+        .hover(move |style| style.bg(colors.hover))
+        .on_click(on_click)
+        .child(Icon::new(icon).size_3().text_color(colors.on_surface_muted))
+}
+
 /// 设置行右边的一个文本框：固定宽度、小号，和别的控件高度对得上。
 fn text_field(
     input: &Entity<gpui_kit::component::input::InputState>,
@@ -477,6 +855,16 @@ fn text_field(
 ) -> impl IntoElement {
     div()
         .w(width)
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .child(Input::new(input).small())
+}
+
+/// 铺满一行（不限宽）的文本框，给编辑区用。
+fn filled_text_field(input: &Entity<gpui_kit::component::input::InputState>) -> impl IntoElement {
+    div()
+        .w_full()
         .h(px(28.))
         .flex()
         .items_center()

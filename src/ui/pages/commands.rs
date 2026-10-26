@@ -3,8 +3,8 @@
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::{
-    App, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, SharedString, Window, div,
-    prelude::*, px,
+    App, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, Pixels, SharedString,
+    Window, div, prelude::*, px,
 };
 use tools::settings::CommandSettings;
 
@@ -167,6 +167,7 @@ fn command_row(
         label,
         recording,
         colors,
+        px(240.),
         cx.listener(move |launcher, _, _, cx| launcher.toggle_command_recording(command, cx)),
         cx.listener(move |launcher, _: &MouseDownEvent, _, cx| {
             launcher.clear_shortcut(RecordTarget::Command(command), cx)
@@ -236,13 +237,15 @@ fn command_row(
 
 /// 快捷键按钮：左键开始/取消录制，右键清空。
 ///
-/// 命令页和系统页的「全局快捷键」共用这一个：两处交互必须一模一样，
-/// 不然用户得记两套规矩。
+/// 命令页、设置里的系统页、以及用户工具那两页共用这一个：交互必须一模一样，
+/// 不然用户得记两套规矩。`max_width` 让窄行（用户工具那种一行塞了五个控件的）
+/// 自己决定按钮能占多宽。
 pub(crate) fn shortcut_button(
     id: SharedString,
     label: SharedString,
     recording: bool,
     colors: UiColors,
+    max_width: Pixels,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_clear: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -254,7 +257,7 @@ pub(crate) fn shortcut_button(
         .border_1()
         .border_color(colors.surface)
         .text_xs()
-        .max_w(px(240.))
+        .max_w(max_width)
         .overflow_hidden()
         .text_ellipsis()
         .cursor_pointer()
