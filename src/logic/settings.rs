@@ -111,6 +111,11 @@ pub struct UserTool {
     pub open_default: bool,
     /// [`ToolKind::Terminal`] 专用：终端的工作目录；`None` 表示用户文件夹。
     pub start_dir: Option<String>,
+    /// [`ToolKind::Terminal`] 专用：**不弹终端窗口**，跑完就算。
+    ///
+    /// 有些命令自己就带界面（比如那些 `*.cpl` 控制面板项），或者根本不需要看输出，
+    /// 为它闪一个黑框纯属碍眼。
+    pub quiet: bool,
 }
 
 /// 用户对某一条命令的决定。
@@ -217,7 +222,8 @@ CREATE TABLE IF NOT EXISTS tools (
     uses         INTEGER NOT NULL,
     shortcut     TEXT,
     open_default INTEGER NOT NULL,
-    start_dir    TEXT
+    start_dir    TEXT,
+    quiet        INTEGER NOT NULL
 );
 ";
 
@@ -226,17 +232,21 @@ CREATE TABLE IF NOT EXISTS tools (
 /// 不能写空串：设置行不存在时读的是默认值，存的这一行必须在两种意思之间分得清。
 const SUMMON_NONE: &str = "none";
 
-/// `tools` 表必须有的列。少一列就说明这个库是旧结构，整个表丢掉重建（见 `prepare`）。
-const TOOL_COLUMNS: [&str; 9] = [
-    "id",
-    "kind",
-    "name",
-    "target",
-    "enabled",
-    "uses",
-    "shortcut",
-    "open_default",
-    "start_dir",
+/// `tools` 表里**可能会后补**的列：名字 + 建表时的定义。
+///
+/// 老库缺哪列就补哪列（`prepare`），已有的行原地留着。`id`/`kind` 这些从第一版就在，
+/// 列在这里也无害——已经有的会被跳过。
+const TOOL_COLUMNS: [(&str, &str); 10] = [
+    ("id", "INTEGER PRIMARY KEY NOT NULL"),
+    ("kind", "TEXT NOT NULL DEFAULT 'file'"),
+    ("name", "TEXT NOT NULL DEFAULT ''"),
+    ("target", "TEXT NOT NULL DEFAULT ''"),
+    ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+    ("uses", "INTEGER NOT NULL DEFAULT 0"),
+    ("shortcut", "TEXT"),
+    ("open_default", "INTEGER NOT NULL DEFAULT 0"),
+    ("start_dir", "TEXT"),
+    ("quiet", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 impl Settings {
@@ -382,13 +392,16 @@ impl Settings {
                 columns.push(row.get::<_, String>(0)?);
             }
         }
-        let up_to_date = TOOL_COLUMNS
-            .iter()
-            .all(|wanted| columns.iter().any(|name| name == wanted));
-        if !up_to_date {
-            eprintln!("tools: 工具表结构变了，丢掉旧的重建");
-            connection.execute("DROP TABLE tools", [])?;
-            connection.execute_batch(SCHEMA)?;
+        // 不删表：每加一个字段就把用户自己加的条目清空一次，说不过去。缺哪列补哪列。
+        for (name, definition) in TOOL_COLUMNS {
+            if columns.iter().any(|existing| existing == name) {
+                continue;
+            }
+            eprintln!("tools: 工具表补一列 {name}");
+            connection.execute(
+                &format!("ALTER TABLE tools ADD COLUMN {name} {definition}"),
+                [],
+            )?;
         }
         Ok(())
     }
@@ -486,7 +499,7 @@ impl Settings {
 
         {
             let mut statement = connection.prepare(
-                "SELECT id, kind, name, target, enabled, uses, shortcut, open_default, start_dir \
+                "SELECT id, kind, name, target, enabled, uses, shortcut, open_default, start_dir, quiet \
                  FROM tools ORDER BY id",
             )?;
             let mut rows = statement.query([])?;
@@ -506,6 +519,7 @@ impl Settings {
                     shortcut: row.get(6)?,
                     open_default: row.get::<_, i64>(7)? != 0,
                     start_dir: row.get(8)?,
+                    quiet: row.get::<_, i64>(9)? != 0,
                 });
             }
         }
@@ -596,8 +610,8 @@ impl Settings {
         transaction.execute("DELETE FROM tools", [])?;
         {
             let mut insert = transaction.prepare(
-                "INSERT INTO tools (id, kind, name, target, enabled, uses, shortcut, open_default, start_dir) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO tools (id, kind, name, target, enabled, uses, shortcut, open_default, start_dir, quiet) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?;
             for tool in &self.tools {
                 insert.execute(params![
@@ -610,6 +624,7 @@ impl Settings {
                     tool.shortcut.as_deref(),
                     i64::from(tool.open_default),
                     tool.start_dir.as_deref(),
+                    i64::from(tool.quiet),
                 ])?;
             }
         }
@@ -639,6 +654,7 @@ impl Settings {
             shortcut: None,
             open_default: false,
             start_dir: None,
+            quiet: false,
         });
         id
     }
@@ -664,6 +680,13 @@ impl Settings {
     pub fn set_tool_start_dir(&mut self, id: i64, dir: Option<String>) {
         if let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == id) {
             tool.start_dir = dir.filter(|dir| !dir.trim().is_empty());
+        }
+    }
+
+    /// 终端条目：静默运行（不弹终端窗口）。
+    pub fn set_tool_quiet(&mut self, id: i64, quiet: bool) {
+        if let Some(tool) = self.tools.iter_mut().find(|tool| tool.id == id) {
+            tool.quiet = quiet;
         }
     }
 
@@ -817,9 +840,9 @@ mod tests {
     }
 
     #[test]
-    fn an_old_tool_table_is_dropped_and_rebuilt() {
+    fn an_old_tool_table_gets_its_missing_columns() {
         let connection = Connection::open_in_memory().expect("内存数据库");
-        // 旧结构：没有 open_default / start_dir。
+        // 旧结构：没有 open_default / start_dir / quiet。
         connection
             .execute_batch(
                 "CREATE TABLE tools (
@@ -831,16 +854,20 @@ mod tests {
                     uses INTEGER NOT NULL,
                     shortcut TEXT
                 );
-                INSERT INTO tools VALUES (1, 'shortcut', '旧', 'C:/a', 1, 0, NULL);",
+                INSERT INTO tools VALUES (1, 'folder', '旧', 'C:/a', 1, 7, NULL);",
             )
             .expect("旧库");
 
-        Settings::prepare(&connection).expect("重建");
+        Settings::prepare(&connection).expect("补列");
+        // 不删表：老行原地留着，缺的列补上默认值。
         let settings = Settings::read(&connection)
             .expect("读取")
             .unwrap_or_default();
-        // 旧行跟着旧表一起没了：这类条目重加一次就行，不写迁移。
-        assert!(settings.tools.is_empty());
+        let kept = settings.tool(1).expect("旧行还在");
+        assert_eq!(kept.kind, ToolKind::Folder);
+        assert_eq!(kept.uses, 7);
+        assert!(!kept.quiet);
+        assert!(!kept.open_default);
 
         let mut settings = Settings::default();
         settings.add_tool(ToolKind::File, "新".to_string(), "C:/b".to_string());
@@ -852,6 +879,22 @@ mod tests {
                 .tools,
             settings.tools
         );
+    }
+
+    #[test]
+    fn an_unknown_tool_kind_is_skipped_not_fatal() {
+        let connection = database();
+        connection
+            .execute(
+                "INSERT INTO tools (id, kind, name, target, enabled, uses, shortcut, open_default, start_dir, quiet)
+                 VALUES (1, 'shortcut', '上一版留下的', 'C:/a', 1, 0, NULL, 0, NULL, 0)",
+                [],
+            )
+            .expect("插入");
+        let settings = Settings::read(&connection)
+            .expect("读取")
+            .unwrap_or_default();
+        assert!(settings.tools.is_empty());
     }
 
     fn sample() -> Settings {

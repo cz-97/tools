@@ -89,9 +89,19 @@ pub fn quit_launcher(cx: &mut App) {
 pub fn restart_launcher(cx: &mut App) {
     remember_window_position(cx);
     release_singleton(cx);
-    if !admin::installed() || !admin::launch() {
-        spawn_self();
+    if admin::installed() {
+        // 计划任务在：让它去启动，新进程天生提权。
+        if admin::launch() {
+            admin::log(&format!(
+                "重启：交给任务，当前提权={}",
+                admin::is_elevated()
+            ));
+            cx.quit();
+            return;
+        }
+        admin::log("重启：任务没启动成功，退回直接拉进程（这次不会是管理员）");
     }
+    spawn_self();
     cx.quit();
 }
 

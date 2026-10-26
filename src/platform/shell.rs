@@ -71,6 +71,28 @@ pub fn run_in_terminal(command: &str, dir: Option<&Path>) -> bool {
     }
 }
 
+/// 静默跑一条命令：**不开控制台窗口**，进程跑完就没了。
+///
+/// 给「本来就有界面、或者不需要看输出」的命令用：那些 `*.cpl` 一类的系统工具、
+/// 重启关机之类。`cmd /C` 跑完就退出，加上 `CREATE_NO_WINDOW` 连黑框都不会闪一下。
+pub fn run_quiet(command: &str, dir: Option<&Path>) -> bool {
+    let command = command.trim();
+    if command.is_empty() {
+        return false;
+    }
+    let dir = dir
+        .map(Path::to_path_buf)
+        .filter(|path| path.is_dir())
+        .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from));
+    match sys::spawn_hidden("cmd", command, dir.as_deref()) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("tools: 命令没能执行（{error}）");
+            false
+        }
+    }
+}
+
 #[cfg(windows)]
 mod sys {
     use std::ffi::OsStr;
@@ -138,6 +160,26 @@ mod sys {
         builder.creation_flags(CREATE_NEW_CONSOLE).spawn()?;
         Ok(())
     }
+
+    /// 静默跑：`/C`（跑完就退）+ `CREATE_NO_WINDOW`（全程没有窗口）。
+    ///
+    /// 输出没人看，直接扔掉；要开界面的命令自己会开它该开的那个。
+    pub fn spawn_hidden(program: &str, command: &str, dir: Option<&Path>) -> std::io::Result<()> {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut builder = std::process::Command::new(program);
+        builder
+            .arg("/C")
+            .raw_arg(command)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Some(dir) = dir {
+            builder.current_dir(dir);
+        }
+        builder.creation_flags(CREATE_NO_WINDOW).spawn()?;
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
@@ -156,6 +198,14 @@ mod sys {
     }
 
     pub fn spawn_console(
+        _program: &str,
+        _command: &str,
+        _dir: Option<&Path>,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::other("这个平台上没有终端可开"))
+    }
+
+    pub fn spawn_hidden(
         _program: &str,
         _command: &str,
         _dir: Option<&Path>,

@@ -307,6 +307,10 @@ pub mod tools_page {
     pub const MODE_DEFAULT_APP: &str = "默认应用打开";
     /// 文件条目的动作：打开所在位置。
     pub const MODE_LOCATION: &str = "打开所在位置";
+    /// 终端条目的动作：开一个终端窗口跑。
+    pub const MODE_TERMINAL: &str = "开窗口跑";
+    /// 终端条目的动作：不弹窗口，跑完就完。
+    pub const MODE_QUIET: &str = "静默跑";
 
     /// 路径不存在时的提示标题。
     pub const MISSING_TITLE: &str = "文件不在了";
@@ -377,6 +381,11 @@ pub mod settings_page {
     /// 系统页：管理员方式启动的说明。
     pub const ADMIN_DESCRIPTION: &str =
         "建一条最高权限的计划任务来启动，以后不再弹授权窗口；开启时会问一次";
+    /// 系统页：任务建好了，但眼前这个进程还不是管理员。
+    pub const ADMIN_NOT_ELEVATED: &str =
+        "任务已就绪，但当前进程还是普通权限——重启一次才会以管理员身份运行";
+    /// 系统页：管理员模式下那枚「重启」。
+    pub const ADMIN_RESTART: &str = "重启";
     /// 系统页：管理员模式正在安装那一会儿。
     pub const ADMIN_INSTALLING: &str = "正在创建计划任务…";
     /// 系统页：管理员模式没建成（用户点了「否」或者被策略拦了）。

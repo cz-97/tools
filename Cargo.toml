@@ -1,6 +1,6 @@
 [package]
 name = "tools"
-version = "0.22.0"
+version = "0.23.0"
 edition = "2024"
 default-run = "tools"
 repository = "https://github.com/cz-97/tools"
@@ -19,6 +19,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Networking_WinInet",
+    "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",

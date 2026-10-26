@@ -2121,6 +2121,19 @@ impl Launcher {
         cx.notify();
     }
 
+    /// 终端条目：切换「开终端窗口跑 / 静默跑」。
+    pub(crate) fn toggle_tool_quiet(&mut self, id: i64, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        let Some(tool) = settings.tool(id) else {
+            return;
+        };
+        let next = !tool.quiet;
+        settings.set_tool_quiet(id, next);
+        store_settings(settings, cx);
+        self.refresh_catalogue(cx);
+        cx.notify();
+    }
+
     /// 打开 / 关掉「以管理员身份启动」。
     ///
     /// 这条设置不是往数据库里写一个布尔值就完事：它对应系统里的一条计划任务。

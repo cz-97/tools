@@ -207,18 +207,40 @@ fn system_page(
                     launcher.set_launch_at_login(*checked, cx)
                 })),
         ))
-        // 管理员模式：装/卸那条计划任务时占位的那句话顶掉原来的说明。
+        // 管理员模式：装/卸那条计划任务时占位的那句话顶掉原来的说明；
+        // 任务建好了、但眼前这个进程还不是管理员时也要说清楚——不然用户会以为没生效。
         .child(settings_row(
             strings::settings_page::ADMIN_NAME,
-            launcher
-                .admin_notice
-                .unwrap_or(strings::settings_page::ADMIN_DESCRIPTION),
+            launcher.admin_notice.unwrap_or({
+                if settings.run_as_admin && !tools::admin::is_elevated() {
+                    strings::settings_page::ADMIN_NOT_ELEVATED
+                } else {
+                    strings::settings_page::ADMIN_DESCRIPTION
+                }
+            }),
             colors,
-            Switch::new("run-as-admin")
-                .checked(settings.run_as_admin)
-                .on_change(cx.listener(|launcher, checked: &bool, _window, cx| {
-                    launcher.set_run_as_admin(*checked, cx)
-                })),
+            h_flex()
+                .gap_2()
+                .items_center()
+                .when(
+                    settings.run_as_admin && !tools::admin::is_elevated(),
+                    |this| {
+                        this.child(small_button(
+                            SharedString::from("admin-restart"),
+                            strings::settings_page::ADMIN_RESTART.into(),
+                            colors,
+                            false,
+                            cx.listener(|_launcher, _, _, cx| crate::actions::restart_launcher(cx)),
+                        ))
+                    },
+                )
+                .child(
+                    Switch::new("run-as-admin")
+                        .checked(settings.run_as_admin)
+                        .on_change(cx.listener(|launcher, checked: &bool, _window, cx| {
+                            launcher.set_run_as_admin(*checked, cx)
+                        })),
+                ),
         ))
         .child(settings_row(
             strings::settings_page::RESUME_NAME,
@@ -697,7 +719,29 @@ fn tool_row(
                         )
                         .child(div().flex_shrink_0().child(shortcut))
                         .when(kind == ToolKind::File, |this| {
-                            this.child(mode_chip(id, tool.open_default, colors, cx))
+                            this.child(mode_chip(
+                                id,
+                                tool.open_default,
+                                strings::tools_page::MODE_DEFAULT_APP,
+                                strings::tools_page::MODE_LOCATION,
+                                colors,
+                                cx.listener(move |launcher, _, _, cx| {
+                                    launcher.toggle_tool_open_default(id, cx)
+                                }),
+                            ))
+                        })
+                        // 终端的「开窗口跑 / 静默跑」：有些命令自带界面，闪一下黑框纯属碍眼。
+                        .when(kind == ToolKind::Terminal, |this| {
+                            this.child(mode_chip(
+                                id,
+                                tool.quiet,
+                                strings::tools_page::MODE_QUIET,
+                                strings::tools_page::MODE_TERMINAL,
+                                colors,
+                                cx.listener(move |launcher, _, _, cx| {
+                                    launcher.toggle_tool_quiet(id, cx)
+                                }),
+                            ))
                         })
                         .child(icon_button(
                             SharedString::from(format!("tool-edit-{id}")),
@@ -860,17 +904,20 @@ fn tool_editor_block(launcher: &Launcher, colors: UiColors, cx: &Context<Launche
         .into_any_element()
 }
 
-/// 文件条目行尾那枚胶囊：点一下在「打开所在位置」和「用默认应用打开」之间切。
+/// 条目行尾那枚胶囊：点一下在两种动作之间切。
 ///
-/// **每条自己管自己**：同一个程序里，有的文件想直接开、有的只想看看它在哪。
+/// **每条自己管自己**：同一个程序里，有的文件想直接开、有的只想看看它在哪；
+/// 有的命令要留着窗口看输出、有的连黑框都不该闪。
 fn mode_chip(
     id: i64,
-    open_default: bool,
+    on: bool,
+    on_label: &'static str,
+    off_label: &'static str,
     colors: UiColors,
-    cx: &Context<Launcher>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
-        .id(SharedString::from(format!("tool-mode-{id}")))
+        .id(SharedString::from(format!("tool-mode-{id}-{on}")))
         .flex_shrink_0()
         .px_1p5()
         .py_0p5()
@@ -879,19 +926,15 @@ fn mode_chip(
         .border_color(colors.surface)
         .text_xs()
         .cursor_pointer()
-        .text_color(if open_default {
+        .text_color(if on {
             colors.foreground
         } else {
             colors.on_surface_muted
         })
-        .when(open_default, move |this| this.bg(colors.surface))
+        .when(on, move |this| this.bg(colors.surface))
         .hover(move |style| style.bg(colors.hover))
-        .on_click(cx.listener(move |launcher, _, _, cx| launcher.toggle_tool_open_default(id, cx)))
-        .child(if open_default {
-            strings::tools_page::MODE_DEFAULT_APP
-        } else {
-            strings::tools_page::MODE_LOCATION
-        })
+        .on_click(on_click)
+        .child(if on { on_label } else { off_label })
 }
 
 /// 一枚小按钮：`primary` 时是实心的（保存、新增），否则只是一圈淡边框。

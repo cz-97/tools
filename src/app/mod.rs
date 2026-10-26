@@ -80,8 +80,17 @@ pub fn launch() {
             // 是否开机启动以注册表为准：用户在任务管理器里删掉那一项后，
             // 设置文件里的镜像不能把它「复活」。管理员模式下开机启动是那条计划任务
             // 在管，注册表里本来就没有 Run 项，所以两处都要看。
-            settings.launch_at_login = autostart::enabled() || admin::installed();
-            settings.run_as_admin = admin::installed();
+            // 问一次就够：`admin::installed()` 里是起一个 schtasks 进程，启动路径上别重复问。
+            let admin_mode = admin::installed();
+            settings.launch_at_login = autostart::enabled() || admin_mode;
+            settings.run_as_admin = admin_mode;
+            // 提权这条路上出问题时全靠这行日志：正常启动没有控制台，eprintln 是写进虚空的。
+            admin::log(&format!(
+                "启动：提权={} 任务={} 开机启动={}",
+                admin::is_elevated(),
+                settings.run_as_admin,
+                settings.launch_at_login
+            ));
             cx.set_global(SettingsStore(settings.clone()));
 
             // 面板多大由用户拖出来，尺寸记在设置里（逻辑像素）。
@@ -659,7 +668,12 @@ pub fn run_tool(id: i64, cx: &mut App) {
         ToolKind::Folder => shell::open_location(&tool.target),
         ToolKind::Terminal => {
             let dir = tool.start_dir.as_deref().map(std::path::Path::new);
-            shell::run_in_terminal(&tool.target, dir);
+            if tool.quiet {
+                // 静默：不开终端、不闪窗口，命令跑完就完事。
+                shell::run_quiet(&tool.target, dir);
+            } else {
+                shell::run_in_terminal(&tool.target, dir);
+            }
         }
     }
 }

@@ -890,6 +890,7 @@ mod tests {
                 shortcut: None,
                 open_default: false,
                 start_dir: None,
+                quiet: false,
             },
             UserTool {
                 id: 2,
@@ -901,6 +902,7 @@ mod tests {
                 shortcut: None,
                 open_default: false,
                 start_dir: None,
+                quiet: false,
             },
         ];
         let mut delegate = ToolDelegate::new(two_used_commands(), MatchConfig::default());
@@ -926,6 +928,7 @@ mod tests {
                 shortcut: None,
                 open_default: false,
                 start_dir: None,
+                quiet: false,
             },
             UserTool {
                 id: 2,
@@ -937,6 +940,7 @@ mod tests {
                 shortcut: None,
                 open_default: false,
                 start_dir: None,
+                quiet: false,
             },
         ];
         let mut delegate = ToolDelegate::new(CommandStates::new(), MatchConfig::default());

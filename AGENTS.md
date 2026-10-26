@@ -288,7 +288,7 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 | --- | --- | --- |
 | `ToolKind::File` | 文件路径 | 默认 `shell::open_location`（打开它所在的文件夹）；条目上那枚胶囊切到「默认应用」后改走 `shell::open` |
 | `ToolKind::Folder` | 文件夹路径 | `shell::open_location`：是目录就打开它自己 |
-| `ToolKind::Terminal` | 一整条命令行 | `shell::run_in_terminal`：`cmd /K <命令>` + `CREATE_NEW_CONSOLE`，工作目录是 `start_dir`，留空 = `%USERPROFILE%` |
+| `ToolKind::Terminal` | 一整条命令行 | 默认 `shell::run_in_terminal`（`cmd /K` + 新控制台）；条目上那枚胶囊切到「静默跑」后改走 `shell::run_quiet`（`cmd /C` + `CREATE_NO_WINDOW`，不闪窗口）。工作目录是 `start_dir`，留空 = `%USERPROFILE%` |
 
 - **数据和静态命令一样「一条管自己」**：`UserTool` 上挂着名字、`target`、开关、次数、
   快捷键，外加两个只对某些种类有意义的字段——`open_default`（文件：默认应用还是位置）、
@@ -296,6 +296,9 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   定位静态命令）。id 只增不回收。
 - **文件条目的「默认应用 / 打开位置」是每一条自己的**，不是全局开关：行尾那枚胶囊
   （`mode_chip`）点一下切。理由很实际——有的文件想直接开，有的只想看看它在哪。
+- **终端的「开窗口跑 / 静默跑」同理，也是每条自己的**：自带界面的命令（那些 `*.cpl`
+  控制面板项）和不需要看输出的命令，为它闪一个黑框纯属碍眼。**不做自动判断**——从命令
+  文本猜「这个要不要窗口」必然猜错（同一个 `cmd /c` 里跑什么都有可能），交给用户点一下。
 - **主页上与静态命令同池排序**：`ToolDelegate` 把命令和工具收进同一张 `Vec<HomeItem>`
   按次数排（`rebuild` 里排序，结果缓存在 `rows`——一次渲染里 `item_count` /
   `item_at` / `render_item` 都会问它，现算就是每轮重排一次）。
@@ -325,7 +328,14 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   秘密。建任务那一下本身要提权（`runas` 动词拉一个提权的 schtasks），所以**开启时会问
   一次**，之后（登录启动、手动启动、`设置 → 系统 → 重启`）都不再问。
 - 任务在不在是**事实来源**：启动时 `settings.run_as_admin = admin::installed()`，和
-  `launch_at_login = autostart::enabled() || admin::installed()` 一个路子。
+  `launch_at_login = autostart::enabled() || admin::installed()` 一个路子。但**开关开着
+  不等于眼前这个进程是管理员**——只有用任务拉起来的那次才是，所以还有
+  `admin::is_elevated()`，系统页据此显示「重启一次才会生效」并给一枚重启按钮。
+- **`install` 成不成功看任务在不在（`query` 带重试），不看 schtasks 退出码**：`/Create`
+  有时会因为无关紧要的东西给非 0，拿退出码当结论就会「建好了却当没建成」。
+- 这套东西跨进程跨权限，正常启动又没有控制台（`eprintln!` 是写进虚空的），所以
+  `admin::log` 往 `%APPDATA%\tools\admin.log` 落几行关键事实（启动时提权没有、schtasks
+  每次调用及结果）。排查先把那个文件打开。
 - 管理员模式下开机启动由任务的 ONLOGON 触发器负责，注册表那条 Run 会被删掉，避免两个
   实例抢单例；把「开机启动」关掉等于把任务也删掉（两者是同一件事）。
 - **重启必须走任务**（`actions::restart_launcher`）：直接 spawn 出来的是普通权限进程，
