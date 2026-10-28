@@ -45,30 +45,121 @@ pub fn open_location(path: impl AsRef<Path>) {
     });
 }
 
-/// 在系统默认终端里跑一条命令，返回控制台窗口有没有被拉起来。
+/// 在终端里跑一条命令，返回「这次请求收下了没有」。
 ///
-/// 用的是 `cmd.exe /K`：命令跑完窗口留着，用户还能接着看输出、接着敲。
-/// 开新控制台交给系统，Windows 11 设的默认终端（Windows Terminal 之类）会自己接手，
-/// 这里不点名任何一个终端程序。
+/// 用 Windows Terminal（`wt.exe`）：给它 `-d <目录>` 和一句 `pwsh -NoExit -Command`，
+/// 跑完窗口留着。
 ///
-/// `dir` 是终端的工作目录；给了空值就落在**用户文件夹**（`%USERPROFILE%`）——
-/// 从启动器直接敲命令的人，八成是想在自己的地盘上干活，而不是程序所在目录。
+/// 提权下的坑（这就是为什么这里分两条路）：
+///
+/// **非管理员**：直接 `CreateProcess` 起 wt 就行。
+///
+/// **管理员**：同样直接起，wt 的参数会在「应用执行别名」那一跳里被吃掉（Windows 自己的
+/// bug），终端起来了但进去是一条空 shell。这时得走 shell 的 `runas` 动词
+/// （`ShellExecuteW`），它走的是另一条激活路径，参数能原样到 WT。而且调用者**已经提权**，
+/// runas 不会再问一次 UAC。
+///
+/// 用 `powershell -Command "Start-Process -Verb RunAs wt ..."` 也能达到同样的效果，
+/// 但 powershell 是控制台程序，从提权进程里 spawn 会**先闪一个黑框**——这里省掉它，
+/// 直接在进程内调 shell。
+///
+/// 判断用「当前进程提权没有」（`admin::is_elevated`），不是「设置里开没开管理员模式」：
+/// 开关开着但眼前这个进程还是普通权限时，硬走 runas 会弹 UAC。
+///
+/// 没装 Windows Terminal（`wt.exe` 不在 PATH 上）就退回 `cmd /K` + 新控制台，由系统的
+/// 默认终端接手——那条路不用挑程序，但提权下会退化成 conhost。
 pub fn run_in_terminal(command: &str, dir: Option<&Path>) -> bool {
     let command = command.trim();
     if command.is_empty() {
         return false;
     }
-    let dir = dir
+    let command = command.to_string();
+    let cwd = dir
         .map(Path::to_path_buf)
         .filter(|path| path.is_dir())
         .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from));
-    match sys::spawn_console("cmd", command, dir.as_deref()) {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!("tools: 终端没能打开（{error}）");
-            false
+
+    // 和 `open` 一样丢到短命线程：ShellExecute 会跑自己的消息泵，不能在 UI 线程上跑。
+    std::thread::spawn(move || {
+        if open_terminal(&command, cwd.as_deref()) {
+            return;
         }
+        // 兜底：老路，新控制台交给系统的默认终端。
+        if let Err(error) = sys::spawn_console("cmd", &command, cwd.as_deref()) {
+            eprintln!("tools: 终端没能打开（{error}）");
+        }
+    });
+    true
+}
+
+/// 开一个 Windows Terminal 窗口；没装 wt 或者起不来就返回 `false`。
+fn open_terminal(command: &str, dir: Option<&Path>) -> bool {
+    sys::prepare();
+    if !sys::on_path("wt.exe") {
+        return false;
     }
+    // 有 pwsh 用 pwsh（PowerShell 7），没有就 Windows 自带的 powershell。
+    let shell = if sys::on_path("pwsh.exe") {
+        "pwsh.exe"
+    } else {
+        "powershell.exe"
+    };
+    let args = terminal_arguments(shell, command, dir);
+
+    if super::admin::is_elevated() {
+        // 提权：交给 shell 的 runas 动词，参数不会被吞，也不再问 UAC。
+        let parameters = args
+            .iter()
+            .map(|arg| quote_argument(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        super::admin::log(&format!("提权开终端：wt.exe {parameters}"));
+        return sys::execute("runas", "wt.exe", &parameters);
+    }
+
+    std::process::Command::new("wt.exe")
+        .args(&args)
+        .spawn()
+        .map(|_| true)
+        .unwrap_or_else(|error| {
+            eprintln!("tools: wt 起不来（{error}）");
+            false
+        })
+}
+
+/// 交给 wt 的那串参数：`[-d <目录>] <shell> -NoLogo -NoExit -Command <命令>`。
+///
+/// 单独拎出来是为了能测：提权那条路要把它们拼成**一个**命令行字符串，引号错一个，
+/// 里面那条命令就废了。
+fn terminal_arguments(shell: &str, command: &str, dir: Option<&Path>) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(dir) = dir {
+        args.push("-d".to_string());
+        args.push(dir.display().to_string());
+    }
+    args.extend([
+        shell.to_string(),
+        "-NoLogo".to_string(),
+        "-NoExit".to_string(),
+        "-Command".to_string(),
+        command.to_string(),
+    ]);
+    args
+}
+
+/// 拼 `ShellExecute` 的参数串：带空白或引号的字段套一对双引号，内部引号转义。
+fn quote_argument(value: &str) -> String {
+    if !value
+        .chars()
+        .any(|character| character.is_whitespace() || character == '"')
+    {
+        return value.to_string();
+    }
+    let escaped = value.replace('"', "\\\"");
+    // 以反斜杠结尾时必须再补一个：`"dir D:\"` 里的 `\"` 会被当成转义引号，
+    // 收尾的那个引号就没了。这是 Windows 命令行引号规则里最经典的坑。
+    let tail = if escaped.ends_with('\\') { "\\" } else { "" };
+    format!("\"{escaped}{tail}\"")
 }
 
 /// 静默跑一条命令：**不开控制台窗口**，进程跑完就没了。
@@ -135,6 +226,36 @@ mod sys {
             )
         };
         result as isize > SHELL_SUCCESS
+    }
+
+    /// 用 shell 的指定动词启动一个程序；`runas` 就是「提权启动」。
+    ///
+    /// 和 [`open`] 一个路子，只是能带参数：`wt.exe` 这种「应用执行别名」在提权进程里
+    /// 直接 `CreateProcess` 会把参数吃掉，走 shell 就不会。
+    pub fn execute(verb: &str, program: &str, parameters: &str) -> bool {
+        let verb = wide(OsStr::new(verb));
+        let file = wide(OsStr::new(program));
+        let parameters = wide(OsStr::new(parameters));
+        let result = unsafe {
+            ShellExecuteW(
+                ptr::null_mut(),
+                verb.as_ptr(),
+                file.as_ptr(),
+                parameters.as_ptr(),
+                ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        result as isize > SHELL_SUCCESS
+    }
+
+    /// PATH 上有没有这个程序。`wt.exe` / `pwsh.exe` 都是应用执行别名，`is_file` 照样真。
+    pub fn on_path(name: &str) -> bool {
+        std::env::var_os("PATH")
+            .map(|paths| {
+                std::env::split_paths(&paths).any(|directory| directory.join(name).is_file())
+            })
+            .unwrap_or(false)
     }
 
     /// 该打开哪个文件夹：文件夹返回它自己，文件返回它的上级目录。
@@ -211,5 +332,48 @@ mod sys {
         _dir: Option<&Path>,
     ) -> std::io::Result<()> {
         Err(std::io::Error::other("这个平台上没有终端可开"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{quote_argument, terminal_arguments};
+    use std::path::Path;
+
+    #[test]
+    fn terminal_arguments_carry_the_start_directory_and_the_command() {
+        let args = terminal_arguments("pwsh.exe", "cargo build", Some(Path::new(r"D:\code\tools")));
+        assert_eq!(
+            args,
+            [
+                "-d",
+                r"D:\code\tools",
+                "pwsh.exe",
+                "-NoLogo",
+                "-NoExit",
+                "-Command",
+                "cargo build"
+            ]
+        );
+    }
+
+    #[test]
+    fn no_directory_means_no_dash_d() {
+        let args = terminal_arguments("pwsh.exe", "dir", None);
+        assert_eq!(args.first().map(String::as_str), Some("pwsh.exe"));
+    }
+
+    #[test]
+    fn arguments_are_quoted_only_when_they_need_it() {
+        assert_eq!(quote_argument("pwsh.exe"), "pwsh.exe");
+        assert_eq!(quote_argument("cargo build"), "\"cargo build\"");
+        assert_eq!(
+            quote_argument(r"D:\my code\tools"),
+            "\"D:\\my code\\tools\""
+        );
+        // 里面本来就有引号：转义，别让 shell 提前收尾。
+        assert_eq!(quote_argument("echo \"hi\""), "\"echo \\\"hi\\\"\"");
+        // 结尾是反斜杠：补一个，否则收尾引号被它吃掉。
+        assert_eq!(quote_argument("dir D:\\"), "\"dir D:\\\\\"");
     }
 }

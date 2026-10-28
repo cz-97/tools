@@ -288,7 +288,7 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 | --- | --- | --- |
 | `ToolKind::File` | 文件路径 | 默认 `shell::open_location`（打开它所在的文件夹）；条目上那枚胶囊切到「默认应用」后改走 `shell::open` |
 | `ToolKind::Folder` | 文件夹路径 | `shell::open_location`：是目录就打开它自己 |
-| `ToolKind::Terminal` | 一整条命令行 | 默认 `shell::run_in_terminal`（`cmd /K` + 新控制台）；条目上那枚胶囊切到「静默跑」后改走 `shell::run_quiet`（`cmd /C` + `CREATE_NO_WINDOW`，不闪窗口）。工作目录是 `start_dir`，留空 = `%USERPROFILE%` |
+| `ToolKind::Terminal` | 一整条命令行 | 默认 `shell::run_in_terminal`：**优先 Windows Terminal**（`wt -d <目录> <pwsh> -NoLogo -NoExit -Command <命令>`），没装 wt 才退回 `cmd /K` + 新控制台。条目上那枚胶囊切到「静默跑」后改走 `shell::run_quiet`（`cmd /C` + `CREATE_NO_WINDOW`，不闪窗口）。工作目录是 `start_dir`，留空 = `%USERPROFILE%` |
 
 - **数据和静态命令一样「一条管自己」**：`UserTool` 上挂着名字、`target`、开关、次数、
   快捷键，外加两个只对某些种类有意义的字段——`open_default`（文件：默认应用还是位置）、
@@ -299,6 +299,12 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - **终端的「开窗口跑 / 静默跑」同理，也是每条自己的**：自带界面的命令（那些 `*.cpl`
   控制面板项）和不需要看输出的命令，为它闪一个黑框纯属碍眼。**不做自动判断**——从命令
   文本猜「这个要不要窗口」必然猜错（同一个 `cmd /c` 里跑什么都有可能），交给用户点一下。
+- **提权下开终端要绕一下**：`wt.exe` 是「应用执行别名」，提权进程里直接 `CreateProcess`
+  它，参数会在激活那一跳被吃掉（Windows 的 bug）。提权时改走 `ShellExecuteW` 的 `runas`
+  动词——那条激活路径参数不丢，而且调用者已提权，不会再问 UAC。
+  **别用 `powershell -Command "Start-Process -Verb RunAs ..."` 当中转**：powershell 是
+  控制台程序，从提权进程 spawn 会先闪一个黑框，正是用户要去掉的那个闪烁。
+  判断条件用 `admin::is_elevated()`（当前进程提权没有），不是设置里的开关。
 - **主页上与静态命令同池排序**：`ToolDelegate` 把命令和工具收进同一张 `Vec<HomeItem>`
   按次数排（`rebuild` 里排序，结果缓存在 `rows`——一次渲染里 `item_count` /
   `item_at` / `render_item` 都会问它，现算就是每轮重排一次）。
