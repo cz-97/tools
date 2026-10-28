@@ -288,7 +288,7 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 | --- | --- | --- |
 | `ToolKind::File` | 文件路径 | 默认 `shell::open_location`（打开它所在的文件夹）；条目上那枚胶囊切到「默认应用」后改走 `shell::open` |
 | `ToolKind::Folder` | 文件夹路径 | `shell::open_location`：是目录就打开它自己 |
-| `ToolKind::Terminal` | 一整条命令行 | 默认 `shell::run_in_terminal`：**优先 Windows Terminal**（`wt -d <目录> <pwsh> -NoLogo -NoExit -Command <命令>`），没装 wt 才退回 `cmd /K` + 新控制台。条目上那枚胶囊切到「静默跑」后改走 `shell::run_quiet`（`cmd /C` + `CREATE_NO_WINDOW`，不闪窗口）。工作目录是 `start_dir`，留空 = `%USERPROFILE%` |
+| `ToolKind::Terminal` | 一整条命令行 | 默认 `shell::run_in_terminal`：**优先 Windows Terminal**（`wt -d <目录> <pwsh> -NoLogo -NoExit -Command <命令>`），没装 wt 才退回 `cmd /K` + 新控制台。条目上那枚胶囊切到「静默跑」后改走 `shell::run_quiet`（能直接起就 `CreateProcess`，否则 `cmd /C`，都不开窗口）。工作目录是 `start_dir`，留空 = `%USERPROFILE%` |
 
 - **数据和静态命令一样「一条管自己」**：`UserTool` 上挂着名字、`target`、开关、次数、
   快捷键，外加两个只对某些种类有意义的字段——`open_default`（文件：默认应用还是位置）、
@@ -296,9 +296,12 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   定位静态命令）。id 只增不回收。
 - **文件条目的「默认应用 / 打开位置」是每一条自己的**，不是全局开关：行尾那枚胶囊
   （`mode_chip`）点一下切。理由很实际——有的文件想直接开，有的只想看看它在哪。
-- **终端的「开窗口跑 / 静默跑」同理，也是每条自己的**：自带界面的命令（那些 `*.cpl`
-  控制面板项）和不需要看输出的命令，为它闪一个黑框纯属碍眼。**不做自动判断**——从命令
-  文本猜「这个要不要窗口」必然猜错（同一个 `cmd /c` 里跑什么都有可能），交给用户点一下。
+- **「静默跑」不必经过 cmd**：第一个词能解析成真的 `.exe`/`.com`、且整条命令里没有
+  shell 语法时，直接 `CreateProcess` 那个程序 + `CREATE_NO_WINDOW`（`rundll32 <cpl>`、
+  `ipconfig`、`shutdown /r` 都在这一类）；只有内建命令和管道/重定向/`%变量%` 才上
+  `cmd /C`——那些语法除了 cmd 没人认（`needs_shell`）。
+  **这里不能学 Win+R 用 `ShellExecute`**：Win+R 确实是把整串丢给 shell 解析，但它给
+  控制台程序开的窗口是**可见**的，静默要的正是连黑框都不闪。
 - **提权下开终端要绕一下**：`wt.exe` 是「应用执行别名」，提权进程里直接 `CreateProcess`
   它，参数会在激活那一跳被吃掉（Windows 的 bug）。提权时改走 `ShellExecuteW` 的 `runas`
   动词——那条激活路径参数不丢，而且调用者已提权，不会再问 UAC。

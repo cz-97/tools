@@ -162,25 +162,82 @@ fn quote_argument(value: &str) -> String {
     format!("\"{escaped}{tail}\"")
 }
 
-/// 静默跑一条命令：**不开控制台窗口**，进程跑完就没了。
+/// 静默跑一条命令：**不开窗口**，进程跑完就没了。
 ///
 /// 给「本来就有界面、或者不需要看输出」的命令用：那些 `*.cpl` 一类的系统工具、
-/// 重启关机之类。`cmd /C` 跑完就退出，加上 `CREATE_NO_WINDOW` 连黑框都不会闪一下。
+/// 重启关机之类。
+///
+/// 分两条路，**能不走 cmd 就不走**：
+///
+/// 1. 命令的第一个词能解析成一个真的 `.exe`/`.com`，而且整条命令里没有 shell 语法
+///    （管道、重定向、`&&`、`%变量%`）——直接 `CreateProcess` 那个程序，加
+///    `CREATE_NO_WINDOW`。多数「静默」命令（`rundll32 <某个 cpl>`、`ipconfig`、
+///    `shutdown /r`）都在这一类，中间**没有 cmd 这个进程**。
+/// 2. 其余情况（`dir`、`echo x > f.txt`、带管道）才上 `cmd /C`：那些是 cmd 自己的
+///    内建命令和语法，除了 cmd 没人认。
+///
+/// **这里不能用 `Win+R` 那套 `ShellExecute`**：Win+R 确实是把整串丢给 shell 解析，
+/// 但它给控制台程序开会话时是**可见**的窗口（`SW_SHOWNORMAL`），静默模式要的正是
+/// 「连黑框都别闪」，所以只能 `CreateProcess` + `CREATE_NO_WINDOW`。
 pub fn run_quiet(command: &str, dir: Option<&Path>) -> bool {
     let command = command.trim();
     if command.is_empty() {
         return false;
     }
-    let dir = dir
+    let command = command.to_string();
+    let cwd = dir
         .map(Path::to_path_buf)
         .filter(|path| path.is_dir())
         .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from));
-    match sys::spawn_hidden("cmd", command, dir.as_deref()) {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!("tools: 命令没能执行（{error}）");
-            false
+
+    // 起进程很快，但 `CreateProcess` 也会碰 shell 的解析；和别处一样放短命线程。
+    std::thread::spawn(move || {
+        if !needs_shell(&command)
+            && let Some((program, arguments)) = direct_target(&command)
+        {
+            match sys::spawn_hidden(&program, arguments, cwd.as_deref()) {
+                Ok(()) => return,
+                Err(error) => {
+                    eprintln!(
+                        "tools: 直接起 {} 失败（{error}），改用 cmd",
+                        program.display()
+                    )
+                }
+            }
         }
+        if let Err(error) = sys::spawn_hidden("cmd", &format!("/C {command}"), cwd.as_deref()) {
+            eprintln!("tools: 命令没能执行（{error}）");
+        }
+    });
+    true
+}
+
+/// 这条命令是不是非得 cmd 不可。
+///
+/// 管道 / 重定向 / 命令串联 / 变量展开都是 cmd（或另一个 shell）自己的语法，直接
+/// `CreateProcess` 只会把它们当普通参数塞给程序，行为完全不对，所以一律退回 cmd。
+fn needs_shell(command: &str) -> bool {
+    command.contains(['&', '|', '<', '>', '^', '%', '\n'])
+}
+
+/// 命令能直接起的话，返回（可执行文件的路径，剩下的参数）。
+fn direct_target(command: &str) -> Option<(std::path::PathBuf, &str)> {
+    let (program, arguments) = split_first_token(command);
+    let path = sys::resolve_program(program)?;
+    Some((path, arguments))
+}
+
+/// 拆出命令的第一个词和剩下的部分。第一个词可能带引号（路径里有空格）。
+fn split_first_token(command: &str) -> (&str, &str) {
+    let command = command.trim_start();
+    if let Some(rest) = command.strip_prefix('"')
+        && let Some(end) = rest.find('"')
+    {
+        return (&rest[..end], rest[end + 1..].trim_start());
+    }
+    match command.find(char::is_whitespace) {
+        Some(end) => (&command[..end], command[end..].trim_start()),
+        None => (command, ""),
     }
 }
 
@@ -233,16 +290,22 @@ mod sys {
     /// 和 [`open`] 一个路子，只是能带参数：`wt.exe` 这种「应用执行别名」在提权进程里
     /// 直接 `CreateProcess` 会把参数吃掉，走 shell 就不会。
     pub fn execute(verb: &str, program: &str, parameters: &str) -> bool {
+        execute_in(verb, program, parameters, None)
+    }
+
+    /// 同 [`execute`]，外加一个工作目录。
+    pub fn execute_in(verb: &str, program: &str, parameters: &str, dir: Option<&Path>) -> bool {
         let verb = wide(OsStr::new(verb));
         let file = wide(OsStr::new(program));
         let parameters = wide(OsStr::new(parameters));
+        let directory = dir.map(|dir| wide(dir.as_os_str()));
         let result = unsafe {
             ShellExecuteW(
                 ptr::null_mut(),
                 verb.as_ptr(),
                 file.as_ptr(),
                 parameters.as_ptr(),
-                ptr::null(),
+                directory.as_ref().map_or(ptr::null(), |dir| dir.as_ptr()),
                 SW_SHOWNORMAL,
             )
         };
@@ -282,24 +345,72 @@ mod sys {
         Ok(())
     }
 
-    /// 静默跑：`/C`（跑完就退）+ `CREATE_NO_WINDOW`（全程没有窗口）。
+    /// 静默跑：`CreateProcess` + `CREATE_NO_WINDOW`（全程没有窗口），输出直接扔掉。
     ///
-    /// 输出没人看，直接扔掉；要开界面的命令自己会开它该开的那个。
-    pub fn spawn_hidden(program: &str, command: &str, dir: Option<&Path>) -> std::io::Result<()> {
+    /// `program` 可以是 `cmd` 这样的名字，也可以是解析好的完整路径；`arguments` 原样拼在
+    /// 命令行后面（cmd 的 `/C <命令>` 就是这么塞进去的）。
+    pub fn spawn_hidden(
+        program: impl AsRef<OsStr>,
+        arguments: &str,
+        dir: Option<&Path>,
+    ) -> std::io::Result<()> {
         use std::os::windows::process::CommandExt as _;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut builder = std::process::Command::new(program);
+        let mut builder = std::process::Command::new(program.as_ref());
         builder
-            .arg("/C")
-            .raw_arg(command)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        // 空参数别拼：`app.exe ""` 会给程序塞一个空参数，不是所有程序都受得了。
+        if !arguments.is_empty() {
+            builder.raw_arg(arguments);
+        }
         if let Some(dir) = dir {
             builder.current_dir(dir);
         }
         builder.creation_flags(CREATE_NO_WINDOW).spawn()?;
         Ok(())
+    }
+
+    /// 把命令的第一个词解析成一个真实存在的可执行文件（`.exe` / `.com`）。
+    ///
+    /// 解析不出来就返回 `None`：`dir`、`echo` 这些是 cmd 的内建命令，磁盘上根本没有
+    /// 对应文件，调用方据此退回 `cmd /C`。
+    pub fn resolve_program(token: &str) -> Option<PathBuf> {
+        fn executable(path: &Path) -> bool {
+            path.is_file()
+                && path.extension().is_some_and(|extension| {
+                    let extension = extension.to_string_lossy().to_ascii_lowercase();
+                    extension == "exe" || extension == "com"
+                })
+        }
+
+        let token = token.trim_matches('"');
+        if token.is_empty() {
+            return None;
+        }
+        let path = Path::new(token);
+        // 带分隔符（或者盘符）就是路径，不再去 PATH 里找。
+        if path.components().count() > 1 || path.is_absolute() {
+            return executable(path).then(|| path.to_path_buf());
+        }
+
+        let paths = std::env::var_os("PATH")?;
+        for directory in std::env::split_paths(&paths) {
+            // 用户可能已经写了 `ipconfig.exe`，那就别再补一次后缀。
+            let candidates: Vec<String> = if path.extension().is_some() {
+                vec![token.to_string()]
+            } else {
+                vec![format!("{token}.exe"), format!("{token}.com")]
+            };
+            for name in candidates {
+                let candidate = directory.join(name);
+                if executable(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -327,17 +438,33 @@ mod sys {
     }
 
     pub fn spawn_hidden(
-        _program: &str,
-        _command: &str,
+        _program: impl AsRef<OsStr>,
+        _arguments: &str,
         _dir: Option<&Path>,
     ) -> std::io::Result<()> {
         Err(std::io::Error::other("这个平台上没有终端可开"))
+    }
+
+    pub fn resolve_program(_token: &str) -> Option<PathBuf> {
+        None
+    }
+
+    pub fn execute(_verb: &str, _program: &str, _parameters: &str) -> bool {
+        false
+    }
+
+    pub fn execute_in(_verb: &str, _program: &str, _parameters: &str, _dir: Option<&Path>) -> bool {
+        false
+    }
+
+    pub fn on_path(_name: &str) -> bool {
+        false
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{quote_argument, terminal_arguments};
+    use super::{needs_shell, quote_argument, split_first_token, terminal_arguments};
     use std::path::Path;
 
     #[test]
@@ -375,5 +502,36 @@ mod tests {
         assert_eq!(quote_argument("echo \"hi\""), "\"echo \\\"hi\\\"\"");
         // 结尾是反斜杠：补一个，否则收尾引号被它吃掉。
         assert_eq!(quote_argument("dir D:\\"), "\"dir D:\\\\\"");
+    }
+
+    #[test]
+    fn the_first_token_is_split_off_with_or_without_quotes() {
+        assert_eq!(split_first_token("ipconfig /all"), ("ipconfig", "/all"));
+        assert_eq!(split_first_token("  ipconfig   "), ("ipconfig", ""));
+        assert_eq!(
+            split_first_token(r#""C:\Program Files\app.exe" -x"#),
+            (r"C:\Program Files\app.exe", "-x")
+        );
+        // 引号没闭合：整条当一个词，交给下面对解析失败的处理。
+        assert_eq!(split_first_token("\"oops"), ("\"oops", ""));
+    }
+
+    #[test]
+    fn shell_syntax_always_goes_through_cmd() {
+        for command in [
+            "echo hi > out.txt",
+            "dir | findstr x",
+            "a && b",
+            "type %USERPROFILE%\\a.txt",
+        ] {
+            assert!(needs_shell(command), "{command} 该走 cmd");
+        }
+        for command in [
+            "ipconfig /all",
+            r"rundll32 sysdm.cpl,EditEnvironmentVariables",
+            r#""C:\Program Files\app.exe" -x"#,
+        ] {
+            assert!(!needs_shell(command), "{command} 不该走 cmd");
+        }
     }
 }
