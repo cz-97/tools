@@ -155,6 +155,12 @@ pub struct Settings {
     pub theme: Theme,
     /// 是否启用半透明面板背景。
     pub translucent: bool,
+    /// 面板是否常驻最前（置顶）。
+    ///
+    /// **事实来源是窗口自己**（`WS_EX_TOPMOST`）：右键点标题区那条路走的是原生窗口过程，
+    /// 它改完窗口状态就完事，写数据库留给应用在下一次保存时对账（`store_settings`）。
+    /// 这里这份值只用来在启动时把窗口状态恢复回来。
+    pub always_on_top: bool,
     /// 半透明时面板底色的不透明度，百分比（100 = 全实，盖住亚克力）。
     pub panel_opacity: u32,
     /// 面板顶边在物理像素下的位置；面板还没被摆过时是 `None`。
@@ -427,6 +433,7 @@ impl Settings {
                         };
                     }
                     "translucent" => settings.translucent = value == "1",
+                    "always_on_top" => settings.always_on_top = value == "1",
                     "panel_opacity" => {
                         if let Ok(opacity) = value.parse() {
                             settings.panel_opacity = opacity;
@@ -535,6 +542,10 @@ impl Settings {
             let mut insert =
                 transaction.prepare("INSERT INTO settings (key, value) VALUES (?1, ?2)")?;
             insert.execute(params!["theme", self.theme.key()])?;
+            insert.execute(params![
+                "always_on_top",
+                u8::from(self.always_on_top).to_string()
+            ])?;
             insert.execute(params![
                 "translucent",
                 u8::from(self.translucent).to_string()
@@ -805,6 +816,7 @@ impl Default for Settings {
         Self {
             theme: Theme::System,
             translucent: false,
+            always_on_top: false,
             panel_opacity: Self::PANEL_OPACITY_DEFAULT,
             window_y: None,
             window_width: Self::WINDOW_WIDTH_DEFAULT,
@@ -901,6 +913,7 @@ mod tests {
         let mut settings = Settings {
             theme: Theme::Dark,
             translucent: true,
+            always_on_top: true,
             window_y: Some(-120),
             search_height: 34,
             launch_at_login: true,

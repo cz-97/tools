@@ -195,6 +195,8 @@ pub fn launch() {
                     {
                         eprintln!("tools: 面板位置恢复失败");
                     }
+                    // 上次是置顶就接着置顶。这条属性挂在窗口上，重启不会自己回来。
+                    window.set_topmost(settings.always_on_top);
                     cx.set_global(LauncherPanel { window });
                 }
                 None => eprintln!("tools: 创建后找不到面板窗口，保留系统边框"),
@@ -628,7 +630,13 @@ pub fn stored_settings(cx: &App) -> Settings {
 }
 
 /// 写进内存，同时落盘。
-pub fn store_settings(settings: Settings, cx: &mut App) {
+pub fn store_settings(mut settings: Settings, cx: &mut App) {
+    // 置顶的事实来源是**窗口自己**：右键点标题区那条路在原生窗口过程里直接改了
+    // `WS_EX_TOPMOST`，它碰不到这里的全局状态。保存前对一次账，免得把内存里那份旧值
+    // 盖上去，把用户刚切的置顶状态洗掉。
+    if let Some(panel) = cx.try_global::<LauncherPanel>() {
+        settings.always_on_top = panel.window.is_topmost();
+    }
     if !settings.save() {
         eprintln!("tools: 设置没能写进数据库");
     }
@@ -722,6 +730,23 @@ pub fn run_tool(id: i64, cx: &mut App) {
 pub fn panel_handle(cx: &App) -> usize {
     cx.try_global::<LauncherPanel>()
         .map_or(0, |panel| panel.window.handle().raw())
+}
+
+/// 面板现在置顶没有。
+///
+/// 问窗口，不问设置：右键点标题区那条路是原生窗口过程直接在改窗口属性，内存里的
+/// 设置镜像要等下一次保存才追上。
+pub fn panel_is_topmost(cx: &App) -> bool {
+    cx.try_global::<LauncherPanel>()
+        .is_some_and(|panel| panel.window.is_topmost())
+}
+
+/// 设面板置顶；窗口还没建好时返回 `false`。
+pub fn set_panel_topmost(topmost: bool, cx: &mut App) -> bool {
+    let Some(panel) = cx.try_global::<LauncherPanel>() else {
+        return false;
+    };
+    panel.window.set_topmost(topmost)
 }
 
 /// 系统对话框关掉之后把前台要回来。

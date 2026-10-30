@@ -2126,6 +2126,17 @@ impl Launcher {
         cx.notify();
     }
 
+    /// 打开 / 关掉窗口置顶。和「右键点面板顶部空白处」是同一个开关。
+    pub(crate) fn set_always_on_top(&mut self, topmost: bool, cx: &mut Context<Self>) {
+        crate::app::set_panel_topmost(topmost, cx);
+        // 保存前 `store_settings` 会从窗口读回真实值，这里先改内存那份只是为了让
+        // 立刻重绘的开关落在正确的状态上。
+        let mut settings = stored_settings(cx);
+        settings.always_on_top = topmost;
+        store_settings(settings, cx);
+        cx.notify();
+    }
+
     /// 终端条目：切换「开终端窗口跑 / 静默跑」。
     pub(crate) fn toggle_tool_quiet(&mut self, id: i64, cx: &mut Context<Self>) {
         let mut settings = stored_settings(cx);

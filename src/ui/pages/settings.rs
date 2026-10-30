@@ -197,6 +197,18 @@ fn system_page(
             colors,
             summon_button(launcher, settings.summon_shortcut.as_deref(), colors, cx),
         ))
+        // 置顶：状态问窗口要，别信设置里那份——右键点标题区也能切，那条路在原生窗口
+        // 过程里直接改窗口属性，内存里的镜像要等下次保存才对得上。
+        .child(settings_row(
+            strings::settings_page::TOPMOST_NAME,
+            strings::settings_page::TOPMOST_DESCRIPTION,
+            colors,
+            Switch::new("always-on-top")
+                .checked(crate::app::panel_is_topmost(cx))
+                .on_change(cx.listener(|launcher, checked: &bool, _window, cx| {
+                    launcher.set_always_on_top(*checked, cx)
+                })),
+        ))
         .child(settings_row(
             strings::settings_page::AUTOSTART_NAME,
             // 管理员模式下开机启动是那条计划任务的登录触发器在管，说明得跟着变，

@@ -131,6 +131,22 @@ impl NativeWindow {
         sys::install_panel_proc(self.handle)
     }
 
+    /// 置顶 / 取消置顶，返回有没有设成。
+    ///
+    /// `HWND_TOPMOST` 是窗口自己的属性，跟焦点无关：置顶之后切到别的程序，面板还压在
+    /// 上面。面板收起时也不撤销——用户开这个开关就是为了「一直在」。
+    pub fn set_topmost(self, topmost: bool) -> bool {
+        sys::set_topmost(self.handle, topmost)
+    }
+
+    /// 现在是不是置顶状态。
+    ///
+    /// 右键点标题区那条路是原生窗口过程直接改的（它碰不到应用的全局状态），所以
+    /// 要判断当前值一律来问窗口，别信设置里存的那份。
+    pub fn is_topmost(self) -> bool {
+        sys::is_topmost(self.handle)
+    }
+
     /// 调整尺寸，让客户区是 `width` x `height` 个逻辑单位。
     ///
     /// 界面是按逻辑单位写的；换算成物理像素用的是这个窗口自己的缩放比例，所以换一台
@@ -209,8 +225,11 @@ mod sys {
         LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXPADDEDBORDER, SM_CXSIZEFRAME, SM_CXSMICON,
         SM_CYSIZEFRAME, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
         SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-        ShowWindow, WM_NCCALCSIZE, WM_NCHITTEST, WM_SETICON, WS_CAPTION, WS_MAXIMIZEBOX,
-        WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+        ShowWindow, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCRBUTTONUP, WM_SETICON, WS_CAPTION,
+        WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, HTCAPTION, HWND_NOTOPMOST, HWND_TOPMOST, WS_EX_TOPMOST,
     };
 
     /// 构成原生标题栏、它那几个按钮和可拉伸边框的样式位。全清掉就只剩客户区。
@@ -441,7 +460,65 @@ mod sys {
         {
             return hit;
         }
+        // 右键点「可拖动区域」（那一片的命中码是 `HTCAPTION`）= 切换置顶。
+        //
+        // 为什么必须在这一层做：拖动区对系统来说是标题栏（非客户区），右键走的是
+        // `WM_NCRBUTTONUP`，根本到不了 GPUI 的元素树——应用层收不到这次点击。
+        // 这里直接改窗口的 `WS_EX_TOPMOST`（不关焦点、不动位置），拦掉系统菜单，
+        // 数据库那份交给应用在下次保存时对账。
+        if message == WM_NCRBUTTONUP && wparam as u32 == HTCAPTION {
+            unsafe { toggle_topmost(window) };
+            return 0;
+        }
         unsafe { DefSubclassProc(window, message, wparam, lparam) }
+    }
+
+    /// 切换置顶，返回切换之后是不是置顶。
+    unsafe fn toggle_topmost(window: HWND) -> bool {
+        let topmost = unsafe { is_topmost_now(window) };
+        unsafe { apply_topmost(window, !topmost) };
+        // 这条路没有界面反馈，记一笔：出问题时能确认「右键到底有没有被收到」。
+        crate::platform::admin::log(&format!("置顶：{}", if topmost { "关" } else { "开" }));
+        !topmost
+    }
+
+    unsafe fn is_topmost_now(window: HWND) -> bool {
+        let style = unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) };
+        style & (WS_EX_TOPMOST as isize) != 0
+    }
+
+    unsafe fn apply_topmost(window: HWND, topmost: bool) {
+        let after = if topmost {
+            HWND_TOPMOST
+        } else {
+            HWND_NOTOPMOST
+        };
+        unsafe {
+            SetWindowPos(
+                window,
+                after,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    pub fn set_topmost(handle: WindowHandle, topmost: bool) -> bool {
+        if !is_open(handle) {
+            return false;
+        }
+        unsafe { apply_topmost(hwnd(handle), topmost) };
+        true
+    }
+
+    pub fn is_topmost(handle: WindowHandle) -> bool {
+        if !is_open(handle) {
+            return false;
+        }
+        unsafe { is_topmost_now(hwnd(handle)) }
     }
 
     /// 光标是不是落在可拉伸的那一圈上；是就返回对应的命中码。
