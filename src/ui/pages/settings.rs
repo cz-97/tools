@@ -199,7 +199,13 @@ fn system_page(
         ))
         .child(settings_row(
             strings::settings_page::AUTOSTART_NAME,
-            strings::settings_page::AUTOSTART_DESCRIPTION,
+            // 管理员模式下开机启动是那条计划任务的登录触发器在管，说明得跟着变，
+            // 否则用户会以为「开机启动」这一项自己在写注册表。
+            if settings.run_as_admin {
+                strings::settings_page::AUTOSTART_BY_TASK
+            } else {
+                strings::settings_page::AUTOSTART_DESCRIPTION
+            },
             colors,
             Switch::new("launch-at-login")
                 .checked(settings.launch_at_login)

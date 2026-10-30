@@ -108,6 +108,8 @@ pub fn launch() {
             cx.set_global(Singleton(Mutex::new(Some(singleton))));
 
             let mut settings = Settings::load();
+            // 改名前留下的死启动项（指向的 exe 早没了）顺手清掉，别让它赖在任务管理器里。
+            autostart::drop_dead_entries();
             if settings.retain_known_commands(
                 crate::catalogue::COMMANDS
                     .iter()

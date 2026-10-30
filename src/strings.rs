@@ -376,6 +376,9 @@ pub mod settings_page {
     pub const AUTOSTART_NAME: &str = "开机启动";
     /// 系统页：开机启动的说明。
     pub const AUTOSTART_DESCRIPTION: &str = "登录 Windows 后自动在后台运行";
+    /// 系统页：管理员模式下的开机启动说明（这时候是计划任务在管）。
+    pub const AUTOSTART_BY_TASK: &str =
+        "由「以管理员身份启动」那条计划任务负责，登录时触发（改完要下次登录才见效）";
     /// 系统页：管理员方式启动的标题。
     pub const ADMIN_NAME: &str = "以管理员身份启动";
     /// 系统页：管理员方式启动的说明。
