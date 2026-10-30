@@ -432,6 +432,10 @@ pub struct Launcher {
     pub(crate) admin_notice: Option<&'static str>,
     /// 装/卸计划任务那条任务，留着它别被丢掉。
     admin_task: Option<Task<()>>,
+    /// 正在装/卸计划任务。**守卫用这个标志，不用 `admin_task.is_some()`**：
+    /// Task 跑完之后句柄还留在字段里，拿它当锁会让开关永久卡死（关掉之后再也点不开，
+    /// 只有重启才恢复——踩过）。
+    admin_busy: bool,
     /// 系统文件框那一次等待。`Some` 期间面板失去前台也**不收起来**：用户正在那个
     /// 框里挑文件，面板一消失，挑完回来页面就变了。
     ///
@@ -565,6 +569,7 @@ impl Launcher {
             prompt: None,
             admin_notice: None,
             admin_task: None,
+            admin_busy: false,
             dialog: None,
             front_grace: None,
             _search_events: search_events,
@@ -2141,12 +2146,13 @@ impl Launcher {
     /// 建成之后立刻用那条任务重启自己——新进程天生提权，用户不会再看到第二个弹窗。
     /// 关掉就是把任务删掉，开机启动退回注册表那一条。
     pub(crate) fn set_run_as_admin(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if self.admin_task.is_some() {
+        if self.admin_busy {
             return;
         }
         if enabled == admin::installed() && enabled == stored_settings(cx).run_as_admin {
             return;
         }
+        self.admin_busy = true;
         self.admin_notice = Some(strings::settings_page::ADMIN_INSTALLING);
         cx.notify();
 
@@ -2158,6 +2164,7 @@ impl Launcher {
                 admin::remove()
             }
         });
+        // 上一次的句柄先放下：这里替换的是已经跑完的那个，丢掉没有副作用。
         self.admin_task = Some(cx.spawn(async move |_this, cx| {
             let ok = work.await;
             cx.update(move |cx: &mut App| {
@@ -2178,6 +2185,7 @@ impl Launcher {
                     }
                     store_settings(settings, cx);
                     with_launcher(cx, move |launcher, _window, cx| {
+                        launcher.admin_busy = false;
                         launcher.admin_notice =
                             (!installed).then_some(strings::settings_page::ADMIN_FAILED);
                         cx.notify();
@@ -2199,6 +2207,8 @@ impl Launcher {
                         autostart::set_enabled(true);
                     }
                     with_launcher(cx, move |launcher, _window, cx| {
+                        // 关掉之后不重启，开关必须马上能再点。
+                        launcher.admin_busy = false;
                         launcher.admin_notice =
                             still.then_some(strings::settings_page::ADMIN_FAILED);
                         cx.notify();
