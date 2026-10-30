@@ -45,6 +45,37 @@ pub fn launch() -> bool {
     sys::launch()
 }
 
+/// 「刚试过自动提权启动」的冷却时间。
+///
+/// 手动双击 exe 时我们会交给任务重开一个提权的自己。万一任务拉起来的仍然是普通权限
+/// （任务配错、被别人改成最低权限），两个进程就会来回蹦——冷却时间是这条链的刹车。
+const HOP_GUARD: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// 允许现在就尝试一次「自动提权启动」吗；允许就顺手记下这一次。
+///
+/// 用文件时间戳而不是内存状态：判断发生在进程最开始，那时还没有任何全局状态可放。
+pub fn take_hop_slot() -> bool {
+    let path = stamp_path();
+    if let Ok(modified) = std::fs::metadata(&path).and_then(|meta| meta.modified())
+        && let Ok(age) = std::time::SystemTime::now().duration_since(modified)
+        && age < HOP_GUARD
+    {
+        return false;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, b"");
+    true
+}
+
+fn stamp_path() -> std::path::PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("tools").join("hop.stamp")
+}
+
 /// 往 `%APPDATA%\tools\admin.log` 追加一行。
 ///
 /// 程序正常启动时没有控制台，`eprintln!` 写进的是虚空——提权这条路跨进程、跨权限，

@@ -38,6 +38,8 @@ const TRAY_ICON_SIZE: u32 = 32;
 const VIEWPORT_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
 /// 面板收起多久之后才去挂起渲染线程；太短会让「关了马上又开」白挂一次。
 const RENDER_SUSPEND_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+/// 把启动交给计划任务之后，最多等多久确认新的实例真的起来了。
+const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_millis(3000);
 
 actions!(
     tools,
@@ -50,7 +52,43 @@ actions!(
 );
 
 /// 启动器。
+/// 手动启动时把「以管理员身份」补上；返回 `true` 表示提权的新实例已经接手，本进程该退。
+///
+/// 只在「任务在 + 当前没提权」时才动手，判断只用 `admin` 那两个查询（**不碰数据库**）：
+/// 这一步发生在抢单例之前，第二个实例连数据库都不该打开。
+///
+/// 新实例是不是真的起来了，靠 [`instance::wait_for_new`] 确认——`schtasks /Run` 说成功
+/// 只代表任务被接受，任务排进队列它也这么答。
+fn elevate_handoff() -> bool {
+    if admin::is_elevated() || !admin::installed() {
+        return false;
+    }
+    // 刚蹦过一次就别再蹦：任务要是一直给普通权限，两个进程会来回弹。
+    if !admin::take_hop_slot() {
+        return false;
+    }
+    if !admin::launch() {
+        admin::log("启动：任务没接受 /Run，就以普通权限继续跑");
+        return false;
+    }
+    if instance::wait_for_new(HANDOFF_WAIT) {
+        admin::log("启动：手动启动的是普通权限实例，已交给任务换成提权的");
+        return true;
+    }
+    admin::log("启动：任务没在 3 秒内拉起进程，就以普通权限继续跑");
+    false
+}
+
 pub fn launch() {
+    // 管理员模式开着、但这次是**手动**起来的（双击 exe、从快捷方式）：先交给计划任务
+    // 重开一个提权的自己，这个进程安静退出。不这么做的话，手动启动永远是个普通权限
+    // 实例，设置里那颗「重启」按钮就一直亮着——用户会以为开关没生效。
+    //
+    // 这一步必须在抢单例**之前**：新实例要能直接拿到单例，否则它一看到互斥量就退了。
+    if elevate_handoff() {
+        return;
+    }
+
     // **先抢单例，再碰任何别的东西。** 第二个实例不许抢热键、抢托盘、抢数据库；
     // 它只把「亮一下面板」的信号丢给已经在跑的那个，然后立刻退出。
     let Some(singleton) = instance::Instance::acquire() else {
