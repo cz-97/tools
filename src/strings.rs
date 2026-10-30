@@ -379,11 +379,6 @@ pub mod settings_page {
     /// 系统页：管理员模式下的开机启动说明（这时候是计划任务在管）。
     pub const AUTOSTART_BY_TASK: &str =
         "由「以管理员身份启动」那条计划任务负责，登录时触发（改完要下次登录才见效）";
-    /// 系统页：窗口置顶的标题。
-    pub const TOPMOST_NAME: &str = "窗口置顶";
-    /// 系统页：窗口置顶的说明。
-    pub const TOPMOST_DESCRIPTION: &str =
-        "面板常驻最前，被别的窗口盖住；右键点面板顶部的空白处也能切";
     /// 系统页：管理员方式启动的标题。
     pub const ADMIN_NAME: &str = "以管理员身份启动";
     /// 系统页：管理员方式启动的说明。

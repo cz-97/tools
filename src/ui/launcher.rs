@@ -735,11 +735,15 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 别的窗口抢走前台就收起面板，启动器本来就该这样。
+    /// 别的窗口抢走前台就收起面板，启动器本来就该这样——**除非被钉住**。
     ///
     /// GPUI 不报窗口激活事件，平台也不把那个状态交给上层，所以这里改成采样前台窗口。
     /// 面板一收起循环就结束，下次唤起重新起一条；而且必须曾经到过前台才允许收，
     /// 免得窗口被系统拒绝抬到前面时「刚出现就消失」。
+    ///
+    /// 「钉住」一个循环读一次窗口的 `WS_EX_TOPMOST`：右键那条路在原生窗口过程里改的
+    /// 就是它，所以这里读到的永远是**当前**状态，不用再往上传一遍。钉住期间不累计
+    /// 丢焦次数，一旦取消，下一拍就恢复正常收起。
     fn watch_focus(&mut self, cx: &mut Context<Self>) {
         self.focus_watch = Some(cx.spawn(async move |this, cx| {
             let mut was_in_front = false;
@@ -752,6 +756,11 @@ impl Launcher {
                     };
                     if !panel.window.is_visible() {
                         return false;
+                    }
+                    // 钉住了：用户就是想在别的窗口上边用这个面板，收起来等于砸场子。
+                    if launcher.sync_pinned(panel, cx) {
+                        misses = 0;
+                        return true;
                     }
                     if panel.window.is_foreground() {
                         was_in_front = true;
@@ -782,6 +791,22 @@ impl Launcher {
                 }
             }
         }));
+    }
+
+    /// 把「钉住」状态从窗口同步到设置镜像里，返回现在是不是钉住。
+    ///
+    /// 右键切换发生在原生窗口过程里，应用这边的镜像要等到保存才更新；这里顺手对齐，
+    /// 免得用户「钉住 → 收起面板」时数据库里存的还是旧值。状态真的变了就重绘一次。
+    fn sync_pinned(&mut self, panel: crate::app::LauncherPanel, cx: &mut Context<Self>) -> bool {
+        let pinned = panel.window.is_topmost();
+        let known = stored_settings(cx).pinned;
+        if pinned != known {
+            let mut settings = stored_settings(cx);
+            settings.pinned = pinned;
+            store_settings(settings, cx);
+            cx.notify();
+        }
+        pinned
     }
 
     /// 因为用户去了别的窗口而收起。
@@ -2123,17 +2148,6 @@ impl Launcher {
         settings.set_tool_open_default(id, next);
         store_settings(settings, cx);
         self.refresh_catalogue(cx);
-        cx.notify();
-    }
-
-    /// 打开 / 关掉窗口置顶。和「右键点面板顶部空白处」是同一个开关。
-    pub(crate) fn set_always_on_top(&mut self, topmost: bool, cx: &mut Context<Self>) {
-        crate::app::set_panel_topmost(topmost, cx);
-        // 保存前 `store_settings` 会从窗口读回真实值，这里先改内存那份只是为了让
-        // 立刻重绘的开关落在正确的状态上。
-        let mut settings = stored_settings(cx);
-        settings.always_on_top = topmost;
-        store_settings(settings, cx);
         cx.notify();
     }
 

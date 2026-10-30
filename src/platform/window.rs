@@ -478,7 +478,7 @@ mod sys {
         let topmost = unsafe { is_topmost_now(window) };
         unsafe { apply_topmost(window, !topmost) };
         // 这条路没有界面反馈，记一笔：出问题时能确认「右键到底有没有被收到」。
-        crate::platform::admin::log(&format!("置顶：{}", if topmost { "关" } else { "开" }));
+        crate::platform::admin::log(&format!("钉住：{}", if topmost { "取消" } else { "开" }));
         !topmost
     }
 
