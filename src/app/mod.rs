@@ -739,7 +739,35 @@ pub fn reclaim_foreground(cx: &mut App) {
 }
 
 /// 建托盘图标与菜单。
+/// 托盘建失败之后多久再试一次。
+const TRAY_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+/// 最多试几次。
+const TRAY_ATTEMPTS: usize = 30;
+
 fn build_tray(cx: &mut App) {
+    if try_build_tray(cx) {
+        admin::log("托盘：建成");
+        return;
+    }
+    // **登录时被任务拉起来的这一次，Explorer 可能还没准备好通知区域**，`Shell_NotifyIcon`
+    // 直接失败——托盘图标就这么没了，而且没有任何界面能告诉用户。
+    // 隔一秒再试，直到建成（30 次够 Explorer 慢慢起完）。
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        for attempt in 1..=TRAY_ATTEMPTS {
+            cx.background_executor().timer(TRAY_RETRY).await;
+            let built = cx.update(try_build_tray);
+            if built {
+                admin::log(&format!("托盘：第 {attempt} 次重试建成"));
+                return;
+            }
+        }
+        admin::log("托盘：一直没建成，放弃（图标不会出现）");
+    })
+    .detach();
+}
+
+/// 试着建一次托盘，成功返回 `true`。
+fn try_build_tray(cx: &mut App) -> bool {
     crate::tray_theme::apply(stored_settings(cx).theme);
     match Tray::builder()
         .icon(tray_icon(cx))
@@ -759,8 +787,14 @@ fn build_tray(cx: &mut App) {
         })
         .build(cx)
     {
-        Ok(tray) => cx.set_global(TrayRegistration { tray }),
-        Err(error) => eprintln!("tools: 托盘创建失败：{error}"),
+        Ok(tray) => {
+            cx.set_global(TrayRegistration { tray });
+            true
+        }
+        Err(error) => {
+            admin::log(&format!("托盘：创建失败（{error}）"));
+            false
+        }
     }
 }
 
