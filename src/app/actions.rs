@@ -4,9 +4,11 @@
 //! 具体做什么全在这个文件里，不掺 UI 逻辑。
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui_kit::App;
 use tools::admin;
+use tools::instance;
 use tools::settings::Settings;
 use tools::shell;
 
@@ -78,29 +80,42 @@ pub fn quit_launcher(cx: &mut App) {
     cx.quit();
 }
 
+/// 重新拉起自己之后，最多等多久确认它真的起来了。
+const RESTART_WAIT: Duration = Duration::from_millis(3000);
+
 /// 重启：先拉起新进程，再让当前这个退出。
 ///
-/// 程序是全局单例，所以**先把自己那份单例身份交出去**再拉新的：新的启动时就能直接
-/// 抢到位置，不必等在单例上——那种跨进程的等待又慢又难判断卡在哪。
-/// 新的照旧靠 `shortcuts::install` 的重试去拿热键，旧的没退干净也只是晚几百毫秒。
+/// 两条路，按「**当前进程提权没有**」分（不是看设置里那个开关）：
 ///
-/// **管理员模式下这条路径不一样**：直接 spawn 出来的是普通权限进程；要让新进程也是
-/// 管理员，得让计划任务去启动它（`schtasks /Run`），这样才不弹 UAC。
+/// - **已经提权**：直接 `spawn_self`。子进程继承提权令牌，不弹 UAC，也没有计划任务
+///   那一跳的排队和延迟，最快也最可靠。
+/// - **没提权、但任务在**：只能让任务去启动（这是唯一不弹 UAC 的提权方式），然后
+///   **必须确认新进程真的出现了再退出**。`schtasks /Run` 返回成功只代表任务被接受——
+///   任务可能一直排队（电池策略、上一个实例没退干净），拿它当证据的后果就是
+///   「退出以后什么都没起来」，实际踩过。
+///   等不到就退回 `spawn_self`：宁可给一个普通权限的实例，也不能让用户什么都没有。
+///
+/// 顺序上**必须先交单例身份**再拉新进程：不然新的那个一眼看到互斥量就自己退了。
 pub fn restart_launcher(cx: &mut App) {
     remember_window_position(cx);
     release_singleton(cx);
-    if admin::installed() {
-        // 计划任务在：让它去启动，新进程天生提权。
-        if admin::launch() {
-            admin::log(&format!(
-                "重启：交给任务，当前提权={}",
-                admin::is_elevated()
-            ));
+
+    if admin::is_elevated() {
+        spawn_self();
+        admin::log("重启：当前已提权，直接拉子进程（继承提权）");
+        cx.quit();
+        return;
+    }
+
+    if admin::installed() && admin::launch() {
+        if instance::wait_for_new(RESTART_WAIT) {
+            admin::log("重启：任务已拉起新实例");
             cx.quit();
             return;
         }
-        admin::log("重启：任务没启动成功，退回直接拉进程（这次不会是管理员）");
+        admin::log("重启：任务没在 3 秒内拉起进程（多半是排队了），退回直接拉普通进程");
     }
+
     spawn_self();
     cx.quit();
 }

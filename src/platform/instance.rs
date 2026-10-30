@@ -66,6 +66,24 @@ pub fn wait_wakeup(event: usize) -> bool {
     sys::wait(event)
 }
 
+/// 等一个新的同名进程出现，最多等 `timeout`；等到了返回 `true`。
+///
+/// 重启时用：交给计划任务拉起新实例之后，**必须确认它真的起来了**再退出自己。
+/// `schtasks /Run` 说「成功」只代表任务被接受，任务可能只是排进队列（电池策略、
+/// 上一个实例还没退干净，都会让它一直排着）——拿那个返回值当证据就会「退出后再没起来」。
+pub fn wait_for_new(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if sys::another_running() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    }
+}
+
 #[cfg(windows)]
 mod sys {
     use windows_sys::Win32::Foundation::{
@@ -159,6 +177,46 @@ mod sys {
             }
         }
     }
+
+    /// 除了自己，还有没有同名进程在跑。
+    ///
+    /// 用 ToolHelp 快照：只看进程名，不需要任何权限，也不需要开放别的进程句柄。
+    pub fn another_running() -> bool {
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        };
+
+        let Ok(current) = std::env::current_exe() else {
+            return false;
+        };
+        let Some(name) = current
+            .file_name()
+            .map(|name| name.to_string_lossy().to_lowercase())
+        else {
+            return false;
+        };
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot.is_null() {
+            return false;
+        }
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        let mut found = false;
+        while more {
+            let exe = String::from_utf16_lossy(&entry.szExeFile)
+                .trim_end_matches('\0')
+                .to_lowercase();
+            if exe == name && entry.th32ProcessID != std::process::id() {
+                found = true;
+                break;
+            }
+            more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        unsafe { CloseHandle(snapshot) };
+        found
+    }
 }
 
 #[cfg(not(windows))]
@@ -182,6 +240,10 @@ mod sys {
     }
 
     pub fn wait(_: usize) -> bool {
+        false
+    }
+
+    pub fn another_running() -> bool {
         false
     }
 }

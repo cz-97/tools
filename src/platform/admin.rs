@@ -179,28 +179,147 @@ mod sys {
         run(&["/Query", "/TN", TASK_NAME])
     }
 
-    /// 建任务。
+    /// 建任务，用 **XML** 而不是 `schtasks /Create` 的那一堆开关。
     ///
-    /// **成功与否看任务在不在，不看 schtasks 的退出码**：`/Create` 有时会因为无关紧要的
-    /// 东西给出非 0，拿退出码当结论就会「明明建好了却当没建成」——第一版就栽在这。
+    /// 为什么非得 XML：`/Create` 根本没有「电池供电也运行」的开关，而 schtasks 建的
+    /// 任务默认 `DisallowStartIfOnBatteries=true`——笔记本一拔电源，任务就**排队不执行**，
+    /// 表现就是「程序退出后再也起不来」（实测就栽在这）。斜杠参数里也没有执行时限的开关，
+    /// 默认还是 `PT72H`：常驻的启动器跑满三天会被任务计划程序掐掉。
+    ///
+    /// 成功与否看任务在不在，不看退出码（`/Create` 时不时给非 0）。
     pub fn install(exe: &Path) -> bool {
-        // /TR 的值本身要带引号（路径里有空格时 schtasks 会自己加，但我们不加就常出错），
-        // 所以命令行里是 \"...\" 这种转义。
+        let path = xml_path();
+        if write_utf16(&path, &task_xml(exe)).is_ok() {
+            let args = format!("/Create /F /TN {TASK_NAME} /XML \"{}\"", path.display());
+            let ok = run_elevated(&args);
+            if wait_installed() {
+                log("计划任务已就绪（XML 版：电池照跑、无执行时限）");
+                return true;
+            }
+            log(&format!("XML 建任务失败（schtasks 说 {ok}），退回 /Create"));
+        } else {
+            log("任务 XML 写不下去，退回 /Create");
+        }
+        install_plain(exe)
+    }
+
+    /// 兜底：老的 `/Create` 那条路。电池策略和 72 小时时限都还是 schtasks 的默认值，
+    /// 只在前面的 XML 没建成时用。
+    fn install_plain(exe: &Path) -> bool {
         let args = format!(
-            "/Create /F /TN {TASK_NAME} /TR \"\\\"{}\\\"\" /SC ONLOGON /RL HIGHEST /DELAY 0000:05",
+            "/Create /F /TN {TASK_NAME} /TR \"\\\"{}\\\"\" /SC ONLOGON /RL HIGHEST",
             exe.display()
         );
         let ok = run_elevated(&args);
-        // 任务计划程序落库有一点点延迟，问几次再判死刑。
+        if wait_installed() {
+            log("计划任务已就绪（/Create 版）");
+            return true;
+        }
+        log(&format!("计划任务没建成（schtasks 说 {ok}）"));
+        false
+    }
+
+    /// 任务落库有一点点延迟，问几次再判死刑。
+    fn wait_installed() -> bool {
         for _ in 0..20 {
             if query() {
-                log("计划任务已就绪");
                 return true;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        log(&format!("计划任务没建成（schtasks 说 {ok}）"));
         false
+    }
+
+    /// 任务 XML。`DisallowStartIfOnBatteries` / `StopIfGoingOnBatteries` 关掉是为了
+    /// 笔记本拔电源也能起；`ExecutionTimeLimit` 给 `PT0S`（= 不限时）是别让常驻进程
+    /// 三天后被掐；不写 `Delay` 是因为手动 `/Run` 时它同样生效，白等五秒。
+    fn task_xml(exe: &Path) -> String {
+        let user = account_name();
+        let command = escape_xml(&exe.display().to_string());
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>{user}</Author>
+    <Description>tools 启动器：登录后以最高权限启动，不再询问 UAC</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+    </Exec>
+  </Actions>
+</Task>
+"#
+        )
+    }
+
+    /// 当前账号，写成任务 XML 认的 `机器名\用户`。
+    fn account_name() -> String {
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        match std::env::var("USERDOMAIN") {
+            Ok(domain) if !domain.is_empty() => format!("{domain}\\{user}"),
+            _ => user,
+        }
+    }
+
+    fn escape_xml(text: &str) -> String {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    }
+
+    fn xml_path() -> std::path::PathBuf {
+        let base = std::env::var_os("APPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        base.join("tools").join(format!("{TASK_NAME}.xml"))
+    }
+
+    /// 任务计划的 XML 必须带 BOM 的 UTF-16，schtasks 才认。
+    fn write_utf16(path: &Path, text: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(&[0xFF, 0xFE])?;
+        for unit in text.encode_utf16() {
+            file.write_all(&unit.to_le_bytes())?;
+        }
+        Ok(())
     }
 
     pub fn remove() -> bool {

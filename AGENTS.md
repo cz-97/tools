@@ -331,11 +331,14 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 
 - **托盘左键单击唤出面板，右键出菜单**。`gpui-tray` 的 Windows 后端在「有菜单、没配
   激活回调」时会把左键也变成弹菜单，所以 `build_tray` 必须挂 `.on_activate(ShowLauncher)`。
-- **管理员模式 = 一条计划任务**（`platform/admin.rs`，任务名固定 `tools-launcher`）：
-  `schtasks /Create /SC ONLOGON /RL HIGHEST /TR <exe>`。系统里有了这条任务，
-  `schtasks /Run` 拉起来的进程**天生提权、不弹 UAC**——这就是「启动无需授权弹窗」的全部
-  秘密。建任务那一下本身要提权（`runas` 动词拉一个提权的 schtasks），所以**开启时会问
-  一次**，之后（登录启动、手动启动、`设置 → 系统 → 重启`）都不再问。
+- **管理员模式 = 一条计划任务**（`platform/admin.rs`，任务名固定 `tools-launcher`）。
+  系统里有了这条任务，`schtasks /Run` 拉起来的进程**天生提权、不弹 UAC**——这就是
+  「启动无需授权弹窗」的全部秘密。建任务那一下本身要提权（`runas` 动词拉一个提权的
+  schtasks），所以**开启时会问一次**，之后（登录启动、手动启动、重启）都不再问。
+- **任务用 XML 建，不用 `schtasks /Create` 那堆开关**：`/Create` 没有「电池供电也运行」
+  的开关，而它建出来的任务默认 `DisallowStartIfOnBatteries=true`——**笔记本一拔电源就
+  排队不执行**，表现正是「退出后再也起不来」（踩过）。斜杠参数也没有执行时限开关，默认
+  `PT72H` 会把常驻的启动器在三天后掐掉，XML 里给 `PT0S`。XML 没建成才退回 `/Create`。
 - 任务在不在是**事实来源**：启动时 `settings.run_as_admin = admin::installed()`，和
   `launch_at_login = autostart::enabled() || admin::installed()` 一个路子。但**开关开着
   不等于眼前这个进程是管理员**——只有用任务拉起来的那次才是，所以还有
@@ -349,6 +352,11 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   实例抢单例；把「开机启动」关掉等于把任务也删掉（两者是同一件事）。
 - **重启必须走任务**（`actions::restart_launcher`）：直接 spawn 出来的是普通权限进程，
   提权就白开了。
+- **重启分两条，按 `is_elevated()` 判**：已经提权就直接 `spawn_self`（子进程继承提权
+  令牌，无 UAC、无队列、无延迟）；没提权才让任务去启动。
+- **交给任务之后必须确认新进程真的起来了**（`instance::wait_for_new`，3 秒）再退出：
+  `schtasks /Run` 返回成功只代表任务被接受，任务可能一直排队——拿它当证据就是
+  「退出后什么都没有」。等不到就 `spawn_self` 兜底，宁可给个普通权限的实例。
 
 ## 5. 交互细节
 
