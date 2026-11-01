@@ -1250,6 +1250,43 @@ impl Launcher {
         cx.notify();
     }
 
+    /// 方格区域滚一格，和设置页同一套算法。
+    pub(crate) fn scroll_grid(
+        &mut self,
+        event: &gpui_kit::ScrollWheelEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = f32::from(event.delta.pixel_delta(px(24.)).y);
+        if delta == 0.0 {
+            return;
+        }
+        let limit = f32::from(self.grid_scroll.max_offset().y).max(0.0);
+        let next = (f32::from(self.grid_scroll.offset().y) + delta).clamp(0.0, limit);
+        self.grid_scroll.set_offset(point(px(0.), px(next)));
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// 设置页滚一格。
+    ///
+    /// 方向跟 gpui 自己的一致：`delta.y` 为正就是往下滚（内容往上走）。上限从滚动句柄
+    /// 拿——它在 prepaint 里量过子元素边界，比我们自己猜内容高度准。
+    pub(crate) fn scroll_settings(
+        &mut self,
+        event: &gpui_kit::ScrollWheelEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = f32::from(event.delta.pixel_delta(px(24.)).y);
+        if delta == 0.0 {
+            return;
+        }
+        let limit = f32::from(self.settings_scroll.max_offset().y).max(0.0);
+        let next = (f32::from(self.settings_scroll.offset().y) + delta).clamp(0.0, limit);
+        self.settings_scroll.set_offset(point(px(0.), px(next)));
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     /// 设置页的滚动条回到顶部。
     fn reset_settings_scroll(&self) {
         self.settings_scroll.set_offset(point(px(0.), px(0.)));

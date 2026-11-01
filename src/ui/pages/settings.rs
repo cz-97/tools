@@ -98,13 +98,23 @@ pub(crate) fn render(
                 .min_w_0()
                 .min_h_0()
                 .overflow_hidden()
-                // **必须挂滚动句柄**：只写 `overflow_y_scroll` 不会真的滚——滚轮事件要靠
-                // 句柄接到这个容器上。没这句话，列表比窗口高就永远看不到下半截。
                 .overflow_y_scroll()
+                // 句柄负责记住「内容多高、能滚多远」，滚轮自己接（见下面的说明）。
                 .track_scroll(&launcher.settings_scroll)
+                // **光有 `track_scroll` 是滚不动的**：gpui 只在元素自己生成 hitbox 时才装
+                // 滚轮监听，而这个容器自己不接受任何鼠标事件，hitbox 就不存在，滚轮事件
+                // 到不了它身上。显式接一次滚轮，hitbox 才会出现。
+                .on_scroll_wheel(cx.listener(
+                    |launcher, event: &gpui_kit::ScrollWheelEvent, _window, cx| {
+                        launcher.scroll_settings(event, cx)
+                    },
+                ))
                 .px_4()
                 .py_4()
-                .child(content),
+                // **内容层不许被压缩**：gpui 的 `flex_shrink` 默认是 1，直接放进去会被压扁去
+                // 适应容器高度——永远不「超出」，也就永远滚不动。包一层 `flex_shrink_0`，
+                // 它的高度按内容算，溢出才是真的溢出。
+                .child(div().w_full().flex_shrink_0().child(content)),
         )
 }
 
