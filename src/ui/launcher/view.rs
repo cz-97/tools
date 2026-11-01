@@ -7,8 +7,8 @@ use gpui_kit::component::input::Input;
 use gpui_kit::component::list::List;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, Context, Font, FontWeight, IntoElement, Pixels, Render, SharedString, TextRun,
-    Window, WindowControlArea, div, prelude::*, px,
+    AnyElement, Context, Font, FontWeight, Hsla, IntoElement, Pixels, Render, SharedString,
+    TextRun, Window, WindowControlArea, div, prelude::*, px,
 };
 use tools::settings::Settings;
 
@@ -274,6 +274,13 @@ fn search_field_width_at_least(
 
 /// 一段文字排版之后有多宽。
 fn text_width(window: &Window, cx: &Context<Launcher>, text: &str) -> f32 {
+    shaped_width(window, cx, text, SEARCH_TEXT_SIZE)
+}
+
+/// 同 [`text_width`]，但字号自己给。
+///
+/// 量的时候用的字号必须和画的时候一致，否则算出来的折行位置和真正画出来差一截。
+fn shaped_width(window: &Window, cx: &Context<Launcher>, text: &str, size: f32) -> f32 {
     let theme = cx.theme();
     let colors = UiColors::current(cx);
     let run = TextRun {
@@ -287,14 +294,14 @@ fn text_width(window: &Window, cx: &Context<Launcher>, text: &str) -> f32 {
         underline: None,
         strikethrough: None,
     };
-    let shaped = window.text_system().shape_line(
-        text.to_string().into(),
-        px(SEARCH_TEXT_SIZE),
-        &[run],
-        None,
-    );
+    let shaped = window
+        .text_system()
+        .shape_line(text.to_string().into(), px(size), &[run], None);
     f32::from(shaped.width())
 }
+
+/// 方格名字的字号。**必须和 `grid_cell` 里那个 `text_size` 是同一个数。**
+const GRID_NAME_TEXT_SIZE: f32 = 12.0;
 
 impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -563,7 +570,15 @@ fn home_grid(launcher: &Launcher, window: &mut Window, cx: &mut Context<Launcher
                 .gap(px(gap))
                 .children(chunk.iter().enumerate().map(|(column, item)| {
                     let index = matches_len + row * metrics.columns + column;
-                    grid_cell(item, index, metrics.cell, selected == index, colors, cx)
+                    grid_cell(
+                        item,
+                        index,
+                        metrics.cell,
+                        selected == index,
+                        colors,
+                        window,
+                        cx,
+                    )
                 }))
                 .into_any_element()
         })
@@ -644,6 +659,7 @@ fn grid_cell(
     cell: f32,
     selected: bool,
     colors: UiColors,
+    window: &Window,
     cx: &Context<Launcher>,
 ) -> AnyElement {
     let (icon, name) = match item {
@@ -681,16 +697,7 @@ fn grid_cell(
             this.hover(move |style| style.bg(colors.hover))
         })
         .child(Icon::new(icon).size_5().text_color(text_color))
-        .child(
-            div()
-                .w_full()
-                .px_1()
-                .text_xs()
-                .text_center()
-                .text_ellipsis()
-                .text_color(text_color)
-                .child(name),
-        )
+        .child(grid_name_lines(name, cell, text_color, window, cx))
         .on_hover(cx.listener(move |launcher, hovered: &bool, _window, cx| {
             launcher.set_hovered_cell(index, *hovered, cx)
         }))
@@ -701,6 +708,43 @@ fn grid_cell(
         )
         .into_any_element()
 }
+
+/// 方格里的名字：一行放得下就一行，放不下就按宽度匀着折成两行，各自居中。
+///
+/// 为什么不能靠 CSS 那套自动换行：格子里只有 68~100px，中文一个就 12px，自动换行会
+/// 出现「七字一行、末尾孤零零一个字」的参差；用户要的是 8 个字对半 4+4。所以这里
+/// 自己量宽度、自己找断点（`grid::split_balanced`），拿到两段再各画一行。
+fn grid_name_lines(
+    name: String,
+    cell: f32,
+    color: Hsla,
+    window: &Window,
+    cx: &Context<Launcher>,
+) -> AnyElement {
+    let available = (cell - NAME_HORIZONTAL_PADDING * 2.0).max(1.0);
+    let measure = |text: &str| shaped_width(window, cx, text, GRID_NAME_TEXT_SIZE);
+    let ellipsis = measure("\u{2026}");
+    let (first, second) = crate::ui::grid::split_balanced(&name, available, &measure, ellipsis);
+
+    let line = |text: String| {
+        div()
+            .w_full()
+            .text_center()
+            .text_ellipsis()
+            .text_size(px(GRID_NAME_TEXT_SIZE))
+            .text_color(color)
+            .child(text)
+    };
+    v_flex()
+        .w_full()
+        .items_center()
+        .children(Some(line(first)))
+        .children((!second.is_empty()).then(|| line(second)))
+        .into_any_element()
+}
+
+/// 方格名字左右各留多少（判断可排宽度用，和 `.px_1()` 对齐）。
+const NAME_HORIZONTAL_PADDING: f32 = 4.0;
 
 /// 方格悬停时显示的那句话。
 fn describe(item: &commands_list::HomeItem) -> SharedString {
