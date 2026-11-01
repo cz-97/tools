@@ -22,7 +22,7 @@ use crate::ui::settings_page::{self, small_button};
 
 use super::{
     CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_CARET,
-    SEARCH_FIELD_MAX, SEARCH_FIELD_PADDING, SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE, ToolTab,
+    SEARCH_FIELD_MAX, SEARCH_FIELD_PADDING, SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE,
 };
 
 impl Launcher {
@@ -667,7 +667,7 @@ fn grid_cell(
             (command.icon.clone(), command.name.to_string())
         }
         commands_list::HomeItem::Tool(tool) => {
-            (ToolTab::for_kind(tool.kind).icon(), tool.name.clone())
+            (super::user_kind_icon(tool.kind), tool.name.clone())
         }
         // 命中不在方格区里，走到这儿说明状态串了，给个空块撑住布局。
         commands_list::HomeItem::Match(_) => {

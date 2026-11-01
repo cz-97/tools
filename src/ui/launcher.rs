@@ -41,6 +41,18 @@ const HEADER_MIN_HEIGHT: f32 = 52.;
 /// 页头留给搜索框上下的余量，两个方向合起来算。
 const HEADER_SLACK: f32 = 26.;
 /// 设置页左侧子模块列的宽度。
+/// 用户条目（文件 / 文件夹 / 快捷终端）没有系统图标时的兜底图标。
+pub(crate) fn user_kind_icon(kind: ToolKind) -> gpui_kit::assets::IconName {
+    match kind {
+        ToolKind::File => gpui_kit::assets::IconName::FileText,
+        ToolKind::Folder => gpui_kit::assets::IconName::Folder,
+        ToolKind::Terminal => gpui_kit::assets::IconName::SquareTerminal,
+    }
+}
+
+/// 三列布局里第二列（子模块 / 子工具）的宽度。
+pub(crate) const MODULE_WIDTH: f32 = 168.;
+
 pub(crate) const SIDEBAR_WIDTH: f32 = 148.;
 /// 命令页里左侧子模块列的宽度。要放得下「GitHub 3/3」这种最长的组合。
 /// 输入框组件在内部画掉的左右留白（小号是 8 + 8），输入框得自己付这笔账。
@@ -195,40 +207,16 @@ impl SettingsTab {
         }
     }
 
-    /// 这一项有没有子项（有的话展开成缩进的二级行）。
-    pub(crate) fn children(self) -> bool {
-        matches!(self, Self::Commands | Self::Tools)
+    /// 往后挪 `delta` 个，到底就停在最后一个。
+    fn shifted(self, delta: isize) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|tab| *tab == self)
+            .unwrap_or_default() as isize;
+        Self::ALL[(index + delta).clamp(0, Self::ALL.len() as isize - 1) as usize]
     }
 }
 
-/// 设置页的键盘焦点在哪一侧。
-///
-/// 左列是导航（标签 + 展开的子项），右列是内容（那三个工具列表）。左右键来回切，
-/// 切到哪边，上下键就管哪边——右边列表条目多，只用鼠标很别扭。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SettingsSide {
-    #[default]
-    Nav,
-    Content,
-}
-
-/// 设置左侧导航里的一行。
-///
-/// 二级项（「命令」的子模块、「工具」的子工具）**折进第一列**，不再单独占一列：
-/// 展开时它们是缩进的行，跟着上下键一起走；收起（换了别的标签）就不在列表里。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NavEntry {
-    Tab(SettingsTab),
-    /// 「命令」下面的子模块，存的是 `catalogue::sections()` 里的下标。
-    Section(usize),
-    /// 「工具」下面的子工具。
-    Tool(ToolTab),
-}
-
-/// 设置里「工具」标签下面的子标签页。
-///
-/// 每个子标签是一个可配置的工具；加工具 = 给这个枚举加一项，右侧内容按它分派，
-/// 左侧列表自动列出全部。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolTab {
     /// 计算器：和它的设置（比如精度）。
@@ -237,23 +225,20 @@ pub(crate) enum ToolTab {
     Firefox,
     /// GitHub：用户名和令牌。
     Github,
-    /// 文件：用户自己加的那些（打开位置或按默认应用打开）。
-    Files,
-    /// 文件夹：用户自己加的那些（打开它自己）。
-    Folders,
-    /// 快捷终端：用户自己加的那些命令行。
-    Terminal,
+    /// 文件 / 文件夹 / 快捷终端：用户自己加的条目。
+    ///
+    /// 三类合成一页，顶部用分段切换——它们本来就是同一件事的三个形状，
+    /// 拆成三个标签只是把一次点击变成两次。
+    UserTools,
 }
 
 impl ToolTab {
     /// 全部子标签，顺序就是左侧列表的顺序。
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 4] = [
         Self::Calculator,
         Self::Firefox,
         Self::Github,
-        Self::Files,
-        Self::Folders,
-        Self::Terminal,
+        Self::UserTools,
     ];
 
     /// 界面上的名字。
@@ -262,9 +247,7 @@ impl ToolTab {
             Self::Calculator => strings::launcher::CALCULATOR_TITLE,
             Self::Firefox => strings::launcher::FIREFOX_TITLE,
             Self::Github => strings::launcher::GITHUB_TITLE,
-            Self::Files => strings::tools_page::FILE,
-            Self::Folders => strings::tools_page::FOLDER,
-            Self::Terminal => strings::tools_page::QUICK_TERMINAL,
+            Self::UserTools => strings::tools_page::USER_ITEMS,
         }
     }
 
@@ -274,19 +257,13 @@ impl ToolTab {
             Self::Calculator => gpui_kit::assets::IconName::Calculator,
             Self::Firefox => gpui_kit::assets::IconName::Globe,
             Self::Github => gpui_kit::assets::IconName::Github,
-            Self::Files => gpui_kit::assets::IconName::FileText,
-            Self::Folders => gpui_kit::assets::IconName::Folder,
-            Self::Terminal => gpui_kit::assets::IconName::SquareTerminal,
+            Self::UserTools => gpui_kit::assets::IconName::FileText,
         }
     }
 
-    /// 哪一种用户工具归这个子标签管（[`Self::tool_kind`] 的反查）。
-    pub(crate) fn for_kind(kind: ToolKind) -> Self {
-        match kind {
-            ToolKind::File => Self::Files,
-            ToolKind::Folder => Self::Folders,
-            ToolKind::Terminal => Self::Terminal,
-        }
+    /// 这一页关的是哪一类用户条目（不是自定义条目页就返回 `None`）。
+    pub(crate) fn user_kind(self) -> Option<ToolKind> {
+        matches!(self, Self::UserTools).then_some(ToolKind::File)
     }
 }
 
@@ -475,14 +452,10 @@ pub struct Launcher {
     _list_search_events: Subscription,
     /// 方格布局的滚动位置（列表布局不用它）。
     pub(crate) grid_scroll: ScrollHandle,
-    /// 设置页键盘焦点在哪一侧。
-    pub(crate) settings_side: SettingsSide,
-    /// 导航里手动选中的那一行（可能停在某个标签的父行上，此时右侧内容不变）。
-    ///
-    /// 不设的话就按当前页面推导；设了但已经不可见（换了标签、收起了子项）就退回推导值。
-    nav_selected: Option<NavEntry>,
     /// 三个工具列表里高亮到第几条（相对**过滤后**的列表）。
     pub(crate) tools_selected: usize,
+    /// 「自定义条目」页当前在编辑哪一类（文件 / 文件夹 / 快捷终端）。
+    pub(crate) user_kind: ToolKind,
     /// 设置里「文件 / 文件夹 / 快捷终端」列表的搜索框与关键词。
     ///
     /// 三页共用一份：换页时清空，免得带着上一页的关键词进来一片空白。
@@ -490,8 +463,6 @@ pub struct Launcher {
     pub(crate) tools_query: String,
     /// 那三个列表自己的滚动位置（头部固定，只有列表滚）。
     pub(crate) tools_scroll: ScrollHandle,
-    /// 设置左侧导航的滚动位置（和右边内容各滚各的）。
-    pub(crate) nav_scroll: ScrollHandle,
     /// 设置页右半边的滚动位置。
     ///
     /// 设置里那些列表（尤其快捷终端）能有几十条，比窗口高，必须能滚；换标签时要回到
@@ -632,13 +603,11 @@ impl Launcher {
             _search_observation: search_observation,
             _list_search_events: list_search_events,
             grid_scroll: ScrollHandle::new(),
-            settings_side: SettingsSide::Nav,
-            nav_selected: None,
             tools_selected: 0,
+            user_kind: ToolKind::File,
             tools_search,
             tools_query: String::new(),
             tools_scroll: ScrollHandle::new(),
-            nav_scroll: ScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
             hovered_cell: None,
             _settings_events: settings_events
@@ -720,7 +689,14 @@ impl Launcher {
     pub(crate) fn navigate(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         match self.page {
             Page::Commands => self.move_selection(delta, window, cx),
-            Page::Settings(_) => self.move_nav(delta, window, cx),
+            Page::Settings(tab) => {
+                // 自定义条目页：上下键走右列那个列表（页面里就一个列表，不需要先切焦点）。
+                if self.user_tools_kind().is_some() {
+                    self.move_tool_selection(delta, cx);
+                } else {
+                    self.select_tab(tab.shifted(delta), window, cx);
+                }
+            }
             Page::Calculator => {}
             Page::List(_) => self.move_entry(delta, window, cx),
         }
@@ -1079,11 +1055,9 @@ impl Launcher {
         match self.page {
             Page::Commands => {}
             Page::Settings(_) => {
-                // 焦点在右列列表上：回车就是跑那一条。
-                if self.settings_side == SettingsSide::Content
-                    && let Some(kind) = self.current_tool_kind()
-                {
-                    let list = self.visible_tools(cx, kind);
+                // 自定义条目页：回车就是跑列表里高亮的那一条。
+                if self.user_tools_kind().is_some() {
+                    let list = self.visible_tools(cx);
                     let index = self.tools_selected.min(list.len().saturating_sub(1));
                     if let Some(tool) = list.get(index) {
                         let id = tool.id;
@@ -1277,223 +1251,7 @@ impl Launcher {
     }
 
     /// 换一个设置子模块。计算器本体已经不在设置里，这里不再需要为它移交焦点。
-    /// 现在展开的是哪个标签（只有带子项的标签才会展开）。
-    pub(crate) fn expanded_tab(&self) -> Option<SettingsTab> {
-        match self.page {
-            Page::Settings(tab) if tab.children() => Some(tab),
-            _ => None,
-        }
-    }
-
-    /// 左侧导航当前能看到的行，按显示顺序。
-    ///
-    /// 展开的子项紧跟在它所属的标签后面——所以「展开时参与上下切换，收起时不参与」
-    /// 是同一个列表自然的结果，不用另写一套跳过逻辑。
-    pub(crate) fn nav_entries(&self) -> Vec<NavEntry> {
-        let mut entries = Vec::with_capacity(SettingsTab::ALL.len() + 8);
-        for tab in SettingsTab::ALL {
-            entries.push(NavEntry::Tab(tab));
-            if self.expanded_tab() == Some(tab) {
-                match tab {
-                    SettingsTab::Commands => {
-                        entries.extend((0..catalogue::sections().len()).map(NavEntry::Section));
-                    }
-                    SettingsTab::Tools => {
-                        entries.extend(ToolTab::ALL.into_iter().map(NavEntry::Tool));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        entries
-    }
-
-    /// 现在高亮的是哪一行。
-    pub(crate) fn nav_current(&self) -> Option<NavEntry> {
-        if let Some(entry) = self.nav_selected
-            && self.nav_entries().contains(&entry)
-        {
-            return Some(entry);
-        }
-        match self.page {
-            Page::Settings(SettingsTab::Commands) => Some(NavEntry::Section(self.section)),
-            Page::Settings(SettingsTab::Tools) => Some(NavEntry::Tool(self.tool_tab)),
-            Page::Settings(tab) => Some(NavEntry::Tab(tab)),
-            _ => None,
-        }
-    }
-
-    /// 把滚动容器里的第 `index` 行滚进可见范围——只在该行已经被挡住时才动。
-    ///
-    /// 上下键走在视口外面之后，用户根本看不到焦点在哪，所以每次挪完都得看一眼。
-    /// 行边界由句柄在 prepaint 时量好（`bounds_for_item`），比自己按行高算准。
-    fn reveal_row(handle: &ScrollHandle, index: usize) {
-        let Some(item) = handle.bounds_for_item(index) else {
-            return;
-        };
-        let view = handle.bounds();
-        let viewport = f32::from(view.size.height);
-        if viewport <= 0.0 {
-            return;
-        }
-        // 子元素边界是「已经算上滚动偏移」的视觉位置。
-        let top = f32::from(item.origin.y - view.origin.y);
-        let bottom = top + f32::from(item.size.height);
-        let offset = f32::from(handle.offset().y);
-        let next = if top < 0.0 {
-            offset + top
-        } else if bottom > viewport {
-            offset + bottom - viewport
-        } else {
-            return;
-        };
-        let limit = f32::from(handle.max_offset().y).max(0.0);
-        handle.set_offset(point(px(0.), px(next.clamp(0.0, limit))));
-    }
-
-    /// 设置里那三个列表当前对应哪个种类（其它工具页没有列表）。
-    pub(crate) fn current_tool_kind(&self) -> Option<ToolKind> {
-        match self.tool_tab {
-            ToolTab::Files => Some(ToolKind::File),
-            ToolTab::Folders => Some(ToolKind::Folder),
-            ToolTab::Terminal => Some(ToolKind::Terminal),
-            _ => None,
-        }
-    }
-
-    /// 右列现在有没有可以上下走的列表。
-    pub(crate) fn content_list_active(&self) -> bool {
-        matches!(self.page, Page::Settings(SettingsTab::Tools))
-            && self.current_tool_kind().is_some()
-    }
-
-    /// 当前页 + 搜索词过滤之后能看到的那几条工具。
-    ///
-    /// 绘制和上下键都问它，免得两边过滤口径不一致、选中项和屏幕上那一行对不上。
-    pub(crate) fn visible_tools(&self, cx: &App, kind: ToolKind) -> Vec<UserTool> {
-        let query = self.tools_query.trim().to_lowercase();
-        stored_settings(cx)
-            .tools_of(kind)
-            .filter(|tool| {
-                query.is_empty()
-                    || tool.name.to_lowercase().contains(&query)
-                    || tool.target.to_lowercase().contains(&query)
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// 设置页按了左右键：在导航列和内容列之间搬焦点。
-    pub(crate) fn switch_settings_side(&mut self, step: isize, cx: &mut Context<Self>) {
-        if !matches!(self.page, Page::Settings(_)) {
-            return;
-        }
-        let next = if step < 0 {
-            SettingsSide::Nav
-        } else if self.content_list_active() {
-            SettingsSide::Content
-        } else {
-            return;
-        };
-        if self.settings_side != next {
-            self.settings_side = next;
-            cx.notify();
-        }
-    }
-
-    /// 鼠标点了右列的一行：焦点搬到右列并停在这一行。
-    pub(crate) fn focus_tool_row(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.settings_side = SettingsSide::Content;
-        self.tools_selected = index;
-        Self::reveal_row(&self.tools_scroll, index);
-        cx.notify();
-    }
-
-    /// 右列列表里上下挪一行。
-    fn move_tool_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let Some(kind) = self.current_tool_kind() else {
-            return;
-        };
-        let count = self.visible_tools(cx, kind).len();
-        if count == 0 {
-            return;
-        }
-        let next = (self.tools_selected as isize + delta).clamp(0, count as isize - 1) as usize;
-        if next != self.tools_selected {
-            self.tools_selected = next;
-            Self::reveal_row(&self.tools_scroll, next);
-            cx.notify();
-        }
-    }
-
-    /// 导航上下挪一格。
-    fn move_nav(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        // 焦点在右列：上下键走列表，不碰导航。
-        if self.settings_side == SettingsSide::Content && self.content_list_active() {
-            self.move_tool_selection(delta, cx);
-            return;
-        }
-        let entries = self.nav_entries();
-        if entries.is_empty() {
-            return;
-        }
-        let current = self
-            .nav_current()
-            .and_then(|current| entries.iter().position(|entry| *entry == current))
-            .unwrap_or(0) as isize;
-        let next = (current + delta).clamp(0, entries.len() as isize - 1) as usize;
-        if next == current as usize {
-            return;
-        }
-        self.select_nav(entries[next], window, cx);
-        // 换过标签的话列表长度会变，重新算一遍再找位置。
-        if let Some(current) = self.nav_current()
-            && let Some(index) = self
-                .nav_entries()
-                .iter()
-                .position(|entry| *entry == current)
-        {
-            Self::reveal_row(&self.nav_scroll, index);
-            cx.notify();
-        }
-    }
-
-    /// 选中导航的一行。
-    pub(crate) fn select_nav(
-        &mut self,
-        entry: NavEntry,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings_side = SettingsSide::Nav;
-        self.nav_selected = Some(entry);
-        match entry {
-            NavEntry::Tab(tab) => {
-                // 已经在这一页就只挪高亮：光标停在父行上，右侧内容不变。
-                if self.page == Page::Settings(tab) {
-                    cx.notify();
-                } else {
-                    self.select_tab(tab, window, cx);
-                }
-            }
-            NavEntry::Section(index) => {
-                if self.section != index {
-                    self.commit_settings_inputs(cx);
-                    self.section = index;
-                    self.reset_settings_scroll();
-                }
-                cx.notify();
-            }
-            NavEntry::Tool(tool) => {
-                if self.tool_tab != tool {
-                    self.select_tool_tab(tool, window, cx);
-                } else {
-                    cx.notify();
-                }
-            }
-        }
-    }
-
+    /// 切到一个设置标签。
     pub(crate) fn select_tab(
         &mut self,
         tab: SettingsTab,
@@ -1510,11 +1268,110 @@ impl Launcher {
         self.tool_notice = None;
         window.blur(cx);
         self.page = Page::Settings(tab);
-        self.nav_selected = Some(NavEntry::Tab(tab));
-        self.settings_side = SettingsSide::Nav;
-        // 新标签从头看：上一条列表可能滚到底了。
+        self.tools_selected = 0;
         self.reset_settings_scroll();
         cx.notify();
+    }
+
+    /// 换一个设置子模块（命令页左列）。
+    pub(crate) fn select_section(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.section == index {
+            return;
+        }
+        self.commit_settings_inputs(cx);
+        self.section = index;
+        self.recording = None;
+        self.conflict = None;
+        cx.notify();
+    }
+
+    /// 「自定义条目」页当前在编辑哪一类（文件 / 文件夹 / 快捷终端）。
+    ///
+    /// 只有在「工具 → 自定义条目」这一页才有值；其它页返回 `None`，上下键就不会被列表抢走。
+    pub(crate) fn user_tools_kind(&self) -> Option<ToolKind> {
+        matches!(self.page, Page::Settings(SettingsTab::Tools))
+            .then_some(self.tool_tab.user_kind())
+            .flatten()
+            .map(|_| self.user_kind)
+    }
+
+    /// 当前页 + 搜索词过滤之后能看到的那几条工具。
+    ///
+    /// 绘制和上下键都问它，免得两边过滤口径不一样、选中项和屏幕上那一行对不上。
+    pub(crate) fn visible_tools(&self, cx: &App) -> Vec<UserTool> {
+        let Some(kind) = self.user_tools_kind() else {
+            return Vec::new();
+        };
+        let query = self.tools_query.trim().to_lowercase();
+        stored_settings(cx)
+            .tools_of(kind)
+            .filter(|tool| {
+                query.is_empty()
+                    || tool.name.to_lowercase().contains(&query)
+                    || tool.target.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 鼠标点分段切到某一类（键盘那条路走 [`Self::switch_user_kind`]）。
+    pub(crate) fn choose_user_kind(&mut self, kind: ToolKind, cx: &mut Context<Self>) {
+        if self.user_kind == kind {
+            return;
+        }
+        self.commit_settings_inputs(cx);
+        self.user_kind = kind;
+        self.tools_selected = 0;
+        self.tools_query.clear();
+        self.tool_editor = None;
+        self.tool_notice = None;
+        cx.notify();
+    }
+
+    /// 左右键：在「文件 / 文件夹 / 快捷终端」之间切。
+    pub(crate) fn switch_user_kind(
+        &mut self,
+        step: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(kind) = self.user_tools_kind() else {
+            return;
+        };
+        let all = ToolKind::USER;
+        let index = all.iter().position(|item| *item == kind).unwrap_or(0) as isize;
+        let next = (index + step).clamp(0, all.len() as isize - 1);
+        if next == index {
+            return;
+        }
+        self.commit_settings_inputs(cx);
+        self.user_kind = all[next as usize];
+        self.tools_selected = 0;
+        self.tools_query.clear();
+        self.tools_search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.tool_editor = None;
+        self.tool_notice = None;
+        cx.notify();
+    }
+
+    /// 鼠标点了列表的一行：高亮到这一行，接着能上下走。
+    pub(crate) fn focus_tool_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.tools_selected = index;
+        cx.notify();
+    }
+
+    /// 列表里上下挪一行（只在这一页）。
+    fn move_tool_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let count = self.visible_tools(cx).len();
+        if count == 0 {
+            return;
+        }
+        let next = (self.tools_selected as isize + delta).clamp(0, count as isize - 1) as usize;
+        if next != self.tools_selected {
+            self.tools_selected = next;
+            cx.notify();
+        }
     }
 
     /// 工具标签里切到某个子标签（计算器、火狐、GitHub、文件快捷方式、快捷终端）。

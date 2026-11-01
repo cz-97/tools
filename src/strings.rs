@@ -191,6 +191,10 @@ pub mod commands_page {
     }
     /// 该子模块下没有任何命令时的一行字。
     pub const EMPTY: &str = "这个子模块还没有命令";
+    /// 左侧子模块后面的「启用数/总数」。
+    pub fn enabled_ratio(enabled: usize, total: usize) -> String {
+        format!("{enabled}/{total}")
+    }
     /// 快捷键按钮在没绑定时显示的字。
     pub const SHORTCUT_EMPTY: &str = "快捷键";
     /// 录制快捷键时按钮上显示的字。
@@ -217,6 +221,8 @@ pub mod tools_page {
     }
 
     /// 文件。
+    /// 工具页里那个合并了文件 / 文件夹 / 快捷终端的子标签。
+    pub const USER_ITEMS: &str = "自定义条目";
     pub const FILE: &str = "文件";
     /// 文件夹。
     pub const FOLDER: &str = "文件夹";

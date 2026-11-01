@@ -1,6 +1,5 @@
 //! 设置页：左边是子模块，右边是选中那一页的内容。
 
-use gpui_kit::InteractiveElement as _;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
@@ -15,14 +14,13 @@ use tools::settings::{HomeLayout, Settings, Theme as ColorScheme, ToolKind, User
 
 use crate::actions;
 use crate::app::stored_settings;
-use crate::catalogue;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_page;
 use crate::ui::commands_page::shortcut_button;
 use crate::ui::launcher::{
-    Launcher, NavEntry, RecordTarget, SIDEBAR_WIDTH, SettingsSide, SettingsTab, ToolTab,
+    Launcher, MODULE_WIDTH, RecordTarget, SIDEBAR_WIDTH, SettingsTab, ToolTab,
 };
 
 /// 画出整个设置页。
@@ -35,94 +33,43 @@ pub(crate) fn render(
     let settings = stored_settings(cx);
     let border = cx.theme().border;
 
-    // 左侧导航是**一棵树**：「命令」和「工具」下面那一组子项折进这一列，展开时缩进着
-    // 排在后面、跟上下键一起走，收起时不在列表里（`Launcher::nav_entries`）。
-    // 这样所有页面最多只有两列，第三列不存在了。
-    let current = launcher.nav_current();
     let sections =
         v_flex()
-            // **必须有 id**：gpui 的 `overflow_y_scroll` / `track_scroll` 只在带 id 的元素上
-            // 才有（`InteractiveElement` 的实现要求），少了 id 连方法都找不到。
-            .id("settings-nav")
             .w(px(SIDEBAR_WIDTH))
             .flex_shrink_0()
-            .h_full()
             .p_2()
             .gap_1()
             .border_r_1()
             .border_color(border)
-            .overflow_y_scroll()
-            .track_scroll(&launcher.nav_scroll)
-            // 每一行都直接挂在这个滚动容器下面：句柄的 `bounds_for_item(序号)` 靠的就是
-            // 「一个子元素 = 一行」，外面再包一层就只剩一个子元素，没法按行滚进可见范围。
-            .children(launcher.nav_entries().into_iter().enumerate().map(
-                |(ix, entry)| match entry {
-                    NavEntry::Tab(item) => {
-                        let selected = current == Some(entry);
-                        h_flex()
-                            .id(SharedString::from(format!("section-tab-{ix}")))
-                            .flex_shrink_0()
-                            .gap_2()
-                            .px_3()
-                            .py_2()
-                            .rounded(px(6.))
-                            .text_sm()
-                            .cursor_pointer()
-                            .text_color(if selected {
-                                colors.accent_foreground
-                            } else {
-                                colors.foreground
-                            })
-                            .when(selected, move |this| this.bg(colors.accent))
-                            .when(!selected, move |this| {
-                                this.hover(move |style| style.bg(colors.hover))
-                            })
-                            .on_click(cx.listener(move |launcher, _, window, cx| {
-                                launcher.select_nav(entry, window, cx)
-                            }))
-                            .child(Icon::new(item.icon()).size_4().text_color(if selected {
-                                colors.accent_foreground
-                            } else {
-                                colors.muted_foreground
-                            }))
-                            .child(div().flex_1().min_w_0().text_ellipsis().child(item.label()))
-                    }
-                    // 二级行：缩进、没有图标、字号一样但颜色更淡一点。
-                    _ => {
-                        let selected = current == Some(entry);
-                        let label: SharedString = match entry {
-                            NavEntry::Section(index) => catalogue::sections()
-                                .get(index)
-                                .map(|section| section.label().into())
-                                .unwrap_or_default(),
-                            NavEntry::Tool(tool) => tool.label().into(),
-                            NavEntry::Tab(_) => SharedString::default(),
-                        };
-                        h_flex()
-                            .id(SharedString::from(format!("nav-child-{ix}")))
-                            .flex_shrink_0()
-                            .ml(px(18.))
-                            .px_3()
-                            .py_1p5()
-                            .rounded(px(6.))
-                            .text_sm()
-                            .cursor_pointer()
-                            .text_color(if selected {
-                                colors.accent_foreground
-                            } else {
-                                colors.muted_foreground
-                            })
-                            .when(selected, move |this| this.bg(colors.accent))
-                            .when(!selected, move |this| {
-                                this.hover(move |style| style.bg(colors.hover))
-                            })
-                            .on_click(cx.listener(move |launcher, _, window, cx| {
-                                launcher.select_nav(entry, window, cx)
-                            }))
-                            .child(div().flex_1().min_w_0().text_ellipsis().child(label))
-                    }
-                },
-            ));
+            .children(SettingsTab::ALL.into_iter().enumerate().map(|(ix, item)| {
+                let selected = item == tab;
+                h_flex()
+                    .id(SharedString::from(format!("section-tab-{ix}")))
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(6.))
+                    .text_sm()
+                    .text_color(if selected {
+                        colors.accent_foreground
+                    } else {
+                        colors.foreground
+                    })
+                    .cursor_pointer()
+                    .when(selected, move |this| this.bg(colors.accent))
+                    .when(!selected, move |this| {
+                        this.hover(move |style| style.bg(colors.hover))
+                    })
+                    .on_click(cx.listener(move |launcher, _, window, cx| {
+                        launcher.select_tab(item, window, cx)
+                    }))
+                    .child(Icon::new(item.icon()).size_4().text_color(if selected {
+                        colors.accent_foreground
+                    } else {
+                        colors.muted_foreground
+                    }))
+                    .child(div().child(item.label()))
+            }));
 
     let content = match tab {
         SettingsTab::System => system_page(launcher, settings, colors, cx),
@@ -149,20 +96,8 @@ pub(crate) fn render(
         .items_stretch()
         .overflow_hidden()
         .child(sections)
-        .child(if tab == SettingsTab::Tools {
-            // 工具页自己带滚动（那三个列表各有各的滚动条），这里只提供**确定的高度**：
-            // 不能再套一层滚动容器，否则内容页的 `size_full` 会一直算不出高度。
-            v_flex()
-                .h_full()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .px_4()
-                .py_4()
-                .child(content)
-                .into_any_element()
-        } else {
-            // 其它页是普通表单：内容比窗口高时就地滚，绝不给裁掉半截。
+        .child(
+            // 面板可以被拖大拖小，内容比窗口高时就地滚，绝不给裁掉半截。
             v_flex()
                 .id("settings-content")
                 .flex_1()
@@ -181,25 +116,56 @@ pub(crate) fn render(
                 // **内容层不许被压缩**：gpui 的 `flex_shrink` 默认是 1，直接放进去会被压扁去
                 // 适应容器高度——永远不「超出」，也就永远滚不动。包一层 `flex_shrink_0`，
                 // 它的高度按内容算，溢出才是真的溢出。
-                .child(div().w_full().flex_shrink_0().child(content))
-                .into_any_element()
-        })
+                .child(div().w_full().flex_shrink_0().child(content)),
+        )
 }
 
 /// 工具标签：左边列出全部工具子标签，右边画选中那一项的配置。
 ///
 /// 布局和命令页一致（左列列子标签，右列列内容）；子标签都点选，不用键盘。
 fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
+    let border = colors.border;
     let selected = launcher.tool_tab;
+
+    let tabs = v_flex()
+        .w(px(MODULE_WIDTH))
+        .flex_shrink_0()
+        .gap_1()
+        .pr_3()
+        .border_r_1()
+        .border_color(border)
+        .children(ToolTab::ALL.iter().map(|tool| {
+            let current = *tool == selected;
+            h_flex()
+                .id(SharedString::from(format!("tool-tab-{}", tool.label())))
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .rounded(px(6.))
+                .text_sm()
+                .cursor_pointer()
+                .text_color(if current {
+                    colors.accent_foreground
+                } else {
+                    colors.foreground
+                })
+                .when(current, move |this| this.bg(colors.accent))
+                .when(!current, move |this| {
+                    this.hover(move |style| style.bg(colors.hover))
+                })
+                .on_click(cx.listener(move |launcher, _, window, cx| {
+                    launcher.select_tool_tab(*tool, window, cx)
+                }))
+                .child(Icon::new(tool.icon()).size_4())
+                .child(div().flex_1().min_w_0().text_ellipsis().child(tool.label()))
+        }));
 
     let content = match selected {
         ToolTab::Calculator => calculator_settings_page(stored_settings(cx), colors, cx),
         ToolTab::Firefox => firefox_settings_page(launcher, colors, cx),
         ToolTab::Github => github_settings_page(launcher, colors, cx),
-        // 这三页是「用户自己加的条目」：上面一行新增按钮，下面是列表，需要时插一块编辑区。
-        ToolTab::Files => user_tools_page(launcher, ToolKind::File, colors, cx),
-        ToolTab::Folders => user_tools_page(launcher, ToolKind::Folder, colors, cx),
-        ToolTab::Terminal => user_tools_page(launcher, ToolKind::Terminal, colors, cx),
+        // 文件 / 文件夹 / 快捷终端合在一页：顶部分段切，下面一个列表。
+        ToolTab::UserTools => user_tools_page(launcher, colors, cx),
     };
 
     h_flex()
@@ -207,12 +173,12 @@ fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> 
         .min_w_0()
         .items_stretch()
         .overflow_hidden()
+        .child(tabs)
         .child(
             v_flex()
                 .id("tool-content")
                 .flex_1()
                 .min_w_0()
-                .min_h_0()
                 .overflow_hidden()
                 .overflow_y_scroll()
                 .pl_3()
@@ -583,12 +549,13 @@ fn github_settings_page(
 ///
 /// 编辑区就地插在新增按钮和列表之间，不另开窗口：面板本身就只有这么一块地方，
 /// 再弹一层界面反而更容易点错。
-fn user_tools_page(
-    launcher: &Launcher,
-    kind: ToolKind,
-    colors: UiColors,
-    cx: &Context<Launcher>,
-) -> AnyElement {
+/// 自定义条目页：文件 / 文件夹 / 快捷终端 三类合成一页。
+///
+/// 顶部固定：三个分段（左右键也能切）、搜索框、新增按钮、条数；下面只有列表滚。
+/// 三类本来就是同一件事的三种形状，拆成三个标签只是把一次点击变成两次。
+fn user_tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
+    let kind = launcher.user_kind;
+    let shown = launcher.visible_tools(cx);
     let editor_here = launcher
         .tool_editor
         .as_ref()
@@ -627,33 +594,32 @@ fn user_tools_page(
         .into_any_element(),
     };
 
-    // 搜索只筛当前这一页（文件 / 文件夹 / 快捷终端 各查各的）。过滤口径和上下键共用
-    // `visible_tools`，否则选中项和屏幕上那一行会对不上。
-    let shown = launcher.visible_tools(cx, kind);
     let selected = launcher.tools_selected.min(shown.len().saturating_sub(1));
-    let focused = launcher.settings_side == SettingsSide::Content;
     let rows = shown
         .iter()
         .enumerate()
         .map(|(index, tool)| {
-            tool_row(
-                launcher,
-                tool,
-                index,
-                focused && index == selected,
-                colors,
-                cx,
-            )
-            .into_any_element()
+            tool_row(launcher, tool, index, index == selected, colors, cx).into_any_element()
         })
         .collect::<Vec<_>>();
 
-    // 头部（新增 + 搜索 + 计数）**固定不动**，只有下面的列表滚——列表能到几十条，
-    // 让「新增」跟着滚走，想加一条得先滚回顶部，很难用。
+    // 顶部分段：文件 / 文件夹 / 快捷终端。左右键也能切（见 `switch_user_kind`）。
+    let kinds = segmented(
+        "user-tools-kind",
+        ToolKind::USER
+            .into_iter()
+            .map(|kind| (kind, kind_label(kind))),
+        launcher.user_kind,
+        colors,
+        cx,
+        |launcher, choice, cx| launcher.choose_user_kind(choice, cx),
+    );
+
     v_flex()
         .size_full()
         .min_h_0()
         .gap_1()
+        // 顶部固定：分段 + 新增 + 搜索 + 条数。列表再长也不用滚回来点「新增」。
         .child(
             h_flex()
                 .w_full()
@@ -662,8 +628,7 @@ fn user_tools_page(
                 .gap_2()
                 .px_2()
                 .pb_1()
-                // 新增按钮排在左边，跟着列表的阅读顺序走。
-                .child(div().flex_shrink_0().child(add))
+                .child(div().flex_shrink_0().child(kinds))
                 .child(div().flex_1())
                 .child(
                     div().flex_shrink_0().w(px(180.)).child(
@@ -673,6 +638,7 @@ fn user_tools_page(
                             .cleanable(true),
                     ),
                 )
+                .child(div().flex_shrink_0().child(add))
                 .child(
                     div()
                         .flex_shrink_0()
@@ -684,7 +650,7 @@ fn user_tools_page(
         .when(editor_here, |this| {
             this.child(tool_editor_block(launcher, colors, cx))
         })
-        // 列表自己滚，和上面的头部互不影响。
+        // 列表自己滚。
         .child(
             v_flex()
                 .id("user-tools-list")
@@ -709,6 +675,15 @@ fn user_tools_page(
         .into_any_element()
 }
 
+/// 分段上三个名字：文件 / 文件夹 / 快捷终端。
+fn kind_label(kind: ToolKind) -> &'static str {
+    match kind {
+        ToolKind::File => strings::tools_page::FILE,
+        ToolKind::Folder => strings::tools_page::FOLDER,
+        ToolKind::Terminal => strings::tools_page::QUICK_TERMINAL,
+    }
+}
+
 /// 一条用户工具：名字、路径（命令）、次数、快捷键、开关键、改/删。
 ///
 /// 两行排：第一行名字加次数和开关，第二行路径（命令）加快捷键和两个图标按钮。
@@ -723,7 +698,7 @@ fn tool_icon(kind: ToolKind, target: &str, colors: UiColors) -> AnyElement {
             .h(px(16.))
             .into_any_element();
     }
-    Icon::new(ToolTab::for_kind(kind).icon())
+    Icon::new(crate::ui::launcher::user_kind_icon(kind))
         .size_3()
         .text_color(colors.foreground)
         .into_any_element()
@@ -774,12 +749,11 @@ fn tool_row(
         .px_2()
         .py_2()
         .rounded(px(6.))
-        // 键盘焦点在这一侧、且轮到这一行：整行点亮（和主页列表一个观感）。
+        // 上下键走到的那一行整行点亮；鼠标点一下也停到这一行，接着就能用键盘走。
         .when(selected, move |this| this.bg(colors.accent))
         .when(!selected, move |this| {
             this.hover(move |style| style.bg(colors.hover))
         })
-        // 鼠标点一下就把焦点搬到右列，并停在这一行，接着就能用上下键走。
         .on_click(cx.listener(move |launcher, _, _window, cx| launcher.focus_tool_row(index, cx)))
         .child(
             div()

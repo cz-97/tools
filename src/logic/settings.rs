@@ -53,6 +53,11 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
+    /// 用户能加的三种条目，顺序就是界面上分段的顺序。
+    pub const USER: [Self; 3] = [Self::File, Self::Folder, Self::Terminal];
+}
+
+impl ToolKind {
     /// 全部种类，顺序就是设置页里的顺序。
     pub const ALL: [Self; 3] = [Self::File, Self::Folder, Self::Terminal];
 
