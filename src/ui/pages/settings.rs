@@ -10,7 +10,7 @@ use gpui_kit::{
 };
 use tools::firefox;
 use tools::matcher::MatchKind;
-use tools::settings::{Settings, Theme as ColorScheme, ToolKind, UserTool};
+use tools::settings::{HomeLayout, Settings, Theme as ColorScheme, ToolKind, UserTool};
 
 use crate::actions;
 use crate::app::stored_settings;
@@ -341,6 +341,21 @@ fn appearance_page(
                 colors,
                 cx,
                 |launcher, choice, cx| launcher.choose_theme(choice, None, cx),
+            ),
+        ))
+        .child(settings_row(
+            strings::settings_page::LAYOUT_NAME,
+            strings::settings_page::LAYOUT_DESCRIPTION,
+            colors,
+            segmented(
+                "home-layout",
+                HomeLayout::ALL
+                    .into_iter()
+                    .map(|layout| (layout, layout_label(layout))),
+                settings.home_layout,
+                colors,
+                cx,
+                |launcher, choice, cx| launcher.set_home_layout(choice, cx),
             ),
         ))
         .child(settings_row(
@@ -1092,6 +1107,14 @@ fn matchers_page(settings: Settings, colors: UiColors, cx: &Context<Launcher>) -
 }
 
 /// 主题选项的名字。
+/// 主页排版那两个选项的名字。
+fn layout_label(layout: HomeLayout) -> &'static str {
+    match layout {
+        HomeLayout::List => strings::settings_page::LAYOUT_LIST,
+        HomeLayout::Grid => strings::settings_page::LAYOUT_GRID,
+    }
+}
+
 fn theme_label(theme: ColorScheme) -> &'static str {
     match theme {
         ColorScheme::System => strings::settings_page::THEME_SYSTEM,

@@ -7,8 +7,8 @@ use gpui_kit::component::input::Input;
 use gpui_kit::component::list::List;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, Context, Font, FontWeight, IntoElement, Pixels, Render, TextRun, Window,
-    WindowControlArea, div, prelude::*, px,
+    AnyElement, Context, Font, FontWeight, IntoElement, Pixels, Render, SharedString, TextRun,
+    Window, WindowControlArea, div, prelude::*, px,
 };
 use tools::settings::Settings;
 
@@ -16,12 +16,13 @@ use crate::app::stored_settings;
 use crate::strings;
 use crate::ui::calculator_page;
 use crate::ui::colors::UiColors;
+use crate::ui::commands_list;
 use crate::ui::lists;
 use crate::ui::settings_page::{self, small_button};
 
 use super::{
     CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_CARET,
-    SEARCH_FIELD_MAX, SEARCH_FIELD_PADDING, SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE,
+    SEARCH_FIELD_MAX, SEARCH_FIELD_PADDING, SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE, ToolTab,
 };
 
 impl Launcher {
@@ -381,7 +382,12 @@ impl Render for Launcher {
             .max(0.));
 
         let page = match self.page {
-            Page::Commands => List::new(&self.list).px_1().py_1().into_any_element(),
+            Page::Commands => match stored_settings(cx).home_layout {
+                tools::settings::HomeLayout::List => {
+                    List::new(&self.list).px_1().py_1().into_any_element()
+                }
+                tools::settings::HomeLayout::Grid => home_grid(self, window, cx),
+            },
             Page::Settings(tab) => settings_page::render(self, tab, cx).into_any_element(),
             Page::Calculator => calculator_page::render(self, colors, cx).into_any_element(),
             Page::List(_) => lists::render(&self.entries),
@@ -511,5 +517,196 @@ impl Launcher {
             .bg(backdrop.opacity(0.72))
             .child(card)
             .into_any_element()
+    }
+}
+
+/// 主页的方格布局。
+///
+/// 命中区（指令匹配）仍然是行、钉在最上面；下面是自绘的方格。**不复用 `List`**：
+/// 它要求所有行同高（还要逐项测量），而命中行和方格行天然不一样高，硬凑只会把命中行
+/// 撑成方格的高度。方格的数量、位置、滚动和高亮全是这里算的。
+fn home_grid(launcher: &Launcher, window: &mut Window, cx: &mut Context<Launcher>) -> AnyElement {
+    let colors = UiColors::current(cx);
+    let metrics = crate::ui::grid::metrics_for(f32::from(window.viewport_size().width));
+    let gap = crate::ui::grid::CELL_GAP;
+
+    let delegate = launcher.list.read(cx).delegate();
+    let matches_len = delegate.match_count();
+    let selected = delegate.selected;
+    let copied_at = delegate.copied.clone();
+    let matches: Vec<tools::matcher::Match> = delegate.matches().to_vec();
+    let items: Vec<commands_list::HomeItem> = delegate.command_items().to_vec();
+
+    // 命中区：和列表布局长得一样，只是不参与滚动。
+    let match_rows: Vec<AnyElement> = matches
+        .iter()
+        .enumerate()
+        .map(|(index, matched)| {
+            let copied = copied_at.as_ref().is_some_and(|(title, at)| {
+                *title == matched.title && at.elapsed() < commands_list::COPY_FEEDBACK
+            });
+            commands_list::MatchRow {
+                item: matched.clone(),
+                selected: selected == index,
+                index,
+                copied,
+            }
+            .into_any_element()
+        })
+        .collect();
+
+    let rows: Vec<AnyElement> = items
+        .chunks(metrics.columns)
+        .enumerate()
+        .map(|(row, chunk)| {
+            h_flex()
+                .gap(px(gap))
+                .children(chunk.iter().enumerate().map(|(column, item)| {
+                    let index = matches_len + row * metrics.columns + column;
+                    grid_cell(item, index, metrics.cell, selected == index, colors, cx)
+                }))
+                .into_any_element()
+        })
+        .collect();
+
+    // 悬停时那句描述：贴在被压住的那格下面，右边不越界。
+    let tooltip = launcher.hovered_cell.and_then(|hovered| {
+        let item = items.get(hovered.checked_sub(matches_len)?)?;
+        let column = (hovered - matches_len) % metrics.columns;
+        let row = (hovered - matches_len) / metrics.columns;
+        let (x, y) = metrics.corner(row, column, gap);
+        let offset = f32::from(launcher.grid_scroll.offset().y);
+        let width = f32::from(window.viewport_size().width) - crate::ui::grid::CELL_PADDING * 2.0;
+        let left = x.min((width - TOOLTIP_WIDTH).max(0.0));
+        Some(
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(y + metrics.cell + 4.0 - offset))
+                .w(px(TOOLTIP_WIDTH))
+                .px_2()
+                .py_1()
+                .rounded(px(6.))
+                .bg(colors.control)
+                .border_1()
+                .border_color(colors.surface)
+                .text_xs()
+                .text_color(colors.foreground)
+                .child(describe(item))
+                .into_any_element(),
+        )
+    });
+
+    let grid = div()
+        .flex()
+        .flex_col()
+        .gap(px(gap))
+        .w_full()
+        .relative()
+        .children(rows)
+        .children(tooltip);
+
+    // 一条都没有：和列表布局一样给句话，别留一块空白。
+    let empty = (items.is_empty() && matches.is_empty()).then(|| {
+        div()
+            .text_sm()
+            .text_color(colors.muted_foreground)
+            .child(strings::launcher::EMPTY)
+            .into_any_element()
+    });
+
+    v_flex()
+        .size_full()
+        .p(px(crate::ui::grid::CELL_PADDING))
+        .gap_1()
+        .children(match_rows)
+        .children(empty)
+        .child(
+            div()
+                .id("home-grid-scroll")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_y_scroll()
+                .track_scroll(&launcher.grid_scroll)
+                .child(grid),
+        )
+        .into_any_element()
+}
+
+/// 提示框最大宽度。
+const TOOLTIP_WIDTH: f32 = 220.0;
+
+/// 一个方格：图标 + 名字，选中时整块高亮。
+fn grid_cell(
+    item: &commands_list::HomeItem,
+    index: usize,
+    cell: f32,
+    selected: bool,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> AnyElement {
+    let (icon, name) = match item {
+        commands_list::HomeItem::Command(command) => {
+            (command.icon.clone(), command.name.to_string())
+        }
+        commands_list::HomeItem::Tool(tool) => {
+            (ToolTab::for_kind(tool.kind).icon(), tool.name.clone())
+        }
+        // 命中不在方格区里，走到这儿说明状态串了，给个空块撑住布局。
+        commands_list::HomeItem::Match(_) => {
+            return div().w(px(cell)).h(px(cell)).into_any_element();
+        }
+    };
+    let text_color = if selected {
+        colors.accent_foreground
+    } else {
+        colors.foreground
+    };
+
+    div()
+        .id(SharedString::from(format!("grid-cell-{index}")))
+        .w(px(cell))
+        .h(px(cell))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_1()
+        .rounded(px(8.))
+        .cursor_pointer()
+        .when(selected, move |this| this.bg(colors.accent))
+        .when(!selected, move |this| {
+            this.hover(move |style| style.bg(colors.hover))
+        })
+        .child(Icon::new(icon).size_5().text_color(text_color))
+        .child(
+            div()
+                .w_full()
+                .px_1()
+                .text_xs()
+                .text_center()
+                .text_ellipsis()
+                .text_color(text_color)
+                .child(name),
+        )
+        .on_hover(cx.listener(move |launcher, hovered: &bool, _window, cx| {
+            launcher.set_hovered_cell(index, *hovered, cx)
+        }))
+        .on_click(
+            cx.listener(move |launcher, event: &gpui_kit::ClickEvent, window, cx| {
+                launcher.grid_click(index, event.click_count(), window, cx)
+            }),
+        )
+        .into_any_element()
+}
+
+/// 方格悬停时显示的那句话。
+fn describe(item: &commands_list::HomeItem) -> SharedString {
+    match item {
+        commands_list::HomeItem::Command(command) => command.description.into(),
+        commands_list::HomeItem::Tool(tool) => tool.target.clone().into(),
+        commands_list::HomeItem::Match(_) => SharedString::default(),
     }
 }

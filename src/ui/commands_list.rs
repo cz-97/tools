@@ -203,7 +203,7 @@ impl RenderOnce for ToolRow {
 }
 
 /// 命中行复制成功后，「已复制」亮多久。
-const COPY_FEEDBACK: Duration = Duration::from_millis(1200);
+pub(crate) const COPY_FEEDBACK: Duration = Duration::from_millis(1200);
 
 /// 主页列表里的一项：命中的指令匹配，一条静态命令，或者用户自己加的一个工具。
 #[derive(Clone)]
@@ -684,6 +684,29 @@ impl ToolDelegate {
     /// 当前高亮的那一项。
     pub(crate) fn selected_item(&self) -> Option<HomeItem> {
         self.item_at(self.selected)
+    }
+
+    /// 网格布局要的那一份：只有命令和工具，指令匹配不在里面。
+    pub(crate) fn command_items(&self) -> &[HomeItem] {
+        &self.rows
+    }
+
+    /// 指令匹配占了几条（网格布局里它们仍是行，排在方格上面）。
+    pub(crate) fn match_count(&self) -> usize {
+        self.matches.len()
+    }
+
+    /// 指令匹配本身，网格布局自己画那几行。
+    pub(crate) fn matches(&self) -> &[Match] {
+        &self.matches
+    }
+
+    /// 直接改高亮。
+    ///
+    /// 网格布局的方向键是面板自己算的（`List` 只管一行一条那套上下），所以得有个
+    /// 不经过 `ListState` 的入口。越界一律夹到最后一条。
+    pub(crate) fn select(&mut self, index: usize) {
+        self.selected = index.min(self.item_count().saturating_sub(1));
     }
 }
 

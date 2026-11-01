@@ -372,6 +372,14 @@ pub mod settings_page {
     pub const HOTKEY_DESCRIPTION: &str = "在任意窗口唤出面板；左键录制，右键清除";
     /// 系统页：唤出热键没绑时按钮上的字。
     pub const HOTKEY_UNBOUND: &str = "未绑定";
+    /// 外观页：主页排版的标题。
+    pub const LAYOUT_NAME: &str = "主页排版";
+    /// 外观页：主页排版的说明。
+    pub const LAYOUT_DESCRIPTION: &str = "列表一行一条信息全；方格一屏看更多，悬停才显示描述";
+    /// 外观页：列表。
+    pub const LAYOUT_LIST: &str = "列表";
+    /// 外观页：方格。
+    pub const LAYOUT_GRID: &str = "方格";
     /// 系统页：开机启动的标题。
     pub const AUTOSTART_NAME: &str = "开机启动";
     /// 系统页：开机启动的说明。

@@ -2,6 +2,7 @@
 
 pub mod colors;
 pub mod commands_list;
+pub mod grid;
 pub mod launcher;
 pub mod pages;
 

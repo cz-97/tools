@@ -19,7 +19,7 @@ use tools::admin;
 use tools::autostart;
 use tools::instance;
 use tools::logo;
-use tools::settings::{Settings, Theme as ColorScheme, ToolKind};
+use tools::settings::{HomeLayout, Settings, Theme as ColorScheme, ToolKind};
 use tools::shell;
 use tools::vsync;
 use tools::window::NativeWindow;
@@ -438,11 +438,32 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
             });
         }
         "up" if !typing => {
-            with_launcher(cx, |launcher, window, cx| launcher.navigate(-1, window, cx));
+            with_launcher(cx, |launcher, window, cx| {
+                // 方格布局里上下是「上下一行」，左右才是同一行的相邻格。
+                if launcher.grid_active(cx) {
+                    launcher.move_grid(0, -1, window, cx)
+                } else {
+                    launcher.navigate(-1, window, cx)
+                }
+            });
             cx.stop_propagation();
         }
         "down" if !typing => {
-            with_launcher(cx, |launcher, window, cx| launcher.navigate(1, window, cx));
+            with_launcher(cx, |launcher, window, cx| {
+                if launcher.grid_active(cx) {
+                    launcher.move_grid(0, 1, window, cx)
+                } else {
+                    launcher.navigate(1, window, cx)
+                }
+            });
+            cx.stop_propagation();
+        }
+        // 左右只在方格布局里有意义；列表布局不碰这两个键（设置页也用不上）。
+        "left" | "right" if !typing && stored_settings(cx).home_layout == HomeLayout::Grid => {
+            let step = if event.keystroke.key == "left" { -1 } else { 1 };
+            with_launcher(cx, move |launcher, window, cx| {
+                launcher.move_grid(step, 0, window, cx)
+            });
             cx.stop_propagation();
         }
         "escape" => {

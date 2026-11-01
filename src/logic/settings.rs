@@ -148,6 +148,37 @@ impl Default for CommandSettings {
     }
 }
 
+/// 主页上命令那一块怎么排。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HomeLayout {
+    /// 一行一条：图标、名字、描述，右边挂元信息。信息最全。
+    #[default]
+    List,
+    /// 方格：只放图标和名字，一屏能看到更多条。
+    Grid,
+}
+
+impl HomeLayout {
+    /// 全部选项，设置页那个分段控件按这个顺序画。
+    pub const ALL: [Self; 2] = [Self::List, Self::Grid];
+
+    /// 写进数据库的值。
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Grid => "grid",
+        }
+    }
+
+    /// 从数据库里读回来；认不出的一律当列表。
+    pub fn from_key(value: &str) -> Self {
+        match value {
+            "grid" => Self::Grid,
+            _ => Self::List,
+        }
+    }
+}
+
 /// 程序要记住的所有东西，就是这一份记录。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -155,6 +186,8 @@ pub struct Settings {
     pub theme: Theme,
     /// 是否启用半透明面板背景。
     pub translucent: bool,
+    /// 主页排版：一行一条，还是方格。
+    pub home_layout: HomeLayout,
     /// 面板是不是被「钉住」了：失焦不收起，并且压在其他窗口上面。
     ///
     /// **事实来源是窗口自己**（`WS_EX_TOPMOST`）：右键点顶部那条路走的是原生窗口过程，
@@ -434,6 +467,7 @@ impl Settings {
                     }
                     "translucent" => settings.translucent = value == "1",
                     "pinned" => settings.pinned = value == "1",
+                    "home_layout" => settings.home_layout = HomeLayout::from_key(&value),
                     "panel_opacity" => {
                         if let Ok(opacity) = value.parse() {
                             settings.panel_opacity = opacity;
@@ -542,6 +576,7 @@ impl Settings {
             let mut insert =
                 transaction.prepare("INSERT INTO settings (key, value) VALUES (?1, ?2)")?;
             insert.execute(params!["theme", self.theme.key()])?;
+            insert.execute(params!["home_layout", self.home_layout.key()])?;
             insert.execute(params!["pinned", u8::from(self.pinned).to_string()])?;
             insert.execute(params![
                 "translucent",
@@ -813,6 +848,7 @@ impl Default for Settings {
         Self {
             theme: Theme::System,
             translucent: false,
+            home_layout: HomeLayout::List,
             pinned: false,
             panel_opacity: Self::PANEL_OPACITY_DEFAULT,
             window_y: None,

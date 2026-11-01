@@ -7,7 +7,8 @@ use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::component::list::ListState;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::{
-    App, ClipboardItem, Context, Entity, Focusable, Subscription, Task, Window, prelude::*,
+    App, ClipboardItem, Context, Entity, Focusable, ScrollHandle, Subscription, Task, Window,
+    point, prelude::*, px,
 };
 use tools::admin;
 use tools::autostart;
@@ -16,7 +17,7 @@ use tools::calculator;
 use tools::firefox;
 use tools::github;
 use tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
-use tools::settings::{Settings, ToolKind};
+use tools::settings::{HomeLayout, Settings, ToolKind};
 use tools::shell;
 
 use crate::app::{
@@ -453,6 +454,10 @@ pub struct Launcher {
     _search_observation: Subscription,
     /// 列表页搜索框的订阅。
     _list_search_events: Subscription,
+    /// 方格布局的滚动位置（列表布局不用它）。
+    pub(crate) grid_scroll: ScrollHandle,
+    /// 鼠标正压在哪个方格上（扁平索引）。只用来出那句描述。
+    pub(crate) hovered_cell: Option<usize>,
     /// 三个设置文本框的订阅（变化通知 + 失焦保存）。
     _settings_events: Vec<Subscription>,
 }
@@ -576,6 +581,8 @@ impl Launcher {
             _opacity_events: opacity_events,
             _search_observation: search_observation,
             _list_search_events: list_search_events,
+            grid_scroll: ScrollHandle::new(),
+            hovered_cell: None,
             _settings_events: settings_events,
         };
         // 一开始就有一行空行占着：用户进来直接就能打公式。
@@ -690,6 +697,158 @@ impl Launcher {
             list.set_selected_index(Some(IndexPath::new(next)), window, cx);
             list.scroll_to_selected_item(window, cx);
         });
+    }
+
+    /// 切换主页排版（外观设置里那个分段控件）。
+    ///
+    /// 两种排版共用同一份数据和高亮下标，切换只是换画法，不用重建列表。
+    pub(crate) fn set_home_layout(&mut self, layout: HomeLayout, cx: &mut Context<Self>) {
+        let mut settings = stored_settings(cx);
+        if settings.home_layout == layout {
+            return;
+        }
+        settings.home_layout = layout;
+        store_settings(settings, cx);
+        // 换回列表时别留着上一版的悬停格子。
+        self.hovered_cell = None;
+        cx.notify();
+    }
+
+    /// 现在是不是该按方格布局处理按键（主页 + 设置里选了方格）。
+    pub(crate) fn grid_active(&self, cx: &App) -> bool {
+        self.page == Page::Commands && stored_settings(cx).home_layout == HomeLayout::Grid
+    }
+
+    /// 方格布局下挪高亮：`dx` 左右一列，`dy` 上下一个格（网格里一行是 `columns` 个）。
+    ///
+    /// 命中区仍然在最上面：在命中区里 `↑↓` 就是上一条下一条，从最后一条再往下就落到
+    /// 第一个方格；从第一行方格往上回到命中区最后一条。
+    pub(crate) fn move_grid(
+        &mut self,
+        dx: isize,
+        dy: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let metrics = self.grid_metrics(window);
+        let (count, matches_len, selected) = {
+            let delegate = self.list.read(cx).delegate();
+            (
+                delegate.item_count(),
+                delegate.match_count(),
+                delegate.selected,
+            )
+        };
+        if count == 0 {
+            return;
+        }
+        let next = if selected < matches_len {
+            let target = selected as isize + dy;
+            if dy > 0 && target >= matches_len as isize {
+                // 越过最后一条命中，进网格第一个。
+                matches_len.min(count.saturating_sub(1))
+            } else if dy < 0 {
+                target.clamp(0, matches_len as isize - 1) as usize
+            } else {
+                selected
+            }
+        } else {
+            let last = count - matches_len - 1;
+            let grid = selected - matches_len;
+            let row = grid / metrics.columns;
+            let column = grid % metrics.columns;
+            if dx != 0 {
+                let column = (column as isize + dx).clamp(0, metrics.columns as isize - 1) as usize;
+                (row * metrics.columns + column).min(last) + matches_len
+            } else if dy < 0 {
+                if row == 0 {
+                    if matches_len == 0 {
+                        selected
+                    } else {
+                        matches_len - 1
+                    }
+                } else {
+                    ((row - 1) * metrics.columns + column).min(last) + matches_len
+                }
+            } else if dy > 0 {
+                let last_row = last / metrics.columns;
+                ((row + 1).min(last_row) * metrics.columns + column).min(last) + matches_len
+            } else {
+                selected
+            }
+        };
+        if next == selected {
+            return;
+        }
+        self.list
+            .update(cx, |list, _cx| list.delegate_mut().select(next));
+        self.grid_reveal(window, cx);
+        cx.notify();
+    }
+
+    /// 方格布局里点了一下：单击选中，双击执行（和列表行的规矩一致）。
+    pub(crate) fn grid_click(
+        &mut self,
+        index: usize,
+        clicks: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.list
+            .update(cx, |list, _cx| list.delegate_mut().select(index));
+        self.grid_reveal(window, cx);
+        if clicks >= 2 {
+            self.activate_selected(window, cx);
+        } else {
+            self.focus_active_input(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// 鼠标压上了某个方格 / 离开了：只有压着的那一个才出描述。
+    pub(crate) fn set_hovered_cell(&mut self, index: usize, hovered: bool, cx: &mut Context<Self>) {
+        let next = hovered.then_some(index);
+        if self.hovered_cell != next {
+            self.hovered_cell = next;
+            cx.notify();
+        }
+    }
+
+    /// 把当前高亮的方格滚进可视范围。
+    ///
+    /// 方格是等距的，位置直接算得出来，不必让滚动容器替我们记（它也记不住——这里没有
+    /// 逐项注册边界）。
+    fn grid_reveal(&self, window: &Window, cx: &App) {
+        let metrics = self.grid_metrics(window);
+        let (matches_len, selected) = {
+            let delegate = self.list.read(cx).delegate();
+            (delegate.match_count(), delegate.selected)
+        };
+        // 命中区钉在最上面，不参与滚动。
+        if selected < matches_len {
+            return;
+        }
+        let viewport = f32::from(self.grid_scroll.bounds().size.height);
+        if viewport <= 0.0 {
+            return;
+        }
+        let step = metrics.row_height(crate::ui::grid::CELL_GAP);
+        let row = ((selected - matches_len) / metrics.columns) as f32;
+        let (top, bottom) = (row * step, row * step + metrics.cell);
+        let mut offset = f32::from(self.grid_scroll.offset().y);
+        if top < offset {
+            offset = top;
+        } else if bottom > offset + viewport {
+            offset = bottom - viewport;
+        }
+        let limit = f32::from(self.grid_scroll.max_offset().y).max(0.0);
+        self.grid_scroll
+            .set_offset(point(px(0.), px(offset.clamp(0.0, limit))));
+    }
+
+    /// 当前宽度下一行能放几个方格。绘制和方向键两边都问它，免得算得不一致。
+    pub(crate) fn grid_metrics(&self, window: &Window) -> crate::ui::grid::GridMetrics {
+        crate::ui::grid::metrics_for(f32::from(window.viewport_size().width))
     }
 
     /// 开一段新会话：清搜索词、高亮第一行；保留期内再唤出的话，回到上次那个子模块。
