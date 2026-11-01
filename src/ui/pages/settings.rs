@@ -83,7 +83,13 @@ pub(crate) fn render(
     };
 
     // `h_flex` 默认在交叉轴居中，这样会把整页浮在面板中间；这里要顶对齐。
+    //
+    // **必须是 `h_full` 而不是 `flex_1`**：外层 `body` 是 `div()`，而 gpui 的 `div` 默认
+    // `display: block`，不是 flex 容器——`flex_1` 在这儿什么也不做，整页会按内容长到
+    // 2904px 高、被 `overflow_hidden` 裁掉，右侧那一列于是永远「和内容一样高」，
+    // 没有溢出也就没有滚动（`max_offset` 恒为 0）。
     h_flex()
+        .h_full()
         .flex_1()
         .min_h_0()
         .min_w_0()
