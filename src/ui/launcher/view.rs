@@ -617,8 +617,6 @@ fn home_grid(launcher: &Launcher, window: &mut Window, cx: &mut Context<Launcher
         .flex_col()
         .gap(px(gap))
         .w_full()
-        // 同上：滚动内容不许被压缩，否则行会被挤扁而不是溢出。
-        .flex_shrink_0()
         .relative()
         .children(rows)
         .children(tooltip);
@@ -646,12 +644,6 @@ fn home_grid(launcher: &Launcher, window: &mut Window, cx: &mut Context<Launcher
                 .w_full()
                 .overflow_y_scroll()
                 .track_scroll(&launcher.grid_scroll)
-                // 和设置页同一个坑：不显式接滚轮，这个容器不生成 hitbox，滚不动。
-                .on_scroll_wheel(cx.listener(
-                    |launcher, event: &gpui_kit::ScrollWheelEvent, _window, cx| {
-                        launcher.scroll_grid(event, cx)
-                    },
-                ))
                 .child(grid),
         )
         .into_any_element()

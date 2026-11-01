@@ -1250,23 +1250,6 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 方格区域滚一格，和设置页同一套算法。
-    pub(crate) fn scroll_grid(
-        &mut self,
-        event: &gpui_kit::ScrollWheelEvent,
-        cx: &mut Context<Self>,
-    ) {
-        let delta = f32::from(event.delta.pixel_delta(px(24.)).y);
-        if delta == 0.0 {
-            return;
-        }
-        let limit = f32::from(self.grid_scroll.max_offset().y).max(0.0);
-        let next = (f32::from(self.grid_scroll.offset().y) + delta).clamp(0.0, limit);
-        self.grid_scroll.set_offset(point(px(0.), px(next)));
-        cx.stop_propagation();
-        cx.notify();
-    }
-
     /// 设置页滚一格。
     ///
     /// 方向跟 gpui 自己的一致：`delta.y` 为正就是往下滚（内容往上走）。上限从滚动句柄
@@ -1277,11 +1260,18 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) {
         let delta = f32::from(event.delta.pixel_delta(px(24.)).y);
+        let limit = f32::from(self.settings_scroll.max_offset().y).max(0.0);
+        let before = f32::from(self.settings_scroll.offset().y);
+        // 临时诊断：确认滚轮到底有没有进来、上限是不是 0。
+        admin::log(&format!(
+            "设置滚动：delta={delta} 上限={limit} 当前={before} 容器高={} 内容高={}",
+            f32::from(self.settings_scroll.bounds().size.height),
+            f32::from(self.settings_scroll.bounds().size.height) + limit,
+        ));
         if delta == 0.0 {
             return;
         }
-        let limit = f32::from(self.settings_scroll.max_offset().y).max(0.0);
-        let next = (f32::from(self.settings_scroll.offset().y) + delta).clamp(0.0, limit);
+        let next = (before + delta).clamp(0.0, limit);
         self.settings_scroll.set_offset(point(px(0.), px(next)));
         cx.stop_propagation();
         cx.notify();
