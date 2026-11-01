@@ -456,6 +456,11 @@ pub struct Launcher {
     _list_search_events: Subscription,
     /// 方格布局的滚动位置（列表布局不用它）。
     pub(crate) grid_scroll: ScrollHandle,
+    /// 设置页右半边的滚动位置。
+    ///
+    /// 设置里那些列表（尤其快捷终端）能有几十条，比窗口高，必须能滚；换标签时要回到
+    /// 顶部，否则从「滚到底的终端列表」切到「系统」会停在一半。
+    pub(crate) settings_scroll: ScrollHandle,
     /// 鼠标正压在哪个方格上（扁平索引）。只用来出那句描述。
     pub(crate) hovered_cell: Option<usize>,
     /// 三个设置文本框的订阅（变化通知 + 失焦保存）。
@@ -582,6 +587,7 @@ impl Launcher {
             _search_observation: search_observation,
             _list_search_events: list_search_events,
             grid_scroll: ScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
             hovered_cell: None,
             _settings_events: settings_events,
         };
@@ -1220,6 +1226,8 @@ impl Launcher {
         self.tool_notice = None;
         window.blur(cx);
         self.page = Page::Settings(tab);
+        // 新标签从头看：上一条列表可能滚到底了。
+        self.reset_settings_scroll();
         cx.notify();
     }
 
@@ -1238,7 +1246,13 @@ impl Launcher {
         self.tool_notice = None;
         window.blur(cx);
         self.tool_tab = tab;
+        self.reset_settings_scroll();
         cx.notify();
+    }
+
+    /// 设置页的滚动条回到顶部。
+    fn reset_settings_scroll(&self) {
+        self.settings_scroll.set_offset(point(px(0.), px(0.)));
     }
 
     /// 把命令列表换成计算器页（主页上的「计算器」命令）。

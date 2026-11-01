@@ -96,8 +96,12 @@ pub(crate) fn render(
                 .id("settings-content")
                 .flex_1()
                 .min_w_0()
+                .min_h_0()
                 .overflow_hidden()
+                // **必须挂滚动句柄**：只写 `overflow_y_scroll` 不会真的滚——滚轮事件要靠
+                // 句柄接到这个容器上。没这句话，列表比窗口高就永远看不到下半截。
                 .overflow_y_scroll()
+                .track_scroll(&launcher.settings_scroll)
                 .px_4()
                 .py_4()
                 .child(content),
