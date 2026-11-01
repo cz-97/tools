@@ -39,7 +39,6 @@ pub(crate) fn render(
     // 排在后面、跟上下键一起走，收起时不在列表里（`Launcher::nav_entries`）。
     // 这样所有页面最多只有两列，第三列不存在了。
     let current = launcher.nav_current();
-    let expanded = launcher.expanded_tab();
     let sections =
         v_flex()
             // **必须有 id**：gpui 的 `overflow_y_scroll` / `track_scroll` 只在带 id 的元素上
@@ -54,123 +53,76 @@ pub(crate) fn render(
             .border_color(border)
             .overflow_y_scroll()
             .track_scroll(&launcher.nav_scroll)
-            // `children` 只在裸 `Div` 上有，`track_scroll` 之后是 `Stateful<Div>`，
-            // 所以先把行收进一层 v_flex 再 `.child` 进去。
-            .child(
-                v_flex().w_full().gap_1().children(
-                    launcher
-                        .nav_entries()
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ix, entry)| match entry {
-                            NavEntry::Tab(item) => {
-                                let selected = current == Some(entry);
-                                let open = expanded == Some(item) && item.children();
-                                h_flex()
-                                    .id(SharedString::from(format!("section-tab-{ix}")))
-                                    .flex_shrink_0()
-                                    .gap_2()
-                                    .px_3()
-                                    .py_2()
-                                    .rounded(px(6.))
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .text_color(if selected {
-                                        colors.accent_foreground
-                                    } else {
-                                        colors.foreground
-                                    })
-                                    .when(selected, move |this| this.bg(colors.accent))
-                                    .when(!selected, move |this| {
-                                        this.hover(move |style| style.bg(colors.hover))
-                                    })
-                                    .on_click(cx.listener(move |launcher, _, window, cx| {
-                                        launcher.select_nav(entry, window, cx)
-                                    }))
-                                    .child(Icon::new(item.icon()).size_4().text_color(
-                                        if selected {
-                                            colors.accent_foreground
-                                        } else {
-                                            colors.muted_foreground
-                                        },
-                                    ))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_ellipsis()
-                                            .child(item.label()),
-                                    )
-                                    // 展开的那一项右边挂个朝上的小箭头，和截图里一样：告诉用户
-                                    // 「下面那几行属于我」。
-                                    .when(item.children(), move |this| {
-                                        this.child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .size(px(18.))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .rounded(px(4.))
-                                                .border_1()
-                                                .border_color(if open {
-                                                    colors.accent_foreground
-                                                } else {
-                                                    colors.border
-                                                })
-                                                .child(
-                                                    Icon::new(if open {
-                                                        IconName::ChevronUp
-                                                    } else {
-                                                        IconName::ChevronDown
-                                                    })
-                                                    .size_3()
-                                                    .text_color(if selected {
-                                                        colors.accent_foreground
-                                                    } else {
-                                                        colors.muted_foreground
-                                                    }),
-                                                ),
-                                        )
-                                    })
-                            }
-                            // 二级行：缩进、没有图标、字号一样但颜色更淡一点。
-                            _ => {
-                                let selected = current == Some(entry);
-                                let label: SharedString = match entry {
-                                    NavEntry::Section(index) => catalogue::sections()
-                                        .get(index)
-                                        .map(|section| section.label().into())
-                                        .unwrap_or_default(),
-                                    NavEntry::Tool(tool) => tool.label().into(),
-                                    NavEntry::Tab(_) => SharedString::default(),
-                                };
-                                h_flex()
-                                    .id(SharedString::from(format!("nav-child-{ix}")))
-                                    .flex_shrink_0()
-                                    .ml(px(18.))
-                                    .px_3()
-                                    .py_1p5()
-                                    .rounded(px(6.))
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .text_color(if selected {
-                                        colors.accent_foreground
-                                    } else {
-                                        colors.muted_foreground
-                                    })
-                                    .when(selected, move |this| this.bg(colors.accent))
-                                    .when(!selected, move |this| {
-                                        this.hover(move |style| style.bg(colors.hover))
-                                    })
-                                    .on_click(cx.listener(move |launcher, _, window, cx| {
-                                        launcher.select_nav(entry, window, cx)
-                                    }))
-                                    .child(div().flex_1().min_w_0().text_ellipsis().child(label))
-                            }
-                        }),
-                ),
-            );
+            // 每一行都直接挂在这个滚动容器下面：句柄的 `bounds_for_item(序号)` 靠的就是
+            // 「一个子元素 = 一行」，外面再包一层就只剩一个子元素，没法按行滚进可见范围。
+            .children(launcher.nav_entries().into_iter().enumerate().map(
+                |(ix, entry)| match entry {
+                    NavEntry::Tab(item) => {
+                        let selected = current == Some(entry);
+                        h_flex()
+                            .id(SharedString::from(format!("section-tab-{ix}")))
+                            .flex_shrink_0()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .rounded(px(6.))
+                            .text_sm()
+                            .cursor_pointer()
+                            .text_color(if selected {
+                                colors.accent_foreground
+                            } else {
+                                colors.foreground
+                            })
+                            .when(selected, move |this| this.bg(colors.accent))
+                            .when(!selected, move |this| {
+                                this.hover(move |style| style.bg(colors.hover))
+                            })
+                            .on_click(cx.listener(move |launcher, _, window, cx| {
+                                launcher.select_nav(entry, window, cx)
+                            }))
+                            .child(Icon::new(item.icon()).size_4().text_color(if selected {
+                                colors.accent_foreground
+                            } else {
+                                colors.muted_foreground
+                            }))
+                            .child(div().flex_1().min_w_0().text_ellipsis().child(item.label()))
+                    }
+                    // 二级行：缩进、没有图标、字号一样但颜色更淡一点。
+                    _ => {
+                        let selected = current == Some(entry);
+                        let label: SharedString = match entry {
+                            NavEntry::Section(index) => catalogue::sections()
+                                .get(index)
+                                .map(|section| section.label().into())
+                                .unwrap_or_default(),
+                            NavEntry::Tool(tool) => tool.label().into(),
+                            NavEntry::Tab(_) => SharedString::default(),
+                        };
+                        h_flex()
+                            .id(SharedString::from(format!("nav-child-{ix}")))
+                            .flex_shrink_0()
+                            .ml(px(18.))
+                            .px_3()
+                            .py_1p5()
+                            .rounded(px(6.))
+                            .text_sm()
+                            .cursor_pointer()
+                            .text_color(if selected {
+                                colors.accent_foreground
+                            } else {
+                                colors.muted_foreground
+                            })
+                            .when(selected, move |this| this.bg(colors.accent))
+                            .when(!selected, move |this| {
+                                this.hover(move |style| style.bg(colors.hover))
+                            })
+                            .on_click(cx.listener(move |launcher, _, window, cx| {
+                                launcher.select_nav(entry, window, cx)
+                            }))
+                            .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+                    }
+                },
+            ));
 
     let content = match tab {
         SettingsTab::System => system_page(launcher, settings, colors, cx),

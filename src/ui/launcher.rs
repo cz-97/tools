@@ -1323,6 +1323,34 @@ impl Launcher {
         }
     }
 
+    /// 把滚动容器里的第 `index` 行滚进可见范围——只在该行已经被挡住时才动。
+    ///
+    /// 上下键走在视口外面之后，用户根本看不到焦点在哪，所以每次挪完都得看一眼。
+    /// 行边界由句柄在 prepaint 时量好（`bounds_for_item`），比自己按行高算准。
+    fn reveal_row(handle: &ScrollHandle, index: usize) {
+        let Some(item) = handle.bounds_for_item(index) else {
+            return;
+        };
+        let view = handle.bounds();
+        let viewport = f32::from(view.size.height);
+        if viewport <= 0.0 {
+            return;
+        }
+        // 子元素边界是「已经算上滚动偏移」的视觉位置。
+        let top = f32::from(item.origin.y - view.origin.y);
+        let bottom = top + f32::from(item.size.height);
+        let offset = f32::from(handle.offset().y);
+        let next = if top < 0.0 {
+            offset + top
+        } else if bottom > viewport {
+            offset + bottom - viewport
+        } else {
+            return;
+        };
+        let limit = f32::from(handle.max_offset().y).max(0.0);
+        handle.set_offset(point(px(0.), px(next.clamp(0.0, limit))));
+    }
+
     /// 设置里那三个列表当前对应哪个种类（其它工具页没有列表）。
     pub(crate) fn current_tool_kind(&self) -> Option<ToolKind> {
         match self.tool_tab {
@@ -1377,6 +1405,7 @@ impl Launcher {
     pub(crate) fn focus_tool_row(&mut self, index: usize, cx: &mut Context<Self>) {
         self.settings_side = SettingsSide::Content;
         self.tools_selected = index;
+        Self::reveal_row(&self.tools_scroll, index);
         cx.notify();
     }
 
@@ -1392,6 +1421,7 @@ impl Launcher {
         let next = (self.tools_selected as isize + delta).clamp(0, count as isize - 1) as usize;
         if next != self.tools_selected {
             self.tools_selected = next;
+            Self::reveal_row(&self.tools_scroll, next);
             cx.notify();
         }
     }
@@ -1416,6 +1446,16 @@ impl Launcher {
             return;
         }
         self.select_nav(entries[next], window, cx);
+        // 换过标签的话列表长度会变，重新算一遍再找位置。
+        if let Some(current) = self.nav_current()
+            && let Some(index) = self
+                .nav_entries()
+                .iter()
+                .position(|entry| *entry == current)
+        {
+            Self::reveal_row(&self.nav_scroll, index);
+            cx.notify();
+        }
     }
 
     /// 选中导航的一行。
