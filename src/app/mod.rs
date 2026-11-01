@@ -600,7 +600,17 @@ pub fn show_launcher(cx: &mut App) {
 pub fn hide_launcher(cx: &mut App) {
     // 窗口收起来之前先记下离开的是哪一页，并结束还在进行的录制。
     with_launcher(cx, |launcher, _window, cx| launcher.leave(cx));
-    if let Some(panel) = cx.try_global::<LauncherPanel>() {
+    // **收起就解除钉住**：钉住的语义是「我还在用它，别收」，一旦收起（Esc / 执行完
+    // 一条命令），那次意图就结束了。不解除的话下次唤出来还是压在所有窗口上面，
+    // 用户会以为关不掉。
+    let panel = cx.try_global::<LauncherPanel>().copied();
+    if let Some(panel) = panel {
+        if panel.window.is_topmost() {
+            panel.window.set_topmost(false);
+            let mut settings = stored_settings(cx);
+            settings.pinned = false;
+            store_settings(settings, cx);
+        }
         panel.window.hide();
     }
     remember_window_position(cx);

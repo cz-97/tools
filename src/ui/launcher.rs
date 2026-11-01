@@ -786,23 +786,15 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 方格布局里点了一下：单击选中，双击执行（和列表行的规矩一致）。
-    pub(crate) fn grid_click(
-        &mut self,
-        index: usize,
-        clicks: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// 方格布局里点了一下：选中并直接执行。
+    ///
+    /// **单击就执行**，和列表行一个规矩。别跟指令匹配那几行混了——那几行单击是复制、
+    /// 双击才打开，方格里的条目没有「先看看」这一步。
+    pub(crate) fn grid_click(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.list
             .update(cx, |list, _cx| list.delegate_mut().select(index));
         self.grid_reveal(window, cx);
-        if clicks >= 2 {
-            self.activate_selected(window, cx);
-        } else {
-            self.focus_active_input(window, cx);
-            cx.notify();
-        }
+        self.activate_selected(window, cx);
     }
 
     /// 鼠标压上了某个方格 / 离开了：只有压着的那一个才出描述。

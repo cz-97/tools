@@ -702,8 +702,8 @@ fn grid_cell(
             launcher.set_hovered_cell(index, *hovered, cx)
         }))
         .on_click(
-            cx.listener(move |launcher, event: &gpui_kit::ClickEvent, window, cx| {
-                launcher.grid_click(index, event.click_count(), window, cx)
+            cx.listener(move |launcher, _: &gpui_kit::ClickEvent, window, cx| {
+                launcher.grid_click(index, window, cx)
             }),
         )
         .into_any_element()
