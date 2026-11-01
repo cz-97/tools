@@ -162,6 +162,15 @@ fn quote_argument(value: &str) -> String {
     format!("\"{escaped}{tail}\"")
 }
 
+/// 命令的第一个词如果是磁盘上的一个程序，返回它的完整路径。
+///
+/// 取图标用：`ipconfig` → `C://Windows//System32//ipconfig.exe`。不是程序（`cd`、`dir`
+/// 这类内建）或者找不到，返回 `None`。
+pub fn program_of(command: &str) -> Option<std::path::PathBuf> {
+    let (program, _) = split_first_token(command);
+    sys::resolve_program(program)
+}
+
 /// 静默跑一条命令：**不开窗口**，进程跑完就没了。
 ///
 /// 给「本来就有界面、或者不需要看输出」的命令用：那些 `*.cpl` 一类的系统工具、

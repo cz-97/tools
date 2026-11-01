@@ -1,11 +1,12 @@
 [package]
 name = "tools"
-version = "0.25.2"
+version = "0.26.0"
 edition = "2024"
 default-run = "tools"
 repository = "https://github.com/cz-97/tools"
 
 [dependencies]
+image = { version = "0.25", default-features = false }
 gpui-kit = "0.7.3"
 futures = "0.3"
 global-hotkey = "0.8"

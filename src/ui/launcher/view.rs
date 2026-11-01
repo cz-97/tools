@@ -696,7 +696,7 @@ fn grid_cell(
         .when(!selected, move |this| {
             this.hover(move |style| style.bg(colors.hover))
         })
-        .child(Icon::new(icon).size_5().text_color(text_color))
+        .child(grid_icon(item, Icon::new(icon), text_color))
         .child(grid_name_lines(name, cell, text_color, window, cx))
         .on_hover(cx.listener(move |launcher, hovered: &bool, _window, cx| {
             launcher.set_hovered_cell(index, *hovered, cx)
@@ -708,6 +708,23 @@ fn grid_cell(
         )
         .into_any_element()
 }
+
+/// 方格里的图标：用户加的文件/终端用**系统图标**（资源管理器什么样就什么样），
+/// 取不到或者内置命令才用编译进来的那套。
+fn grid_icon(item: &commands_list::HomeItem, fallback: Icon, color: Hsla) -> AnyElement {
+    if let commands_list::HomeItem::Tool(tool) = item
+        && let Some(image) = crate::ui::icons::for_tool(tool.kind, &tool.target)
+    {
+        return gpui_kit::img(image)
+            .w(px(GRID_ICON_SIZE))
+            .h(px(GRID_ICON_SIZE))
+            .into_any_element();
+    }
+    fallback.size_5().text_color(color).into_any_element()
+}
+
+/// 方格图标的边长。
+const GRID_ICON_SIZE: f32 = 24.0;
 
 /// 方格里的名字：一行放得下就一行，放不下就按宽度匀着折成两行，各自居中。
 ///

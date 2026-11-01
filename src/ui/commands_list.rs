@@ -275,10 +275,25 @@ impl RenderOnce for ToolItemRow {
         } else {
             colors.surface
         };
-        let icon = match self.tool.kind {
+        let fallback = match self.tool.kind {
             ToolKind::File => gpui_kit::assets::IconName::FileText,
             ToolKind::Folder => gpui_kit::assets::IconName::Folder,
             ToolKind::Terminal => gpui_kit::assets::IconName::SquareTerminal,
+        };
+        // 有系统图标就用真的：资源管理器里那个 exe 长什么样，这里就什么样。
+        let icon = match crate::ui::icons::for_tool(self.tool.kind, &self.tool.target) {
+            Some(image) => gpui_kit::img(image)
+                .w(px(16.))
+                .h(px(16.))
+                .into_any_element(),
+            None => Icon::new(fallback)
+                .size_4()
+                .text_color(if selected {
+                    colors.accent_foreground
+                } else {
+                    colors.foreground
+                })
+                .into_any_element(),
         };
         let shortcut = match self.tool.shortcut.clone() {
             Some(chord) => div()
@@ -318,11 +333,7 @@ impl RenderOnce for ToolItemRow {
                         .justify_center()
                         .rounded(px(8.))
                         .bg(tile_bg)
-                        .child(Icon::new(icon).size_4().text_color(if selected {
-                            colors.accent_foreground
-                        } else {
-                            colors.foreground
-                        })),
+                        .child(icon),
                 )
                 .child(
                     v_flex()
