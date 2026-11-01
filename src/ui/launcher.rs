@@ -31,6 +31,7 @@ use crate::shortcuts::{
 use crate::strings;
 use crate::ui::commands_list::{ToolDelegate, command_states};
 use crate::ui::lists::{Entry, EntryDelegate, favicon_image};
+use crate::ui::pages::user_tools::UserToolsDelegate;
 use tools::settings::Theme as ColorScheme;
 
 // 绘制拆到 `view.rs`：页头、页脚与整页骨架在那里，这里只管状态和行为。
@@ -225,21 +226,11 @@ pub(crate) enum ToolTab {
     Firefox,
     /// GitHub：用户名和令牌。
     Github,
-    /// 文件 / 文件夹 / 快捷终端：用户自己加的条目。
-    ///
-    /// 三类合成一页，顶部用分段切换——它们本来就是同一件事的三个形状，
-    /// 拆成三个标签只是把一次点击变成两次。
-    UserTools,
 }
 
 impl ToolTab {
     /// 全部子标签，顺序就是左侧列表的顺序。
-    pub(crate) const ALL: [Self; 4] = [
-        Self::Calculator,
-        Self::Firefox,
-        Self::Github,
-        Self::UserTools,
-    ];
+    pub(crate) const ALL: [Self; 3] = [Self::Calculator, Self::Firefox, Self::Github];
 
     /// 界面上的名字。
     pub(crate) fn label(self) -> &'static str {
@@ -247,7 +238,6 @@ impl ToolTab {
             Self::Calculator => strings::launcher::CALCULATOR_TITLE,
             Self::Firefox => strings::launcher::FIREFOX_TITLE,
             Self::Github => strings::launcher::GITHUB_TITLE,
-            Self::UserTools => strings::tools_page::USER_ITEMS,
         }
     }
 
@@ -257,13 +247,7 @@ impl ToolTab {
             Self::Calculator => gpui_kit::assets::IconName::Calculator,
             Self::Firefox => gpui_kit::assets::IconName::Globe,
             Self::Github => gpui_kit::assets::IconName::Github,
-            Self::UserTools => gpui_kit::assets::IconName::FileText,
         }
-    }
-
-    /// 这一页关的是哪一类用户条目（不是自定义条目页就返回 `None`）。
-    pub(crate) fn user_kind(self) -> Option<ToolKind> {
-        matches!(self, Self::UserTools).then_some(ToolKind::File)
     }
 }
 
@@ -454,8 +438,12 @@ pub struct Launcher {
     pub(crate) grid_scroll: ScrollHandle,
     /// 三个工具列表里高亮到第几条（相对**过滤后**的列表）。
     pub(crate) tools_selected: usize,
-    /// 「自定义条目」页当前在编辑哪一类（文件 / 文件夹 / 快捷终端）。
-    pub(crate) user_kind: ToolKind,
+    /// 命令页第二列最底下那条「自定义条目」展开成了哪一类。
+    ///
+    /// `None` = 看的是某个子模块的命令；`Some(kind)` = 看这一类用户条目的列表。
+    pub(crate) custom_kind: Option<ToolKind>,
+    /// 自定义条目那张列表（和书签、历史同一套 `List`，滚动交给组件）。
+    pub(crate) user_list: Entity<ListState<UserToolsDelegate>>,
     /// 设置里「文件 / 文件夹 / 快捷终端」列表的搜索框与关键词。
     ///
     /// 三页共用一份：换页时清空，免得带着上一页的关键词进来一片空白。
@@ -532,6 +520,7 @@ impl Launcher {
         let tools_search_events = cx.subscribe(&tools_search, |launcher, search, event, cx| {
             if matches!(event, InputEvent::Change) {
                 launcher.tools_query = search.read(cx).value().to_string();
+                launcher.sync_user_list(cx);
                 cx.notify();
             }
         });
@@ -604,7 +593,9 @@ impl Launcher {
             _list_search_events: list_search_events,
             grid_scroll: ScrollHandle::new(),
             tools_selected: 0,
-            user_kind: ToolKind::File,
+            custom_kind: None,
+            user_list: cx
+                .new(|cx| ListState::new(UserToolsDelegate::new(ToolKind::File), window, cx)),
             tools_search,
             tools_query: String::new(),
             tools_scroll: ScrollHandle::new(),
@@ -689,14 +680,7 @@ impl Launcher {
     pub(crate) fn navigate(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         match self.page {
             Page::Commands => self.move_selection(delta, window, cx),
-            Page::Settings(tab) => {
-                // 自定义条目页：上下键走右列那个列表（页面里就一个列表，不需要先切焦点）。
-                if self.user_tools_kind().is_some() {
-                    self.move_tool_selection(delta, cx);
-                } else {
-                    self.select_tab(tab.shifted(delta), window, cx);
-                }
-            }
+            Page::Settings(tab) => self.select_tab(tab.shifted(delta), window, cx),
             Page::Calculator => {}
             Page::List(_) => self.move_entry(delta, window, cx),
         }
@@ -1056,10 +1040,9 @@ impl Launcher {
             Page::Commands => {}
             Page::Settings(_) => {
                 // 自定义条目页：回车就是跑列表里高亮的那一条。
-                if self.user_tools_kind().is_some() {
-                    let list = self.visible_tools(cx);
-                    let index = self.tools_selected.min(list.len().saturating_sub(1));
-                    if let Some(tool) = list.get(index) {
+                if self.custom_kind.is_some() {
+                    let rows = self.user_list.read(cx).delegate().rows(cx);
+                    if let Some(tool) = rows.get(self.tools_selected) {
                         let id = tool.id;
                         crate::app::run_tool(id, cx);
                         return;
@@ -1285,23 +1268,25 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 「自定义条目」页当前在编辑哪一类（文件 / 文件夹 / 快捷终端）。
-    ///
-    /// 只有在「工具 → 自定义条目」这一页才有值；其它页返回 `None`，上下键就不会被列表抢走。
-    pub(crate) fn user_tools_kind(&self) -> Option<ToolKind> {
-        matches!(self.page, Page::Settings(SettingsTab::Tools))
-            .then_some(self.tool_tab.user_kind())
-            .flatten()
-            .map(|_| self.user_kind)
+    /// 命令页第二列现在展开的是哪一类自定义条目。
+    pub(crate) fn custom_kind(&self) -> Option<ToolKind> {
+        self.custom_kind
     }
 
-    /// 当前页 + 搜索词过滤之后能看到的那几条工具。
+    /// 把列表的「类别 + 搜索词」对齐到当前状态。
     ///
-    /// 绘制和上下键都问它，免得两边过滤口径不一样、选中项和屏幕上那一行对不上。
-    pub(crate) fn visible_tools(&self, cx: &App) -> Vec<UserTool> {
-        let Some(kind) = self.user_tools_kind() else {
-            return Vec::new();
+    /// 数据由 delegate 现算（见 `UserToolsDelegate::rows`），这里不用喂数据。
+    pub(crate) fn sync_user_list(&mut self, cx: &mut Context<Self>) {
+        let Some(kind) = self.custom_kind else {
+            return;
         };
+        self.user_list.update(cx, |list, _cx| {
+            list.delegate_mut().retarget(kind, &self.tools_query);
+        });
+    }
+
+    /// 当前类别下、按搜索词过滤之后的条目。
+    fn filtered_user_tools(&self, cx: &App, kind: ToolKind) -> Vec<UserTool> {
         let query = self.tools_query.trim().to_lowercase();
         stored_settings(cx)
             .tools_of(kind)
@@ -1314,28 +1299,9 @@ impl Launcher {
             .collect()
     }
 
-    /// 鼠标点分段切到某一类（键盘那条路走 [`Self::switch_user_kind`]）。
-    pub(crate) fn choose_user_kind(&mut self, kind: ToolKind, cx: &mut Context<Self>) {
-        if self.user_kind == kind {
-            return;
-        }
-        self.commit_settings_inputs(cx);
-        self.user_kind = kind;
-        self.tools_selected = 0;
-        self.tools_query.clear();
-        self.tool_editor = None;
-        self.tool_notice = None;
-        cx.notify();
-    }
-
-    /// 左右键：在「文件 / 文件夹 / 快捷终端」之间切。
-    pub(crate) fn switch_user_kind(
-        &mut self,
-        step: isize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(kind) = self.user_tools_kind() else {
+    /// 左右键：在「文件 / 文件夹 / 快捷终端」之间切（只在已经展开自定义条目时有用）。
+    pub(crate) fn step_custom_kind(&mut self, step: isize, cx: &mut Context<Self>) {
+        let Some(kind) = self.custom_kind else {
             return;
         };
         let all = ToolKind::USER;
@@ -1344,37 +1310,36 @@ impl Launcher {
         if next == index {
             return;
         }
+        self.select_custom_kind(all[next as usize], cx);
+    }
+
+    /// 选中「自定义条目」下的某一类（文件 / 文件夹 / 快捷终端）。
+    pub(crate) fn select_custom_kind(&mut self, kind: ToolKind, cx: &mut Context<Self>) {
         self.commit_settings_inputs(cx);
-        self.user_kind = all[next as usize];
-        self.tools_selected = 0;
-        self.tools_query.clear();
-        self.tools_search
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.tool_editor = None;
-        self.tool_notice = None;
+        self.custom_kind = Some(kind);
+        self.sync_user_list(cx);
         cx.notify();
     }
 
-    /// 鼠标点了列表的一行：高亮到这一行，接着能上下走。
-    pub(crate) fn focus_tool_row(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.tools_selected = index;
-        cx.notify();
-    }
-
-    /// 列表里上下挪一行（只在这一页）。
-    fn move_tool_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.visible_tools(cx).len();
-        if count == 0 {
+    /// 收起「自定义条目」，回到某个子模块的命令列表。
+    pub(crate) fn show_section(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.section == index && self.custom_kind.is_none() {
             return;
         }
-        let next = (self.tools_selected as isize + delta).clamp(0, count as isize - 1) as usize;
-        if next != self.tools_selected {
-            self.tools_selected = next;
-            cx.notify();
-        }
+        self.commit_settings_inputs(cx);
+        self.section = index;
+        self.custom_kind = None;
+        self.recording = None;
+        self.conflict = None;
+        cx.notify();
     }
 
-    /// 工具标签里切到某个子标签（计算器、火狐、GitHub、文件快捷方式、快捷终端）。
+    /// 搜索词变了：把结果重新喂给列表。
+    pub(crate) fn user_tools_query_changed(&mut self, cx: &mut Context<Self>) {
+        self.sync_user_list(cx);
+        cx.notify();
+    }
+
     pub(crate) fn select_tool_tab(
         &mut self,
         tab: ToolTab,
@@ -2202,6 +2167,20 @@ impl Launcher {
     }
 
     /// 加一条文件：先让用户去系统文件框里挑，挑完再落库。
+    /// 新增一条用户条目（按当前类别走不同的选择器）。
+    pub(crate) fn add_user_tool(
+        &mut self,
+        kind: ToolKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match kind {
+            ToolKind::File => self.add_file_tool(cx),
+            ToolKind::Folder => self.add_folder_tool(cx),
+            ToolKind::Terminal => self.new_terminal_tool(window, cx),
+        }
+    }
+
     pub(crate) fn add_file_tool(&mut self, cx: &mut Context<Self>) {
         self.pick(PickFor::NewFile, cx);
     }

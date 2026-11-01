@@ -1,19 +1,24 @@
 //! 命令页：左边是设置子模块，右边是该子模块下的命令。
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::{
     App, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, Pixels, SharedString,
     Window, div, prelude::*, px,
 };
-use tools::settings::CommandSettings;
+use tools::settings::{CommandSettings, ToolKind};
 
 use crate::app::stored_settings;
 use crate::catalogue;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::input::Input;
+
 use crate::ui::colors::UiColors;
 use crate::ui::launcher::{Launcher, MODULE_WIDTH, RecordTarget};
+use crate::ui::settings_page::small_button;
 
 /// 画出整个命令页。
 ///
@@ -29,58 +34,125 @@ pub(crate) fn render(
     let listed = catalogue::sections();
     let selected = launcher.section.min(listed.len().saturating_sub(1));
     let border = colors.border;
+    // 第二列最底下那条「自定义条目」：展开后是 文件 / 文件夹 / 快捷终端 三个子命令。
+    let custom_kind = launcher.custom_kind();
 
-    let sections = v_flex()
-        .w(px(MODULE_WIDTH))
-        .flex_shrink_0()
-        .gap_1()
-        .pr_3()
-        .border_r_1()
-        .border_color(border)
-        .children(listed.iter().enumerate().map(|(ix, section)| {
-            let current = ix == selected;
-            let owned = catalogue::commands(*section).collect::<Vec<_>>();
-            let shown = owned
-                .iter()
-                .filter(|command| settings.command_enabled(command.section.key(), command.id))
-                .count();
-            h_flex()
-                .id(SharedString::from(format!("section-{}", section.label())))
-                .gap_2()
-                .px_2()
-                .py_1p5()
-                .rounded(px(6.))
-                .text_sm()
-                .cursor_pointer()
-                .text_color(if current {
-                    colors.accent_foreground
-                } else {
-                    colors.foreground
-                })
-                .when(current, move |this| this.bg(colors.accent))
-                .when(!current, move |this| {
-                    this.hover(move |style| style.bg(colors.hover))
-                })
-                .on_click(cx.listener(move |launcher, _, _, cx| launcher.select_section(ix, cx)))
-                .child(Icon::new(section.icon()).size_4())
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_ellipsis()
-                        .child(section.label()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(if current {
-                            colors.on_accent_muted
+    let sections =
+        v_flex()
+            .w(px(MODULE_WIDTH))
+            .flex_shrink_0()
+            .gap_1()
+            .pr_3()
+            .border_r_1()
+            .border_color(border)
+            .children(listed.iter().enumerate().map(|(ix, section)| {
+                let current = ix == selected;
+                let owned = catalogue::commands(*section).collect::<Vec<_>>();
+                let shown = owned
+                    .iter()
+                    .filter(|command| settings.command_enabled(command.section.key(), command.id))
+                    .count();
+                h_flex()
+                    .id(SharedString::from(format!("section-{}", section.label())))
+                    .gap_2()
+                    .px_2()
+                    .py_1p5()
+                    .rounded(px(6.))
+                    .text_sm()
+                    .cursor_pointer()
+                    .text_color(if current {
+                        colors.accent_foreground
+                    } else {
+                        colors.foreground
+                    })
+                    .when(current, move |this| this.bg(colors.accent))
+                    .when(!current, move |this| {
+                        this.hover(move |style| style.bg(colors.hover))
+                    })
+                    .on_click(cx.listener(move |launcher, _, _, cx| launcher.show_section(ix, cx)))
+                    .child(Icon::new(section.icon()).size_4())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_ellipsis()
+                            .child(section.label()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if current {
+                                colors.on_accent_muted
+                            } else {
+                                colors.muted_foreground
+                            })
+                            .child(strings::commands_page::enabled_ratio(shown, owned.len())),
+                    )
+            }))
+            // 最底下挂「自定义条目」：展开时是缩进的三个子命令，收起时就是单独一行。
+            .child(
+                h_flex()
+                    .id("nav-custom")
+                    .gap_2()
+                    .px_2()
+                    .py_1p5()
+                    .rounded(px(6.))
+                    .text_sm()
+                    .cursor_pointer()
+                    .text_color(if custom_kind.is_some() {
+                        colors.accent_foreground
+                    } else {
+                        colors.foreground
+                    })
+                    .when(custom_kind.is_some(), move |this| this.bg(colors.accent))
+                    .when(custom_kind.is_none(), move |this| {
+                        this.hover(move |style| style.bg(colors.hover))
+                    })
+                    .on_click(cx.listener(move |launcher, _, _, cx| {
+                        let kind = launcher.custom_kind().unwrap_or(ToolKind::File);
+                        launcher.select_custom_kind(kind, cx)
+                    }))
+                    .child(Icon::new(IconName::FileText).size_4())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_ellipsis()
+                            .child(strings::tools_page::USER_ITEMS),
+                    ),
+            )
+            .when_some(custom_kind, |this, kind| {
+                this.children(ToolKind::USER.into_iter().map(move |item| {
+                    let selected = item == kind;
+                    h_flex()
+                        .id(SharedString::from(format!("nav-custom-{}", item.key())))
+                        .ml(px(18.))
+                        .px_2()
+                        .py_1p5()
+                        .rounded(px(6.))
+                        .text_sm()
+                        .cursor_pointer()
+                        .text_color(if selected {
+                            colors.accent_foreground
                         } else {
                             colors.muted_foreground
                         })
-                        .child(strings::commands_page::enabled_ratio(shown, owned.len())),
-                )
-        }));
+                        .when(selected, move |this| this.bg(colors.accent))
+                        .when(!selected, move |this| {
+                            this.hover(move |style| style.bg(colors.hover))
+                        })
+                        .on_click(cx.listener(move |launcher, _, _, cx| {
+                            launcher.select_custom_kind(item, cx)
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_ellipsis()
+                                .child(strings::tools_page::kind_label(item)),
+                        )
+                }))
+            });
 
     let section = listed
         .get(selected)
@@ -105,7 +177,53 @@ pub(crate) fn render(
         .items_stretch()
         .overflow_hidden()
         .child(sections)
-        .child(
+        .child(if let Some(kind) = custom_kind {
+            // 自定义条目：顶部固定（搜索 + 新增 + 条数），列表用 `List` 组件，滚动交给它。
+            let count = launcher.user_list.read(cx).delegate().rows(cx).len();
+            v_flex()
+                .id("user-tools-page")
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .pl_3()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .pb_1()
+                        .child(div().flex_1())
+                        .child(
+                            div().flex_shrink_0().w(px(180.)).child(
+                                Input::new(&launcher.tools_search)
+                                    .small()
+                                    .appearance(true)
+                                    .cleanable(true),
+                            ),
+                        )
+                        .child(small_button(
+                            SharedString::from(format!("tool-add-{}", kind.key())),
+                            strings::tools_page::add_label(kind).into(),
+                            colors,
+                            true,
+                            cx.listener(move |launcher, _, window, cx| {
+                                launcher.add_user_tool(kind, window, cx)
+                            }),
+                        ))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child(strings::lists::count(count)),
+                        ),
+                )
+                .child(crate::ui::pages::user_tools::render(&launcher.user_list))
+                .into_any_element()
+        } else {
             // 右列跟着窗口高度走：命令多了、窗口小了就地滚，不裁掉最后几条。
             v_flex()
                 .id("command-list")
@@ -133,8 +251,9 @@ pub(crate) fn render(
                             .child(strings::commands_page::EMPTY),
                     )
                 })
-                .children(commands),
-        )
+                .children(commands)
+                .into_any_element()
+        })
 }
 
 /// 命令页上的一行：名字、次数、快捷键按钮、启用开关。

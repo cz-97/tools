@@ -4,3 +4,4 @@ pub mod calculator;
 pub mod commands;
 pub mod lists;
 pub mod settings;
+pub mod user_tools;

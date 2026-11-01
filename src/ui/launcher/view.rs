@@ -430,6 +430,7 @@ impl Render for Launcher {
             .child(footer)
             // 提示框盖在整页上，占用的是同一块地方，不改变版面。
             .child(self.prompt_layer(colors, cx))
+            .child(self.editor_layer(colors, cx))
     }
 }
 
@@ -438,6 +439,38 @@ impl Launcher {
     ///
     /// 盖住整页是必须的，不然用户会以为后面那个列表还能点；`occlude` 让点击落在
     /// 这一层上而不是穿透到列表去。
+    /// 新增 / 编辑用户条目的弹窗：编辑区从列表里挪出来，列表短了、编辑也不怕被滚走。
+    fn editor_layer(&self, colors: UiColors, cx: &Context<Self>) -> AnyElement {
+        if self.tool_editor.is_none() {
+            return div().into_any_element();
+        }
+        let backdrop = cx.theme().background;
+        let card = v_flex()
+            .w(px(420.))
+            .gap_2()
+            .p_4()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(colors.border)
+            .bg(backdrop)
+            .child(crate::ui::settings_page::tool_editor_block(
+                self, colors, cx,
+            ));
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(backdrop.opacity(0.72))
+            .child(card)
+            .into_any_element()
+    }
+
     fn prompt_layer(&self, colors: UiColors, cx: &Context<Self>) -> AnyElement {
         let Some(prompt) = self.prompt.as_ref() else {
             return div().into_any_element();
