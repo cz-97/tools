@@ -19,7 +19,7 @@ use tools::admin;
 use tools::autostart;
 use tools::instance;
 use tools::logo;
-use tools::settings::{HomeLayout, Settings, Theme as ColorScheme, ToolKind};
+use tools::settings::{Settings, Theme as ColorScheme, ToolKind};
 use tools::shell;
 use tools::vsync;
 use tools::window::NativeWindow;
@@ -458,11 +458,15 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
             });
             cx.stop_propagation();
         }
-        // 左右只在方格布局里有意义；列表布局不碰这两个键（设置页也用不上）。
-        "left" | "right" if !typing && stored_settings(cx).home_layout == HomeLayout::Grid => {
+        // 左右：方格布局里是横向挪格子；设置页里是在导航列和内容列之间搬焦点。
+        "left" | "right" if !typing => {
             let step = if event.keystroke.key == "left" { -1 } else { 1 };
             with_launcher(cx, move |launcher, window, cx| {
-                launcher.move_grid(step, 0, window, cx)
+                if launcher.grid_active(cx) {
+                    launcher.move_grid(step, 0, window, cx);
+                } else {
+                    launcher.switch_settings_side(step, cx);
+                }
             });
             cx.stop_propagation();
         }

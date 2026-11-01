@@ -21,7 +21,9 @@ use crate::strings;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_page;
 use crate::ui::commands_page::shortcut_button;
-use crate::ui::launcher::{Launcher, NavEntry, RecordTarget, SIDEBAR_WIDTH, SettingsTab, ToolTab};
+use crate::ui::launcher::{
+    Launcher, NavEntry, RecordTarget, SIDEBAR_WIDTH, SettingsSide, SettingsTab, ToolTab,
+};
 
 /// 画出整个设置页。
 pub(crate) fn render(
@@ -635,8 +637,6 @@ fn user_tools_page(
     colors: UiColors,
     cx: &Context<Launcher>,
 ) -> AnyElement {
-    let settings = stored_settings(cx);
-    let tools = settings.tools_of(kind).cloned().collect::<Vec<_>>();
     let editor_here = launcher
         .tool_editor
         .as_ref()
@@ -675,19 +675,25 @@ fn user_tools_page(
         .into_any_element(),
     };
 
-    // 搜索只筛当前这一页（文件 / 文件夹 / 快捷终端 各查各的）。
-    let query = launcher.tools_query.trim().to_lowercase();
-    let shown = tools
-        .iter()
-        .filter(|tool| {
-            query.is_empty()
-                || tool.name.to_lowercase().contains(&query)
-                || tool.target.to_lowercase().contains(&query)
-        })
-        .collect::<Vec<_>>();
+    // 搜索只筛当前这一页（文件 / 文件夹 / 快捷终端 各查各的）。过滤口径和上下键共用
+    // `visible_tools`，否则选中项和屏幕上那一行会对不上。
+    let shown = launcher.visible_tools(cx, kind);
+    let selected = launcher.tools_selected.min(shown.len().saturating_sub(1));
+    let focused = launcher.settings_side == SettingsSide::Content;
     let rows = shown
         .iter()
-        .map(|tool| tool_row(launcher, tool, colors, cx).into_any_element())
+        .enumerate()
+        .map(|(index, tool)| {
+            tool_row(
+                launcher,
+                tool,
+                index,
+                focused && index == selected,
+                colors,
+                cx,
+            )
+            .into_any_element()
+        })
         .collect::<Vec<_>>();
 
     // 头部（新增 + 搜索 + 计数）**固定不动**，只有下面的列表滚——列表能到几十条，
@@ -774,6 +780,8 @@ fn tool_icon(kind: ToolKind, target: &str, colors: UiColors) -> AnyElement {
 fn tool_row(
     launcher: &Launcher,
     tool: &UserTool,
+    index: usize,
+    selected: bool,
     colors: UiColors,
     cx: &Context<Launcher>,
 ) -> impl IntoElement {
@@ -807,13 +815,20 @@ fn tool_row(
     );
 
     h_flex()
+        .id(SharedString::from(format!("tool-row-{index}")))
         .w_full()
         .min_w_0()
         .gap_2()
         .px_2()
         .py_2()
         .rounded(px(6.))
-        .hover(move |style| style.bg(colors.hover))
+        // 键盘焦点在这一侧、且轮到这一行：整行点亮（和主页列表一个观感）。
+        .when(selected, move |this| this.bg(colors.accent))
+        .when(!selected, move |this| {
+            this.hover(move |style| style.bg(colors.hover))
+        })
+        // 鼠标点一下就把焦点搬到右列，并停在这一行，接着就能用上下键走。
+        .on_click(cx.listener(move |launcher, _, _window, cx| launcher.focus_tool_row(index, cx)))
         .child(
             div()
                 .flex_shrink_0()
