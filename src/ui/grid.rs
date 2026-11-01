@@ -11,13 +11,19 @@
 //! 截断边长」那种写法省掉了右侧永远补不齐的空白。
 
 /// 方格边长的下限，逻辑像素。
-pub(crate) const CELL_MIN: f32 = 72.0;
+///
+/// 这一组数字是「疏密」唯一的旋钮：上下限收窄、间距调小，一屏就多出两列。默认 720 宽的
+/// 面板上，原来是 6 列 × 111px（格子发胖、看着稀），现在是 8 列 × 83px。
+pub(crate) const CELL_MIN: f32 = 64.0;
 /// 方格边长的上限。
-pub(crate) const CELL_MAX: f32 = 112.0;
-/// 方格之间的间距。
-pub(crate) const CELL_GAP: f32 = 8.0;
-/// 网格两侧留的空白。
-pub(crate) const CELL_PADDING: f32 = 8.0;
+pub(crate) const CELL_MAX: f32 = 88.0;
+/// 方格之间的间距，**同时也是网格四周的留白**。
+///
+/// 只留一个数：外圈和格间同宽，视线才是同一个节奏；两套数字各调一次、视觉上还对不齐，
+/// 那种「说不清哪里别扭」多半就是这么来的。
+pub(crate) const CELL_GAP: f32 = 6.0;
+/// 网格四周的留白，跟着 [`CELL_GAP`] 走。
+pub(crate) const CELL_PADDING: f32 = CELL_GAP;
 
 /// 按窗口宽度算方格尺寸（扣掉两侧留白）。
 ///
@@ -128,6 +134,15 @@ mod tests {
         assert_eq!(solve(two_columns - 1.0).columns, 1);
         assert_eq!(solve(two_columns).columns, 2);
         assert_eq!(solve(two_columns).cell, CELL_MIN);
+    }
+
+    #[test]
+    fn the_default_window_fits_eight_columns() {
+        // 720 是面板的默认宽度（`WINDOW_WIDTH_DEFAULT`）。这条钉住「默认多密」：
+        // 一旦有人把上下限又调大回去，一屏就从 8 列掉到 6 列，测试会直接说出来。
+        let metrics = super::metrics_for(720.0);
+        assert_eq!(metrics.columns, 8, "默认宽度该是 8 列");
+        assert!(metrics.cell >= CELL_MIN && metrics.cell <= CELL_MAX);
     }
 
     #[test]

@@ -689,7 +689,8 @@ fn grid_cell(
         .flex_col()
         .items_center()
         .justify_center()
-        .gap_1()
+        // 图标和名字贴紧一点：格子里本来就有富余高度，再留 4px 就更散了。
+        .gap_0p5()
         .rounded(px(8.))
         .cursor_pointer()
         .when(selected, move |this| this.bg(colors.accent))
