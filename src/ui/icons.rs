@@ -177,19 +177,21 @@ mod sys {
             return None;
         }
 
-        // GDI 给的是 BGRA。alpha 全 0 说明这是个不带 alpha 通道的老图标，
-        // 这时候按掩码补透明度：掩码为 1 的像素是透明的。
-        let transparent_to_alpha = buffer.chunks_exact(4).all(|pixel| pixel[3] == 0);
-        if transparent_to_alpha {
-            unsafe { apply_mask(&mut buffer, width, height, mask) };
-        }
         // **不要换成 RGBA**：`GetDIBits` 给的是 BGRA，而 gpui 的 `RenderImage` 也按
         // BGRA 解释（它自己的文档写着 "in BGRA format"）。之前在这儿交换了红蓝，结果
-        // 蓝色块的图标全变成黄色——这就是那次教训的注释。
-        for pixel in buffer.chunks_exact_mut(4) {
-            // 不带 alpha 的图标此时 alpha 还是 0，按不透明处理。
-            if pixel[3] == 0 {
-                pixel[3] = 255;
+        // 蓝色块的图标全变成黄色。
+        //
+        // **透明的像素必须留着透明**。上一版把 `alpha == 0` 的像素一律改成 255（本意是
+        // 照顾没有 alpha 通道的老图标），结果现代图标的透明边角全变成黑方块。判断「有没有
+        // alpha 通道」要看整张图，不能看单个像素。
+        let alpha_missing = buffer.chunks_exact(4).all(|pixel| pixel[3] == 0);
+        if alpha_missing {
+            // 老图标：1 位掩码里为 1 的像素是透明的，拿它补 alpha；掩码也拿不到就整张不透明。
+            let filled = unsafe { apply_mask(&mut buffer, width, height, mask) };
+            if !filled {
+                for pixel in buffer.chunks_exact_mut(4) {
+                    pixel[3] = 255;
+                }
             }
         }
 
@@ -202,9 +204,9 @@ mod sys {
     }
 
     /// 用 1 位掩码给老式图标补 alpha。
-    unsafe fn apply_mask(buffer: &mut [u8], width: i32, height: i32, mask: HGDIOBJ) {
+    unsafe fn apply_mask(buffer: &mut [u8], width: i32, height: i32, mask: HGDIOBJ) -> bool {
         if mask.is_null() {
-            return;
+            return false;
         }
         let mut bitmap: BITMAP = unsafe { std::mem::zeroed() };
         let got = unsafe {
@@ -215,7 +217,7 @@ mod sys {
             )
         };
         if got == 0 {
-            return;
+            return false;
         }
         // 掩码是 1 位/像素，行按 4 字节对齐（32 位）。
         let stride = ((width + 31) / 32 * 4) as usize;
@@ -234,7 +236,7 @@ mod sys {
         };
         let device = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
         if device.is_null() {
-            return;
+            return false;
         }
         let previous = unsafe { SelectObject(device, mask) };
         let lines = unsafe {
@@ -253,7 +255,7 @@ mod sys {
             DeleteDC(device);
         }
         if lines == 0 {
-            return;
+            return false;
         }
         for y in 0..height as usize {
             for x in 0..width as usize {
@@ -265,6 +267,7 @@ mod sys {
                 }
             }
         }
+        true
     }
 }
 
@@ -302,6 +305,12 @@ mod tests {
         assert!(
             bytes.chunks_exact(4).any(|pixel| pixel[3] > 0),
             "整张图全透明"
+        );
+        // **也必须留得住透明**：把 `alpha == 0` 的像素涂成不透明时，图标四周会出现黑方块
+        // ——上一版就是这么被用户发现的。
+        assert!(
+            bytes.chunks_exact(4).any(|pixel| pixel[3] < 255),
+            "图标该有透明像素，否则边角会变黑"
         );
     }
 
