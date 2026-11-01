@@ -42,6 +42,19 @@ pub fn for_tool(kind: ToolKind, target: &str) -> Option<Arc<RenderImage>> {
     icon
 }
 
+/// 命令的第一个词如果是个 `System32` 里的文件（`.msc`、`.cpl`、`.exe`），返回它的路径。
+///
+/// 命令行能直接敲 `services.msc`，靠的就是这个目录在搜索路径里。
+fn system_file(command: &str) -> Option<std::path::PathBuf> {
+    let token = command.split_whitespace().next()?.trim_matches('"');
+    if token.is_empty() || token.contains('/') || token.contains('\\') {
+        return None;
+    }
+    let root = std::env::var_os("SystemRoot")?;
+    let candidate = std::path::Path::new(&root).join("System32").join(token);
+    candidate.is_file().then_some(candidate)
+}
+
 /// 这个条目对应磁盘上的哪个路径。
 fn target_for(kind: ToolKind, target: &str) -> Option<std::path::PathBuf> {
     let target = target.trim();
@@ -54,8 +67,12 @@ fn target_for(kind: ToolKind, target: &str) -> Option<std::path::PathBuf> {
             let path = std::path::PathBuf::from(target);
             path.exists().then_some(path)
         }
-        // 快捷终端：命令的第一个词大概率是个程序；解析不出来（cd、dir 这类）就没图标。
-        ToolKind::Terminal => tools::shell::program_of(target),
+        // 快捷终端：命令的第一个词大概率是个程序。
+        //
+        // 解析不出来也要再试一步：`services.msc`、`appwiz.cpl` 这种既不在 PATH 上、也不是
+        // exe，但系统在 `System32` 里找得到（命令行敲它们能开，就是靠这个目录）。少了这
+        // 一步，一票系统工具都只能显示通用图标。
+        ToolKind::Terminal => tools::shell::program_of(target).or_else(|| system_file(target)),
     }
 }
 
@@ -326,6 +343,19 @@ mod tests {
         assert!(
             path.file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case("ipconfig.exe")),
+            "解析成了 {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn a_system_tool_resolves_through_system32() {
+        // `services.msc` 不在 PATH 上，但命令行能直接敲，靠的是 System32。
+        let path = super::target_for(tools::settings::ToolKind::Terminal, "services.msc")
+            .expect("services.msc 该解析到 System32 里的那个文件");
+        assert!(
+            path.file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("services.msc")),
             "解析成了 {}",
             path.display()
         );
