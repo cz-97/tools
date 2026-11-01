@@ -103,18 +103,14 @@ pub(crate) fn render(
                 .flex_1()
                 .min_w_0()
                 .min_h_0()
-                .overflow_hidden()
+                // 只用分轴的两个：和主页方格区完全一致的写法。`overflow_hidden()` 会把两个轴
+                // 一起设成 Hidden 再加一层裁剪，跟滚动容器混着用容易两端都不灵。
+                .overflow_x_hidden()
                 .overflow_y_scroll()
-                // 句柄负责记住「内容多高、能滚多远」，滚轮自己接（见下面的说明）。
+                // 和主页方格区一样的写法：挂句柄，滚轮交给 gpui 自己处理。
+                // **不要再自己接 `on_scroll_wheel`**：那会跟内置的滚动处理抢同一个偏移量，
+                // 两边各写一次，结果谁也滚不动（日志里 `当前` 一直卡在同一个值）。
                 .track_scroll(&launcher.settings_scroll)
-                // **光有 `track_scroll` 是滚不动的**：gpui 只在元素自己生成 hitbox 时才装
-                // 滚轮监听，而这个容器自己不接受任何鼠标事件，hitbox 就不存在，滚轮事件
-                // 到不了它身上。显式接一次滚轮，hitbox 才会出现。
-                .on_scroll_wheel(cx.listener(
-                    |launcher, event: &gpui_kit::ScrollWheelEvent, _window, cx| {
-                        launcher.scroll_settings(event, cx)
-                    },
-                ))
                 .px_4()
                 .py_4()
                 // **内容层不许被压缩**：gpui 的 `flex_shrink` 默认是 1，直接放进去会被压扁去
