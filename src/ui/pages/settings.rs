@@ -627,6 +627,22 @@ fn user_tools_page(
 ///
 /// 两行排：第一行名字加次数和开关，第二行路径（命令）加快捷键和两个图标按钮。
 /// 右列本来就不宽，塞成一行的话名字只能剩半个字。
+/// 工具条目的图标：有系统图标就用资源管理器的那个，没有才退回内置的矢量图标。
+///
+/// 设置里这张表和主页必须长得一样——用户是照着图标认条目的，两边不一致反而更糊涂。
+fn tool_icon(kind: ToolKind, target: &str, colors: UiColors) -> AnyElement {
+    if let Some(image) = crate::ui::icons::for_tool(kind, target) {
+        return gpui_kit::img(image)
+            .w(px(16.))
+            .h(px(16.))
+            .into_any_element();
+    }
+    Icon::new(ToolTab::for_kind(kind).icon())
+        .size_3()
+        .text_color(colors.foreground)
+        .into_any_element()
+}
+
 fn tool_row(
     launcher: &Launcher,
     tool: &UserTool,
@@ -678,11 +694,8 @@ fn tool_row(
                 .items_center()
                 .justify_center()
                 .rounded(px(4.))
-                .child(
-                    Icon::new(ToolTab::for_kind(tool.kind).icon())
-                        .size_3()
-                        .text_color(colors.foreground),
-                ),
+                // 和主页一样用资源管理器那个图标：用户在这儿认的就是它。
+                .child(tool_icon(tool.kind, &tool.target, colors)),
         )
         .child(
             v_flex()

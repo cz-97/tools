@@ -281,7 +281,9 @@ impl RenderOnce for ToolItemRow {
             ToolKind::Terminal => gpui_kit::assets::IconName::SquareTerminal,
         };
         // 有系统图标就用真的：资源管理器里那个 exe 长什么样，这里就什么样。
-        let icon = match crate::ui::icons::for_tool(self.tool.kind, &self.tool.target) {
+        let real_icon = crate::ui::icons::for_tool(self.tool.kind, &self.tool.target);
+        let has_real_icon = real_icon.is_some();
+        let icon = match real_icon {
             Some(image) => gpui_kit::img(image)
                 .w(px(16.))
                 .h(px(16.))
@@ -332,7 +334,10 @@ impl RenderOnce for ToolItemRow {
                         .items_center()
                         .justify_center()
                         .rounded(px(8.))
-                        .bg(tile_bg)
+                        // 有真图标的条目不再垫底色：图标自己带形状和留白，再画一块
+                        // 方块就成了「图标有背景」。（内置矢量图标还是要这块底，
+                        // 否则细线条直接浮在面板上看不清。）
+                        .when(has_real_icon == false, move |this| this.bg(tile_bg))
                         .child(icon),
                 )
                 .child(

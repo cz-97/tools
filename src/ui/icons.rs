@@ -183,8 +183,10 @@ mod sys {
         if transparent_to_alpha {
             unsafe { apply_mask(&mut buffer, width, height, mask) };
         }
+        // **不要换成 RGBA**：`GetDIBits` 给的是 BGRA，而 gpui 的 `RenderImage` 也按
+        // BGRA 解释（它自己的文档写着 "in BGRA format"）。之前在这儿交换了红蓝，结果
+        // 蓝色块的图标全变成黄色——这就是那次教训的注释。
         for pixel in buffer.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
             // 不带 alpha 的图标此时 alpha 还是 0，按不透明处理。
             if pixel[3] == 0 {
                 pixel[3] = 255;
