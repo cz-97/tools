@@ -1,5 +1,6 @@
 //! 设置页：左边是子模块，右边是选中那一页的内容。
 
+use gpui_kit::InteractiveElement as _;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
@@ -14,14 +15,13 @@ use tools::settings::{HomeLayout, Settings, Theme as ColorScheme, ToolKind, User
 
 use crate::actions;
 use crate::app::stored_settings;
+use crate::catalogue;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_page;
 use crate::ui::commands_page::shortcut_button;
-use crate::ui::launcher::{
-    Launcher, MODULE_WIDTH, RecordTarget, SIDEBAR_WIDTH, SettingsTab, ToolTab,
-};
+use crate::ui::launcher::{Launcher, NavEntry, RecordTarget, SIDEBAR_WIDTH, SettingsTab, ToolTab};
 
 /// 画出整个设置页。
 pub(crate) fn render(
@@ -33,43 +33,142 @@ pub(crate) fn render(
     let settings = stored_settings(cx);
     let border = cx.theme().border;
 
+    // 左侧导航是**一棵树**：「命令」和「工具」下面那一组子项折进这一列，展开时缩进着
+    // 排在后面、跟上下键一起走，收起时不在列表里（`Launcher::nav_entries`）。
+    // 这样所有页面最多只有两列，第三列不存在了。
+    let current = launcher.nav_current();
+    let expanded = launcher.expanded_tab();
     let sections =
         v_flex()
+            // **必须有 id**：gpui 的 `overflow_y_scroll` / `track_scroll` 只在带 id 的元素上
+            // 才有（`InteractiveElement` 的实现要求），少了 id 连方法都找不到。
+            .id("settings-nav")
             .w(px(SIDEBAR_WIDTH))
             .flex_shrink_0()
+            .h_full()
             .p_2()
             .gap_1()
             .border_r_1()
             .border_color(border)
-            .children(SettingsTab::ALL.into_iter().enumerate().map(|(ix, item)| {
-                let selected = item == tab;
-                h_flex()
-                    .id(SharedString::from(format!("section-tab-{ix}")))
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .rounded(px(6.))
-                    .text_sm()
-                    .text_color(if selected {
-                        colors.accent_foreground
-                    } else {
-                        colors.foreground
-                    })
-                    .cursor_pointer()
-                    .when(selected, move |this| this.bg(colors.accent))
-                    .when(!selected, move |this| {
-                        this.hover(move |style| style.bg(colors.hover))
-                    })
-                    .on_click(cx.listener(move |launcher, _, window, cx| {
-                        launcher.select_tab(item, window, cx)
-                    }))
-                    .child(Icon::new(item.icon()).size_4().text_color(if selected {
-                        colors.accent_foreground
-                    } else {
-                        colors.muted_foreground
-                    }))
-                    .child(div().child(item.label()))
-            }));
+            .overflow_y_scroll()
+            .track_scroll(&launcher.nav_scroll)
+            // `children` 只在裸 `Div` 上有，`track_scroll` 之后是 `Stateful<Div>`，
+            // 所以先把行收进一层 v_flex 再 `.child` 进去。
+            .child(
+                v_flex().w_full().gap_1().children(
+                    launcher
+                        .nav_entries()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ix, entry)| match entry {
+                            NavEntry::Tab(item) => {
+                                let selected = current == Some(entry);
+                                let open = expanded == Some(item) && item.children();
+                                h_flex()
+                                    .id(SharedString::from(format!("section-tab-{ix}")))
+                                    .flex_shrink_0()
+                                    .gap_2()
+                                    .px_3()
+                                    .py_2()
+                                    .rounded(px(6.))
+                                    .text_sm()
+                                    .cursor_pointer()
+                                    .text_color(if selected {
+                                        colors.accent_foreground
+                                    } else {
+                                        colors.foreground
+                                    })
+                                    .when(selected, move |this| this.bg(colors.accent))
+                                    .when(!selected, move |this| {
+                                        this.hover(move |style| style.bg(colors.hover))
+                                    })
+                                    .on_click(cx.listener(move |launcher, _, window, cx| {
+                                        launcher.select_nav(entry, window, cx)
+                                    }))
+                                    .child(Icon::new(item.icon()).size_4().text_color(
+                                        if selected {
+                                            colors.accent_foreground
+                                        } else {
+                                            colors.muted_foreground
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .child(item.label()),
+                                    )
+                                    // 展开的那一项右边挂个朝上的小箭头，和截图里一样：告诉用户
+                                    // 「下面那几行属于我」。
+                                    .when(item.children(), move |this| {
+                                        this.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .size(px(18.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded(px(4.))
+                                                .border_1()
+                                                .border_color(if open {
+                                                    colors.accent_foreground
+                                                } else {
+                                                    colors.border
+                                                })
+                                                .child(
+                                                    Icon::new(if open {
+                                                        IconName::ChevronUp
+                                                    } else {
+                                                        IconName::ChevronDown
+                                                    })
+                                                    .size_3()
+                                                    .text_color(if selected {
+                                                        colors.accent_foreground
+                                                    } else {
+                                                        colors.muted_foreground
+                                                    }),
+                                                ),
+                                        )
+                                    })
+                            }
+                            // 二级行：缩进、没有图标、字号一样但颜色更淡一点。
+                            _ => {
+                                let selected = current == Some(entry);
+                                let label: SharedString = match entry {
+                                    NavEntry::Section(index) => catalogue::sections()
+                                        .get(index)
+                                        .map(|section| section.label().into())
+                                        .unwrap_or_default(),
+                                    NavEntry::Tool(tool) => tool.label().into(),
+                                    NavEntry::Tab(_) => SharedString::default(),
+                                };
+                                h_flex()
+                                    .id(SharedString::from(format!("nav-child-{ix}")))
+                                    .flex_shrink_0()
+                                    .ml(px(18.))
+                                    .px_3()
+                                    .py_1p5()
+                                    .rounded(px(6.))
+                                    .text_sm()
+                                    .cursor_pointer()
+                                    .text_color(if selected {
+                                        colors.accent_foreground
+                                    } else {
+                                        colors.muted_foreground
+                                    })
+                                    .when(selected, move |this| this.bg(colors.accent))
+                                    .when(!selected, move |this| {
+                                        this.hover(move |style| style.bg(colors.hover))
+                                    })
+                                    .on_click(cx.listener(move |launcher, _, window, cx| {
+                                        launcher.select_nav(entry, window, cx)
+                                    }))
+                                    .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+                            }
+                        }),
+                ),
+            );
 
     let content = match tab {
         SettingsTab::System => system_page(launcher, settings, colors, cx),
@@ -96,8 +195,20 @@ pub(crate) fn render(
         .items_stretch()
         .overflow_hidden()
         .child(sections)
-        .child(
-            // 面板可以被拖大拖小，内容比窗口高时就地滚，绝不给裁掉半截。
+        .child(if tab == SettingsTab::Tools {
+            // 工具页自己带滚动（那三个列表各有各的滚动条），这里只提供**确定的高度**：
+            // 不能再套一层滚动容器，否则内容页的 `size_full` 会一直算不出高度。
+            v_flex()
+                .h_full()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .px_4()
+                .py_4()
+                .child(content)
+                .into_any_element()
+        } else {
+            // 其它页是普通表单：内容比窗口高时就地滚，绝不给裁掉半截。
             v_flex()
                 .id("settings-content")
                 .flex_1()
@@ -116,49 +227,16 @@ pub(crate) fn render(
                 // **内容层不许被压缩**：gpui 的 `flex_shrink` 默认是 1，直接放进去会被压扁去
                 // 适应容器高度——永远不「超出」，也就永远滚不动。包一层 `flex_shrink_0`，
                 // 它的高度按内容算，溢出才是真的溢出。
-                .child(div().w_full().flex_shrink_0().child(content)),
-        )
+                .child(div().w_full().flex_shrink_0().child(content))
+                .into_any_element()
+        })
 }
 
 /// 工具标签：左边列出全部工具子标签，右边画选中那一项的配置。
 ///
 /// 布局和命令页一致（左列列子标签，右列列内容）；子标签都点选，不用键盘。
 fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
-    let border = colors.border;
     let selected = launcher.tool_tab;
-
-    let tabs = v_flex()
-        .w(px(MODULE_WIDTH))
-        .flex_shrink_0()
-        .gap_1()
-        .pr_3()
-        .border_r_1()
-        .border_color(border)
-        .children(ToolTab::ALL.iter().map(|tool| {
-            let current = *tool == selected;
-            h_flex()
-                .id(SharedString::from(format!("tool-tab-{}", tool.label())))
-                .gap_2()
-                .px_2()
-                .py_1p5()
-                .rounded(px(6.))
-                .text_sm()
-                .cursor_pointer()
-                .text_color(if current {
-                    colors.accent_foreground
-                } else {
-                    colors.foreground
-                })
-                .when(current, move |this| this.bg(colors.accent))
-                .when(!current, move |this| {
-                    this.hover(move |style| style.bg(colors.hover))
-                })
-                .on_click(cx.listener(move |launcher, _, window, cx| {
-                    launcher.select_tool_tab(*tool, window, cx)
-                }))
-                .child(Icon::new(tool.icon()).size_4())
-                .child(div().flex_1().min_w_0().text_ellipsis().child(tool.label()))
-        }));
 
     let content = match selected {
         ToolTab::Calculator => calculator_settings_page(stored_settings(cx), colors, cx),
@@ -175,12 +253,12 @@ fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> 
         .min_w_0()
         .items_stretch()
         .overflow_hidden()
-        .child(tabs)
         .child(
             v_flex()
                 .id("tool-content")
                 .flex_1()
                 .min_w_0()
+                .min_h_0()
                 .overflow_hidden()
                 .overflow_y_scroll()
                 .pl_3()
@@ -597,16 +675,31 @@ fn user_tools_page(
         .into_any_element(),
     };
 
-    let rows = tools
+    // 搜索只筛当前这一页（文件 / 文件夹 / 快捷终端 各查各的）。
+    let query = launcher.tools_query.trim().to_lowercase();
+    let shown = tools
+        .iter()
+        .filter(|tool| {
+            query.is_empty()
+                || tool.name.to_lowercase().contains(&query)
+                || tool.target.to_lowercase().contains(&query)
+        })
+        .collect::<Vec<_>>();
+    let rows = shown
         .iter()
         .map(|tool| tool_row(launcher, tool, colors, cx).into_any_element())
         .collect::<Vec<_>>();
 
+    // 头部（新增 + 搜索 + 计数）**固定不动**，只有下面的列表滚——列表能到几十条，
+    // 让「新增」跟着滚走，想加一条得先滚回顶部，很难用。
     v_flex()
+        .size_full()
+        .min_h_0()
         .gap_1()
         .child(
             h_flex()
                 .w_full()
+                .flex_shrink_0()
                 .items_center()
                 .gap_2()
                 .px_2()
@@ -615,27 +708,46 @@ fn user_tools_page(
                 .child(div().flex_shrink_0().child(add))
                 .child(div().flex_1())
                 .child(
+                    div().flex_shrink_0().w(px(180.)).child(
+                        Input::new(&launcher.tools_search)
+                            .small()
+                            .appearance(true)
+                            .cleanable(true),
+                    ),
+                )
+                .child(
                     div()
                         .flex_shrink_0()
                         .text_xs()
                         .text_color(colors.muted_foreground)
-                        .child(strings::lists::count(tools.len())),
+                        .child(strings::lists::count(shown.len())),
                 ),
         )
         .when(editor_here, |this| {
             this.child(tool_editor_block(launcher, colors, cx))
         })
-        .children(rows)
-        .when(tools.is_empty() && !editor_here, |this| {
-            this.child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child(strings::tools_page::empty_hint(kind)),
-            )
-        })
+        // 列表自己滚，和上面的头部互不影响。
+        .child(
+            v_flex()
+                .id("user-tools-list")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .gap_1()
+                .overflow_y_scroll()
+                .track_scroll(&launcher.tools_scroll)
+                .children(rows)
+                .when(shown.is_empty() && !editor_here, |this| {
+                    this.child(
+                        div()
+                            .px_2()
+                            .py_2()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(strings::tools_page::empty_hint(kind)),
+                    )
+                }),
+        )
         .into_any_element()
 }
 

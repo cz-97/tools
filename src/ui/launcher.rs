@@ -43,7 +43,6 @@ const HEADER_SLACK: f32 = 26.;
 /// 设置页左侧子模块列的宽度。
 pub(crate) const SIDEBAR_WIDTH: f32 = 148.;
 /// 命令页里左侧子模块列的宽度。要放得下「GitHub 3/3」这种最长的组合。
-pub(crate) const MODULE_WIDTH: f32 = 136.;
 /// 输入框组件在内部画掉的左右留白（小号是 8 + 8），输入框得自己付这笔账。
 const SEARCH_FIELD_PADDING: f32 = 16.;
 /// 空输入框给光标留的宽度。再宽就是白占拖动区。
@@ -196,14 +195,23 @@ impl SettingsTab {
         }
     }
 
-    /// 往后挪 `delta` 个，到底就停在最后一个。
-    fn shifted(self, delta: isize) -> Self {
-        let index = Self::ALL
-            .iter()
-            .position(|tab| *tab == self)
-            .unwrap_or_default() as isize;
-        Self::ALL[(index + delta).clamp(0, Self::ALL.len() as isize - 1) as usize]
+    /// 这一项有没有子项（有的话展开成缩进的二级行）。
+    pub(crate) fn children(self) -> bool {
+        matches!(self, Self::Commands | Self::Tools)
     }
+}
+
+/// 设置左侧导航里的一行。
+///
+/// 二级项（「命令」的子模块、「工具」的子工具）**折进第一列**，不再单独占一列：
+/// 展开时它们是缩进的行，跟着上下键一起走；收起（换了别的标签）就不在列表里。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NavEntry {
+    Tab(SettingsTab),
+    /// 「命令」下面的子模块，存的是 `catalogue::sections()` 里的下标。
+    Section(usize),
+    /// 「工具」下面的子工具。
+    Tool(ToolTab),
 }
 
 /// 设置里「工具」标签下面的子标签页。
@@ -456,6 +464,15 @@ pub struct Launcher {
     _list_search_events: Subscription,
     /// 方格布局的滚动位置（列表布局不用它）。
     pub(crate) grid_scroll: ScrollHandle,
+    /// 设置里「文件 / 文件夹 / 快捷终端」列表的搜索框与关键词。
+    ///
+    /// 三页共用一份：换页时清空，免得带着上一页的关键词进来一片空白。
+    pub(crate) tools_search: Entity<InputState>,
+    pub(crate) tools_query: String,
+    /// 那三个列表自己的滚动位置（头部固定，只有列表滚）。
+    pub(crate) tools_scroll: ScrollHandle,
+    /// 设置左侧导航的滚动位置（和右边内容各滚各的）。
+    pub(crate) nav_scroll: ScrollHandle,
     /// 设置页右半边的滚动位置。
     ///
     /// 设置里那些列表（尤其快捷终端）能有几十条，比窗口高，必须能滚；换标签时要回到
@@ -518,6 +535,15 @@ impl Launcher {
         let view = cx.weak_entity();
         entries.update(cx, |state, _cx| {
             state.delegate_mut().view = Some(view);
+        });
+
+        // 设置里那三个工具列表的搜索框。
+        let tools_search = cx.new(|cx| InputState::new(window, cx));
+        let tools_search_events = cx.subscribe(&tools_search, |launcher, search, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                launcher.tools_query = search.read(cx).value().to_string();
+                cx.notify();
+            }
         });
 
         // 列表页的搜索框：和主页那个分开，两页的输入互不干扰。
@@ -587,9 +613,16 @@ impl Launcher {
             _search_observation: search_observation,
             _list_search_events: list_search_events,
             grid_scroll: ScrollHandle::new(),
+            tools_search,
+            tools_query: String::new(),
+            tools_scroll: ScrollHandle::new(),
+            nav_scroll: ScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
             hovered_cell: None,
-            _settings_events: settings_events,
+            _settings_events: settings_events
+                .into_iter()
+                .chain([tools_search_events])
+                .collect(),
         };
         // 一开始就有一行空行占着：用户进来直接就能打公式。
         launcher.append_calculator_row(window, cx);
@@ -665,7 +698,7 @@ impl Launcher {
     pub(crate) fn navigate(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         match self.page {
             Page::Commands => self.move_selection(delta, window, cx),
-            Page::Settings(tab) => self.select_tab(tab.shifted(delta), window, cx),
+            Page::Settings(_) => self.move_nav(delta, window, cx),
             Page::Calculator => {}
             Page::List(_) => self.move_entry(delta, window, cx),
         }
@@ -1210,6 +1243,86 @@ impl Launcher {
     }
 
     /// 换一个设置子模块。计算器本体已经不在设置里，这里不再需要为它移交焦点。
+    /// 现在展开的是哪个标签（只有带子项的标签才会展开）。
+    pub(crate) fn expanded_tab(&self) -> Option<SettingsTab> {
+        match self.page {
+            Page::Settings(tab) if tab.children() => Some(tab),
+            _ => None,
+        }
+    }
+
+    /// 左侧导航当前能看到的行，按显示顺序。
+    ///
+    /// 展开的子项紧跟在它所属的标签后面——所以「展开时参与上下切换，收起时不参与」
+    /// 是同一个列表自然的结果，不用另写一套跳过逻辑。
+    pub(crate) fn nav_entries(&self) -> Vec<NavEntry> {
+        let mut entries = Vec::with_capacity(SettingsTab::ALL.len() + 8);
+        for tab in SettingsTab::ALL {
+            entries.push(NavEntry::Tab(tab));
+            if self.expanded_tab() == Some(tab) {
+                match tab {
+                    SettingsTab::Commands => {
+                        entries.extend((0..catalogue::sections().len()).map(NavEntry::Section));
+                    }
+                    SettingsTab::Tools => {
+                        entries.extend(ToolTab::ALL.into_iter().map(NavEntry::Tool));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        entries
+    }
+
+    /// 现在高亮的是哪一行。
+    pub(crate) fn nav_current(&self) -> Option<NavEntry> {
+        match self.page {
+            Page::Settings(SettingsTab::Commands) => Some(NavEntry::Section(self.section)),
+            Page::Settings(SettingsTab::Tools) => Some(NavEntry::Tool(self.tool_tab)),
+            Page::Settings(tab) => Some(NavEntry::Tab(tab)),
+            _ => None,
+        }
+    }
+
+    /// 导航上下挪一格。
+    fn move_nav(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let entries = self.nav_entries();
+        if entries.is_empty() {
+            return;
+        }
+        let current = self
+            .nav_current()
+            .and_then(|current| entries.iter().position(|entry| *entry == current))
+            .unwrap_or(0) as isize;
+        let next = (current + delta).clamp(0, entries.len() as isize - 1) as usize;
+        if next == current as usize {
+            return;
+        }
+        self.select_nav(entries[next], window, cx);
+    }
+
+    /// 选中导航的一行。
+    pub(crate) fn select_nav(
+        &mut self,
+        entry: NavEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match entry {
+            NavEntry::Tab(tab) => self.select_tab(tab, window, cx),
+            NavEntry::Section(index) => {
+                if self.section == index {
+                    return;
+                }
+                self.commit_settings_inputs(cx);
+                self.section = index;
+                self.reset_settings_scroll();
+                cx.notify();
+            }
+            NavEntry::Tool(tool) => self.select_tool_tab(tool, window, cx),
+        }
+    }
+
     pub(crate) fn select_tab(
         &mut self,
         tab: SettingsTab,
@@ -1246,6 +1359,10 @@ impl Launcher {
         self.tool_notice = None;
         window.blur(cx);
         self.tool_tab = tab;
+        // 换一页就不带着上一页的关键词。
+        self.tools_query.clear();
+        self.tools_search
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.reset_settings_scroll();
         cx.notify();
     }
@@ -1887,17 +2004,6 @@ impl Launcher {
             list.delegate_mut().set_catalogue(states, tools);
             cx.notify();
         });
-    }
-
-    /// 命令页换一个子模块。
-    pub(crate) fn select_section(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.section == index {
-            return;
-        }
-        self.section = index;
-        self.recording = None;
-        self.conflict = None;
-        cx.notify();
     }
 
     /// 把一条命令从主页拿掉，或者放回去。
