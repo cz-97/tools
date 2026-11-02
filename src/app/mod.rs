@@ -458,14 +458,13 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
             });
             cx.stop_propagation();
         }
-        // 左右：方格布局里是横向挪格子；设置页里是在导航列和内容列之间搬焦点。
+        // 左右只在方格布局里用（横向挪一格）。其它页面**不劫持**：那里左右是输入框
+        // 挪光标，吞掉就成了「光标不动」。
         "left" | "right" if !typing => {
             let step = if event.keystroke.key == "left" { -1 } else { 1 };
             with_launcher(cx, move |launcher, window, cx| {
                 if launcher.grid_active(cx) {
                     launcher.move_grid(step, 0, window, cx);
-                } else {
-                    launcher.step_user_kind(step, cx);
                 }
             });
             cx.stop_propagation();

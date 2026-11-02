@@ -683,8 +683,7 @@ impl Launcher {
         match self.page {
             Page::Commands => self.move_selection(delta, window, cx),
             Page::Settings(tab) => self.select_tab(tab.shifted(delta), window, cx),
-            // 自定义条目页的 ↑↓ 交给 `List` 自己处理，这里不抢。
-            Page::UserTools => {}
+            Page::UserTools => self.move_user_selection(delta, cx),
             Page::Calculator => {}
             Page::List(_) => self.move_entry(delta, window, cx),
         }
@@ -1240,12 +1239,25 @@ impl Launcher {
         cx.notify();
     }
 
+    /// 上下键在自定义条目页里挪高亮（和书签、历史同一套手感）。
+    fn move_user_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        self.user_list.update(cx, |list, cx| {
+            let count = list.delegate().rows(cx).len();
+            list.delegate_mut().shift_selection(delta, count);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     /// 把列表的「类别 + 搜索词」对齐到当前状态（数据由 delegate 现算）。
     pub(crate) fn sync_user_list(&mut self, cx: &mut Context<Self>) {
         let kind = self.user_kind;
         let query = self.tools_query.clone();
+        let recording = self.recording_tool();
+        let conflict = self.conflict.clone();
         self.user_list.update(cx, |list, _cx| {
             list.delegate_mut().retarget(kind, &query);
+            list.delegate_mut().set_recording(recording, conflict);
         });
     }
 
@@ -1257,22 +1269,6 @@ impl Launcher {
         self.user_kind = kind;
         self.sync_user_list(cx);
         cx.notify();
-    }
-
-    /// 左右键在三个类别之间切。
-    pub(crate) fn step_user_kind(&mut self, step: isize, cx: &mut Context<Self>) {
-        if !matches!(self.page, Page::UserTools) {
-            return;
-        }
-        let all = ToolKind::USER;
-        let index = all
-            .iter()
-            .position(|item| *item == self.user_kind)
-            .unwrap_or(0) as isize;
-        let next = (index + step).clamp(0, all.len() as isize - 1);
-        if next != index {
-            self.set_user_kind(all[next as usize], cx);
-        }
     }
 
     /// 切到一个设置标签。
@@ -2041,6 +2037,7 @@ impl Launcher {
             Some(target)
         };
         self.conflict = None;
+        self.sync_user_list(cx);
         cx.notify();
     }
 
@@ -2080,6 +2077,7 @@ impl Launcher {
                 self.store_shortcut(target, Some(chord), cx);
                 self.recording = None;
                 self.conflict = None;
+                self.sync_user_list(cx);
             }
         }
         cx.notify();
@@ -2103,6 +2101,7 @@ impl Launcher {
         } else {
             self.conflict = Some(strings::commands_page::conflict(&owner.label(cx)));
         }
+        self.sync_user_list(cx);
         cx.notify();
     }
 

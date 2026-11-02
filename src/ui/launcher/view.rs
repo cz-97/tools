@@ -417,7 +417,6 @@ impl Render for Launcher {
             Page::UserTools => (
                 vec![
                     ("\u{2191}\u{2193}", strings::launcher::FOOTER_NAVIGATE),
-                    ("\u{2190}\u{2192}", strings::launcher::FOOTER_SECTIONS),
                     ("Enter", strings::launcher::FOOTER_OPEN),
                     ("Esc", strings::launcher::FOOTER_BACK),
                 ],
