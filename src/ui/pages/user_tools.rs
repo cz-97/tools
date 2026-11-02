@@ -66,10 +66,6 @@ impl UserToolsDelegate {
         self.selected = next;
     }
 
-    pub(crate) fn kind(&self) -> ToolKind {
-        self.kind
-    }
-
     /// 当前类别 + 搜索词下能看到的条目。
     pub(crate) fn rows(&self, cx: &App) -> Vec<UserTool> {
         stored_settings(cx)

@@ -62,7 +62,7 @@ pub mod commands {
     pub const REPOSITORY_DESCRIPTION: &str = "在浏览器打开项目仓库";
     /// 主页「书签」命令。
     pub const USER_TOOLS_NAME: &str = "自定义条目";
-    pub const USER_TOOLS_DESCRIPTION: &str = "管理自己加的文件、文件夹和快捷终端";
+    pub const USER_TOOLS_DESCRIPTION: &str = "管理自己加的文件、文件夹和快捷命令";
     pub const BOOKMARKS_DESCRIPTION: &str = "列出火狐系浏览器的书签";
     /// 主页「历史」命令。
     pub const HISTORY_DESCRIPTION: &str = "列出火狐系浏览器的浏览历史";
@@ -207,7 +207,7 @@ pub mod commands_page {
     }
 }
 
-/// 设置 → 工具里的两个「可增删改」的工具：文件快捷方式、快捷终端。
+/// 设置 → 工具里的两个「可增删改」的工具：文件快捷方式、快捷命令。
 ///
 /// 名字、说明、按钮都在这里；主页行尾显示的种类名也从 [`kind_label`] 取。
 pub mod tools_page {
@@ -223,13 +223,13 @@ pub mod tools_page {
     }
 
     /// 文件。
-    /// 工具页里那个合并了文件 / 文件夹 / 快捷终端的子标签。
+    /// 工具页里那个合并了文件 / 文件夹 / 快捷命令的子标签。
     pub const USER_ITEMS: &str = "自定义条目";
     pub const FILE: &str = "文件";
     /// 文件夹。
     pub const FOLDER: &str = "文件夹";
-    /// 快捷终端。
-    pub const QUICK_TERMINAL: &str = "快捷终端";
+    /// 快捷命令。
+    pub const QUICK_TERMINAL: &str = "快捷命令";
 
     /// 工具条目已经不存在了（快捷键还记着它的号）。
     pub const UNKNOWN_TOOL: &str = "已删除的工具";
@@ -240,11 +240,11 @@ pub mod tools_page {
     /// 行尾那个删除按钮。
     pub const DELETE: &str = "删";
 
-    /// 新增按钮：文件和文件夹是先挑，终端是先填名字和命令。
+    /// 新增按钮：文件和文件夹是先挑，快捷命令是先填名字和命令。
     pub fn add_label(kind: ToolKind) -> &'static str {
         match kind {
-            ToolKind::File => "选择文件添加",
-            ToolKind::Folder => "选择文件夹添加",
+            ToolKind::File => "新增",
+            ToolKind::Folder => "新增",
             ToolKind::Terminal => "新增",
         }
     }
@@ -254,11 +254,11 @@ pub mod tools_page {
         match kind {
             ToolKind::File => "还没有文件条目，点上面「选择文件添加」挑一个文件",
             ToolKind::Folder => "还没有文件夹条目，点上面「选择文件夹添加」挑一个目录",
-            ToolKind::Terminal => "还没有快捷终端，点上面「新增」起一条",
+            ToolKind::Terminal => "还没有快捷命令，点上面「新增」起一条",
         }
     }
 
-    /// 编辑区标题：「新增文件」「修改快捷终端」。
+    /// 编辑区标题：「新增文件」「修改快捷命令」。
     pub fn editor_heading(kind: ToolKind, existing: bool) -> String {
         let name = match kind {
             ToolKind::File => FILE,
@@ -318,7 +318,7 @@ pub mod tools_page {
     /// 文件条目的动作：打开所在位置。
     pub const MODE_LOCATION: &str = "打开所在位置";
     /// 终端条目的动作：开一个终端窗口跑。
-    pub const MODE_TERMINAL: &str = "开窗口跑";
+    pub const MODE_TERMINAL: &str = "终端跑";
     /// 终端条目的动作：不弹窗口，跑完就完。
     pub const MODE_QUIET: &str = "静默跑";
 

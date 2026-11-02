@@ -690,39 +690,6 @@ pub(crate) fn tool_editor_block(
         .into_any_element()
 }
 
-/// 条目行尾那枚胶囊：点一下在两种动作之间切。
-///
-/// **每条自己管自己**：同一个程序里，有的文件想直接开、有的只想看看它在哪；
-/// 有的命令要留着窗口看输出、有的连黑框都不该闪。
-fn mode_chip(
-    id: i64,
-    on: bool,
-    on_label: &'static str,
-    off_label: &'static str,
-    colors: UiColors,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(SharedString::from(format!("tool-mode-{id}-{on}")))
-        .flex_shrink_0()
-        .px_1p5()
-        .py_0p5()
-        .rounded(px(4.))
-        .border_1()
-        .border_color(colors.surface)
-        .text_xs()
-        .cursor_pointer()
-        .text_color(if on {
-            colors.foreground
-        } else {
-            colors.on_surface_muted
-        })
-        .when(on, move |this| this.bg(colors.surface))
-        .hover(move |style| style.bg(colors.hover))
-        .on_click(on_click)
-        .child(if on { on_label } else { off_label })
-}
-
 /// 一枚小按钮：`primary` 时是实心的（保存、新增），否则只是一圈淡边框。
 pub(crate) fn small_button(
     id: SharedString,
@@ -756,27 +723,6 @@ pub(crate) fn small_button(
         })
         .on_click(on_click)
         .child(label)
-}
-
-/// 一枚只有图标的按钮（行尾的改 / 删）。
-fn icon_button(
-    id: SharedString,
-    icon: gpui_kit::assets::IconName,
-    colors: UiColors,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .flex_shrink_0()
-        .size_5()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.))
-        .cursor_pointer()
-        .hover(move |style| style.bg(colors.hover))
-        .on_click(on_click)
-        .child(Icon::new(icon).size_3().text_color(colors.on_surface_muted))
 }
 
 /// 设置行右边的一个文本框：固定宽度、小号，和别的控件高度对得上。

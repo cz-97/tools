@@ -2607,15 +2607,6 @@ impl Launcher {
     }
 }
 
-/// 从对话框直接加条目时的默认名：文件取文件名（去掉扩展名），文件夹就取目录名。
-fn default_tool_name(target: &str) -> String {
-    let path = std::path::Path::new(target);
-    path.file_stem()
-        .or_else(|| path.file_name())
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| target.to_string())
-}
-
 /// 书签行：标题是书签名字，副行是网址，右边补一句页面标题（和书签名字不一样时才写）。
 fn bookmark_entries(rows: Vec<firefox::Bookmark>) -> Vec<Entry> {
     rows.into_iter()
