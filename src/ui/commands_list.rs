@@ -911,7 +911,8 @@ mod tests {
                 "github-search",
                 "github-stars",
                 "config-folder",
-                "open-settings"
+                "open-settings",
+                "user-tools"
             ]
         );
     }
@@ -948,10 +949,15 @@ mod tests {
         delegate.set_catalogue(two_used_commands(), tools);
 
         let ordered = order(&delegate);
-        // 用了 9 次的工具排在用了 5 次的命令前面；一次没用过的工具排在最后。
+        // 用了 9 次的工具排在用了 5 次的命令前面；一次没用过的都落到末尾。
+        // （新加的「自定义条目」命令也是 0 次，同样在尾部，所以只看倒数两个。）
         assert_eq!(ordered.first().map(String::as_str), Some("tool:1"));
         assert_eq!(ordered.get(1).map(String::as_str), Some("repository"));
-        assert_eq!(ordered.last().map(String::as_str), Some("tool:2"));
+        let tail = &ordered[ordered.len() - 2..];
+        assert!(
+            tail.iter().any(|id| id == "tool:2"),
+            "没用过的工具该在末尾：{ordered:?}"
+        );
     }
 
     #[test]

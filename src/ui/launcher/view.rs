@@ -18,6 +18,7 @@ use crate::ui::calculator_page;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_list;
 use crate::ui::lists;
+use crate::ui::pages::user_tools as user_tools_page;
 use crate::ui::settings_page::{self, small_button};
 
 use super::{
@@ -127,7 +128,72 @@ impl Launcher {
                 .into_any_element()
             }
             Page::List(kind) => self.list_header(bar, kind, window, cx),
+            Page::UserTools => self.user_tools_header(bar, window, cx),
         }
+    }
+
+    /// 「自定义条目」页的页头：标题、搜索框、三个类型筛选、新增。
+    ///
+    /// 和书签、历史同一副骨架：左边标题，中间搜索，右边是这一页能做的事。
+    fn user_tools_header(
+        &self,
+        bar: gpui_kit::Stateful<gpui_kit::Div>,
+        _window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let colors = UiColors::current(cx);
+        let muted_fg = colors.muted_foreground;
+        let kind = self.user_kind;
+        let count = self.user_list.read(cx).delegate().rows(cx).len();
+
+        bar.child(Icon::new(IconName::FileText).size_4().text_color(muted_fg))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(strings::tools_page::USER_ITEMS),
+            )
+            .child(
+                div()
+                    .id("tools-search")
+                    .occlude()
+                    .flex_shrink_0()
+                    .ml_2()
+                    .w(px(180.))
+                    .child(
+                        Input::new(&self.tools_search)
+                            .small()
+                            .appearance(false)
+                            .cleanable(false),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(crate::ui::settings_page::segmented(
+                "user-tools-kind",
+                tools::settings::ToolKind::USER
+                    .into_iter()
+                    .map(|item| (item, strings::tools_page::kind_label(item))),
+                kind,
+                colors,
+                cx,
+                |launcher, choice, cx| launcher.set_user_kind(choice, cx),
+            ))
+            .child(small_button(
+                SharedString::from("user-tools-add"),
+                strings::tools_page::add_label(kind).into(),
+                colors,
+                true,
+                cx.listener(move |launcher, _, window, cx| {
+                    launcher.add_user_tool(kind, window, cx)
+                }),
+            ))
+            .child(
+                div()
+                    .text_color(muted_fg)
+                    .child(strings::lists::count(count)),
+            )
+            .into_any_element()
     }
 
     /// 工具列表页的页头。
@@ -346,6 +412,15 @@ impl Render for Launcher {
                 String::new(),
             ),
             Page::Calculator => (vec![("Esc", strings::launcher::FOOTER_BACK)], String::new()),
+            Page::UserTools => (
+                vec![
+                    ("\u{2191}\u{2193}", strings::launcher::FOOTER_NAVIGATE),
+                    ("\u{2190}\u{2192}", strings::launcher::FOOTER_SECTIONS),
+                    ("Enter", strings::launcher::FOOTER_OPEN),
+                    ("Esc", strings::launcher::FOOTER_BACK),
+                ],
+                String::new(),
+            ),
             Page::List(kind) => {
                 let enter = if kind == ListKind::Search {
                     strings::lists::FOOTER_SEARCH
@@ -398,6 +473,7 @@ impl Render for Launcher {
             Page::Settings(tab) => settings_page::render(self, tab, cx).into_any_element(),
             Page::Calculator => calculator_page::render(self, colors, cx).into_any_element(),
             Page::List(_) => lists::render(&self.entries),
+            Page::UserTools => user_tools_page::render(&self.user_list),
         };
         let body = div().h(body_height).min_w_0().overflow_hidden().child(page);
 

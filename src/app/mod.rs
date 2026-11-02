@@ -465,7 +465,7 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
                 if launcher.grid_active(cx) {
                     launcher.move_grid(step, 0, window, cx);
                 } else {
-                    launcher.step_custom_kind(step, cx);
+                    launcher.step_user_kind(step, cx);
                 }
             });
             cx.stop_propagation();

@@ -61,6 +61,8 @@ pub mod commands {
     /// 主页「项目仓库」命令。
     pub const REPOSITORY_DESCRIPTION: &str = "在浏览器打开项目仓库";
     /// 主页「书签」命令。
+    pub const USER_TOOLS_NAME: &str = "自定义条目";
+    pub const USER_TOOLS_DESCRIPTION: &str = "管理自己加的文件、文件夹和快捷终端";
     pub const BOOKMARKS_DESCRIPTION: &str = "列出火狐系浏览器的书签";
     /// 主页「历史」命令。
     pub const HISTORY_DESCRIPTION: &str = "列出火狐系浏览器的浏览历史";
@@ -234,6 +236,9 @@ pub mod tools_page {
 
     /// 行尾那个编辑按钮。
     pub const EDIT: &str = "改";
+
+    /// 行尾那个删除按钮。
+    pub const DELETE: &str = "删";
 
     /// 新增按钮：文件和文件夹是先挑，终端是先填名字和命令。
     pub fn add_label(kind: ToolKind) -> &'static str {

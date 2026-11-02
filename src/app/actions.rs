@@ -40,6 +40,13 @@ pub fn open_bookmarks(cx: &mut App) {
     crate::app::open_list(crate::ui::launcher::ListKind::Bookmarks, cx);
 }
 
+/// 打开「自定义条目」页：文件 / 文件夹 / 快捷终端都在这儿。
+pub fn open_user_tools(cx: &mut App) {
+    crate::app::with_launcher(cx, |launcher, window, cx| {
+        launcher.open_user_tools(window, cx)
+    });
+}
+
 /// 打开历史页。
 pub fn open_history(cx: &mut App) {
     crate::app::open_list(crate::ui::launcher::ListKind::History, cx);

@@ -23,6 +23,8 @@ pub enum Section {
     System,
     Commands,
     Appearance,
+    /// 自己加的文件 / 文件夹 / 快捷终端。
+    Tools,
     /// 火狐系浏览器的书签与历史。
     Browser,
     /// GitHub 的仓库查询。
@@ -33,10 +35,11 @@ pub enum Section {
 
 impl Section {
     /// 全部子模块，顺序就是界面上的顺序。
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::System,
         Self::Commands,
         Self::Appearance,
+        Self::Tools,
         Self::Browser,
         Self::Github,
         Self::Calculator,
@@ -49,6 +52,7 @@ impl Section {
             Self::System => strings::sections::SYSTEM,
             Self::Commands => strings::sections::COMMANDS,
             Self::Appearance => strings::sections::APPEARANCE,
+            Self::Tools => strings::sections::TOOLS,
             Self::Browser => strings::sections::BROWSER,
             Self::Github => strings::sections::GITHUB,
             Self::Calculator => strings::sections::CALCULATOR,
@@ -62,6 +66,7 @@ impl Section {
             Self::System => IconName::Cpu,
             Self::Commands => IconName::SquareTerminal,
             Self::Appearance => IconName::Palette,
+            Self::Tools => IconName::Toolbox,
             Self::Browser => IconName::Globe,
             Self::Github => IconName::Github,
             Self::Calculator => IconName::Calculator,
@@ -78,6 +83,7 @@ impl Section {
             Self::System => "system",
             Self::Commands => "commands",
             Self::Appearance => "appearance",
+            Self::Tools => "tools",
             Self::Browser => "browser",
             Self::Github => "github",
             Self::Calculator => "calculator",
@@ -150,6 +156,15 @@ pub static COMMANDS: &[Command] = &[
         keyword: "github repository source 仓库 源码 项目",
         icon: IconName::Globe,
         action: actions::open_repository,
+    },
+    Command {
+        id: "user-tools",
+        section: Section::Tools,
+        name: strings::commands::USER_TOOLS_NAME,
+        description: strings::commands::USER_TOOLS_DESCRIPTION,
+        keyword: "tool tools 自定义 条目 文件 文件夹 终端 快捷 entry",
+        icon: IconName::FileText,
+        action: actions::open_user_tools,
     },
     Command {
         id: "bookmarks",
@@ -239,7 +254,7 @@ mod tests {
                 section.label()
             );
         }
-        assert_eq!(listed.len(), 5, "系统 / 浏览器 / GitHub / 计算器 / 关于");
+        assert_eq!(listed.len(), 6, "系统 / 工具 / 浏览器 / GitHub / 计算器 / 关于");
         assert!(!listed.contains(&Section::Commands));
         assert!(!listed.contains(&Section::Appearance));
     }

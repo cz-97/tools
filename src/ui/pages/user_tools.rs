@@ -7,6 +7,7 @@
 //! 行只做三件事：看一眼（图标 + 名字 + 目标）、点一下就跑、右上角新增弹窗。
 
 use gpui_kit::component::list::{List, ListDelegate, ListState};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, IndexPath, Selectable, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, Context, Entity, IntoElement, RenderOnce, SharedString, Window, div,
@@ -192,27 +193,122 @@ impl RenderOnce for UserToolRow {
                     .text_color(colors.muted_foreground)
                     .child(strings::common::uses(self.tool.uses)),
             )
-            // 改：弹窗从这一行旁边点开，比先选中再找按钮快。
+            // 快捷键：点一下开始录，右键清掉（和设置里那条一样的操作）。
+            .child(crate::ui::commands_page::shortcut_button(
+                SharedString::from(format!("user-tool-shortcut-{}", self.index)),
+                match self.tool.shortcut.as_deref() {
+                    Some(chord) => crate::shortcuts::shortcut_label(chord).into(),
+                    None => strings::commands_page::SHORTCUT_EMPTY.into(),
+                },
+                false,
+                colors,
+                px(96.),
+                move |_, _, cx| {
+                    crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                        launcher.toggle_tool_recording(id, cx)
+                    });
+                },
+                move |_, _, cx| {
+                    crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                        launcher.clear_shortcut(crate::ui::launcher::RecordTarget::Tool(id), cx)
+                    });
+                },
+            ))
+            // 开关：这一条上不上主页。
             .child(
-                div()
-                    .id(SharedString::from(format!("user-tool-edit-{}", self.index)))
-                    .flex_shrink_0()
-                    .px_1p5()
-                    .py_0p5()
-                    .rounded(px(4.))
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(colors.muted_foreground)
-                    .hover(move |style| style.text_color(colors.foreground))
-                    .child(strings::tools_page::EDIT)
-                    .on_click(move |_, window, cx| {
-                        let kind = kind;
-                        crate::app::with_launcher(cx, move |launcher, window, cx| {
-                            launcher.start_tool_editor(kind, Some(id), window, cx)
+                div().flex_shrink_0().child(
+                    Switch::new(SharedString::from(format!(
+                        "user-tool-switch-{}",
+                        self.index
+                    )))
+                    .checked(self.tool.enabled)
+                    .on_change(move |checked, _window, cx| {
+                        let checked = *checked;
+                        crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                            launcher.set_tool_enabled(id, checked, cx)
                         });
                     }),
+                ),
             )
+            // 文件是「用默认应用开」还是「打开所在位置」；终端是「静默跑」还是「留窗口」。
+            .when(kind == ToolKind::File, |this| {
+                let mode = if self.tool.open_default {
+                    strings::tools_page::MODE_DEFAULT_APP
+                } else {
+                    strings::tools_page::MODE_LOCATION
+                };
+                this.child(row_button(
+                    SharedString::from(format!("user-tool-mode-{}", self.index)),
+                    mode.into(),
+                    colors,
+                    move |_, _window, cx| {
+                        crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                            launcher.toggle_tool_open_default(id, cx)
+                        });
+                    },
+                ))
+            })
+            .when(kind == ToolKind::Terminal, |this| {
+                let mode = if self.tool.quiet {
+                    strings::tools_page::MODE_QUIET
+                } else {
+                    strings::tools_page::MODE_TERMINAL
+                };
+                this.child(row_button(
+                    SharedString::from(format!("user-tool-mode-{}", self.index)),
+                    mode.into(),
+                    colors,
+                    move |_, _window, cx| {
+                        crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                            launcher.toggle_tool_quiet(id, cx)
+                        });
+                    },
+                ))
+            })
+            // 改：弹窗从这一行旁边点开，比先选中再找按钮快。
+            .child(row_button(
+                SharedString::from(format!("user-tool-edit-{}", self.index)),
+                strings::tools_page::EDIT.into(),
+                colors,
+                move |_, _window, cx| {
+                    crate::app::with_launcher(cx, move |launcher, window, cx| {
+                        launcher.start_tool_editor(kind, Some(id), window, cx)
+                    });
+                },
+            ))
+            // 删：直接删，没有二次确认——设置里那条也是这样。
+            .child(row_button(
+                SharedString::from(format!("user-tool-delete-{}", self.index)),
+                strings::tools_page::DELETE.into(),
+                colors,
+                move |_, _window, cx| {
+                    crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                        launcher.delete_tool(id, cx)
+                    });
+                },
+            ))
     }
+}
+
+/// 行尾那种小文字按钮。
+fn row_button(
+    id: SharedString,
+    label: SharedString,
+    colors: UiColors,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .px_1p5()
+        .py_0p5()
+        .rounded(px(4.))
+        .text_xs()
+        .cursor_pointer()
+        .text_color(colors.muted_foreground)
+        .hover(move |style| style.text_color(colors.foreground))
+        .child(label)
+        .on_click(on_click)
 }
 
 /// 把某一类条目画成一张列表。`entries` 的数据由 `Launcher::sync_user_list` 装好。
