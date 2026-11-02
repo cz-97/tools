@@ -144,7 +144,6 @@ impl Launcher {
         let colors = UiColors::current(cx);
         let muted_fg = colors.muted_foreground;
         let kind = self.user_kind;
-        let count = self.user_list.read(cx).delegate().rows(cx).len();
 
         bar.child(Icon::new(IconName::FileText).size_4().text_color(muted_fg))
             .child(
@@ -190,11 +189,6 @@ impl Launcher {
                     launcher.add_user_tool(kind, window, cx)
                 }),
             )))
-            .child(
-                div()
-                    .text_color(muted_fg)
-                    .child(strings::lists::count(count)),
-            )
             .into_any_element()
     }
 

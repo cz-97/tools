@@ -338,7 +338,7 @@ impl ToolEditor {
 /// 这次挑东西是为谁挑的。
 #[derive(Clone, Copy)]
 pub(crate) enum PickFor {
-    /// 新增一条文件。
+    /// 新增一条文件（现在新增走弹窗，保留这条是为了老路径仍能编译）。
     NewFile,
     /// 新增一条文件夹。
     NewFolder,
@@ -596,8 +596,10 @@ impl Launcher {
             grid_scroll: ScrollHandle::new(),
             tools_selected: 0,
             user_kind: ToolKind::File,
-            user_list: cx
-                .new(|cx| ListState::new(UserToolsDelegate::new(ToolKind::File), window, cx)),
+            // `selectable(false)`：选中由 delegate 自己记，`List` 别再插一手把高亮盖掉。
+            user_list: cx.new(|cx| {
+                ListState::new(UserToolsDelegate::new(ToolKind::File), window, cx).selectable(false)
+            }),
             tools_search,
             tools_query: String::new(),
             tools_scroll: ScrollHandle::new(),
@@ -1322,11 +1324,7 @@ impl Launcher {
     /// 收起「自定义条目」，回到某个子模块的命令列表。
 
     /// 搜索词变了：把结果重新喂给列表。
-    pub(crate) fn user_tools_query_changed(&mut self, cx: &mut Context<Self>) {
-        self.sync_user_list(cx);
-        cx.notify();
-    }
-
+    
     pub(crate) fn select_tool_tab(
         &mut self,
         tab: ToolTab,
@@ -2167,33 +2165,24 @@ impl Launcher {
 
     /// 加一条文件：先让用户去系统文件框里挑，挑完再落库。
     /// 新增一条用户条目（按当前类别走不同的选择器）。
+    /// 新增一条：三类都走同一个弹窗，和「改」是同一个编辑器。
+    ///
+    /// 以前文件/文件夹是先弹系统的选择框、挑完直接落库，用户没法先改名字或打开方式；
+    /// 现在统一先填表——真要浏览也可以从编辑器里点「选择…」。
     pub(crate) fn add_user_tool(
         &mut self,
         kind: ToolKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match kind {
-            ToolKind::File => self.add_file_tool(cx),
-            ToolKind::Folder => self.add_folder_tool(cx),
-            ToolKind::Terminal => self.new_terminal_tool(window, cx),
-        }
+        self.start_tool_editor(kind, None, window, cx);
     }
 
-    pub(crate) fn add_file_tool(&mut self, cx: &mut Context<Self>) {
-        self.pick(PickFor::NewFile, cx);
-    }
-
+    
     /// 加一条文件夹：挑的是目录。
-    pub(crate) fn add_folder_tool(&mut self, cx: &mut Context<Self>) {
-        self.pick(PickFor::NewFolder, cx);
-    }
-
+    
     /// 开一个空的快捷终端编辑区。
-    pub(crate) fn new_terminal_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.start_tool_editor(ToolKind::Terminal, None, window, cx);
-    }
-
+    
     /// 打开编辑区：`id` 为 `None` 时是新增，否则把那一条的内容填进去。
     pub(crate) fn start_tool_editor(
         &mut self,
