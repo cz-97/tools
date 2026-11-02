@@ -42,6 +42,9 @@ pub fn open_bookmarks(cx: &mut App) {
 
 /// 打开「自定义条目」页：文件 / 文件夹 / 快捷终端都在这儿。
 pub fn open_user_tools(cx: &mut App) {
+    // 和书签、历史一样：先唤出面板再换页。少了这一步，全局快捷键按下去只是把页面
+    // 换掉了，窗口根本没出来——看起来就是「全局没反应」。
+    crate::app::show_launcher(cx);
     crate::app::with_launcher(cx, |launcher, window, cx| {
         launcher.open_user_tools(window, cx)
     });
