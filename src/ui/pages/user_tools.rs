@@ -25,6 +25,8 @@ use crate::ui::launcher::user_kind_icon;
 pub(crate) struct UserToolsDelegate {
     kind: ToolKind,
     query: String,
+    /// 高亮在第几行（单击选中的就是它）。
+    selected: usize,
 }
 
 impl UserToolsDelegate {
@@ -32,6 +34,7 @@ impl UserToolsDelegate {
         Self {
             kind,
             query: String::new(),
+            selected: 0,
         }
     }
 
@@ -74,18 +77,24 @@ impl ListDelegate for UserToolsDelegate {
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let tool = self.rows(cx).get(ix.row)?.clone();
+        let selected = self.selected == ix.row;
         Some(UserToolRow {
             tool,
             index: ix.row,
+            selected,
         })
     }
 
     fn set_selected_index(
         &mut self,
-        _ix: Option<IndexPath>,
+        ix: Option<IndexPath>,
         _window: &mut Window,
         _cx: &mut Context<ListState<Self>>,
     ) {
+        // 单击选中：记住是高亮哪一行，画的时候点亮。
+        if let Some(ix) = ix {
+            self.selected = ix.row;
+        }
     }
 
     fn confirm(
@@ -95,7 +104,8 @@ impl ListDelegate for UserToolsDelegate {
         cx: &mut Context<ListState<Self>>,
     ) {
         let app: &mut App = cx;
-        let Some(id) = self.rows(app).first().map(|tool| tool.id) else {
+        let selected = self.selected;
+        let Some(id) = self.rows(app).get(selected).map(|tool| tool.id) else {
             return;
         };
         crate::app::run_tool(id, app);
@@ -122,15 +132,17 @@ impl ListDelegate for UserToolsDelegate {
 pub(crate) struct UserToolRow {
     tool: UserTool,
     index: usize,
+    selected: bool,
 }
 
 impl Selectable for UserToolRow {
-    fn selected(self, _selected: bool) -> Self {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
         self
     }
 
     fn is_selected(&self) -> bool {
-        false
+        self.selected
     }
 }
 
@@ -159,8 +171,17 @@ impl RenderOnce for UserToolRow {
             .py_1p5()
             .rounded(px(6.))
             .cursor_pointer()
-            .hover(move |style| style.bg(colors.hover))
-            .on_click(move |_, _window, cx| crate::app::run_tool(id, cx))
+            .when(self.selected, move |this| this.bg(colors.accent))
+            .when(!self.selected, move |this| {
+                this.hover(move |style| style.bg(colors.hover))
+            })
+            .on_click(move |event: &gpui_kit::ClickEvent, _window, cx| {
+                // 单击只选中（`List` 自己会记），双击才执行。
+                cx.stop_propagation();
+                if event.click_count() >= 2 {
+                    crate::app::run_tool(id, cx);
+                }
+            })
             .child(div().flex_shrink_0().child(icon))
             .child(
                 v_flex()
@@ -194,29 +215,34 @@ impl RenderOnce for UserToolRow {
                     .child(strings::common::uses(self.tool.uses)),
             )
             // 快捷键：点一下开始录，右键清掉（和设置里那条一样的操作）。
-            .child(crate::ui::commands_page::shortcut_button(
-                SharedString::from(format!("user-tool-shortcut-{}", self.index)),
-                match self.tool.shortcut.as_deref() {
-                    Some(chord) => crate::shortcuts::shortcut_label(chord).into(),
-                    None => strings::commands_page::SHORTCUT_EMPTY.into(),
-                },
-                false,
-                colors,
-                px(96.),
-                move |_, _, cx| {
-                    crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                        launcher.toggle_tool_recording(id, cx)
-                    });
-                },
-                move |_, _, cx| {
-                    crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                        launcher.clear_shortcut(crate::ui::launcher::RecordTarget::Tool(id), cx)
-                    });
-                },
-            ))
+            .child(
+                div()
+                    .occlude()
+                    .child(crate::ui::commands_page::shortcut_button(
+                        SharedString::from(format!("user-tool-shortcut-{}", self.index)),
+                        match self.tool.shortcut.as_deref() {
+                            Some(chord) => crate::shortcuts::shortcut_label(chord).into(),
+                            None => strings::commands_page::SHORTCUT_EMPTY.into(),
+                        },
+                        false,
+                        colors,
+                        px(96.),
+                        move |_, _, cx| {
+                            crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                                launcher.toggle_tool_recording(id, cx)
+                            });
+                        },
+                        move |_, _, cx| {
+                            crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                                launcher
+                                    .clear_shortcut(crate::ui::launcher::RecordTarget::Tool(id), cx)
+                            });
+                        },
+                    )),
+            )
             // 开关：这一条上不上主页。
             .child(
-                div().flex_shrink_0().child(
+                div().flex_shrink_0().occlude().child(
                     Switch::new(SharedString::from(format!(
                         "user-tool-switch-{}",
                         self.index
@@ -299,6 +325,7 @@ fn row_button(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .occlude()
         .flex_shrink_0()
         .px_1p5()
         .py_0p5()

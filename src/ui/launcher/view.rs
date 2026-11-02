@@ -169,17 +169,19 @@ impl Launcher {
                     ),
             )
             .child(div().flex_1())
-            .child(crate::ui::settings_page::segmented(
-                "user-tools-kind",
-                tools::settings::ToolKind::USER
-                    .into_iter()
-                    .map(|item| (item, strings::tools_page::kind_label(item))),
-                kind,
-                colors,
-                cx,
-                |launcher, choice, cx| launcher.set_user_kind(choice, cx),
-            ))
-            .child(small_button(
+            .child(
+                div().occlude().child(crate::ui::settings_page::segmented(
+                    "user-tools-kind",
+                    tools::settings::ToolKind::USER
+                        .into_iter()
+                        .map(|item| (item, strings::tools_page::kind_label(item))),
+                    kind,
+                    colors,
+                    cx,
+                    |launcher, choice, cx| launcher.set_user_kind(choice, cx),
+                )),
+            )
+            .child(div().occlude().child(small_button(
                 SharedString::from("user-tools-add"),
                 strings::tools_page::add_label(kind).into(),
                 colors,
@@ -187,7 +189,7 @@ impl Launcher {
                 cx.listener(move |launcher, _, window, cx| {
                     launcher.add_user_tool(kind, window, cx)
                 }),
-            ))
+            )))
             .child(
                 div()
                     .text_color(muted_fg)

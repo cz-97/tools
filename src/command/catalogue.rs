@@ -254,7 +254,11 @@ mod tests {
                 section.label()
             );
         }
-        assert_eq!(listed.len(), 6, "系统 / 工具 / 浏览器 / GitHub / 计算器 / 关于");
+        assert_eq!(
+            listed.len(),
+            6,
+            "系统 / 工具 / 浏览器 / GitHub / 计算器 / 关于"
+        );
         assert!(!listed.contains(&Section::Commands));
         assert!(!listed.contains(&Section::Appearance));
     }
