@@ -147,6 +147,7 @@ impl RenderOnce for UserToolRow {
                 .into_any_element(),
         };
         let id = self.tool.id;
+        let kind = self.tool.kind;
 
         h_flex()
             .id(SharedString::from(format!("user-tool-{}", self.index)))
@@ -190,6 +191,26 @@ impl RenderOnce for UserToolRow {
                     .text_xs()
                     .text_color(colors.muted_foreground)
                     .child(strings::common::uses(self.tool.uses)),
+            )
+            // 改：弹窗从这一行旁边点开，比先选中再找按钮快。
+            .child(
+                div()
+                    .id(SharedString::from(format!("user-tool-edit-{}", self.index)))
+                    .flex_shrink_0()
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded(px(4.))
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(colors.muted_foreground)
+                    .hover(move |style| style.text_color(colors.foreground))
+                    .child(strings::tools_page::EDIT)
+                    .on_click(move |_, window, cx| {
+                        let kind = kind;
+                        crate::app::with_launcher(cx, move |launcher, window, cx| {
+                            launcher.start_tool_editor(kind, Some(id), window, cx)
+                        });
+                    }),
             )
     }
 }

@@ -1313,6 +1313,11 @@ impl Launcher {
         self.select_custom_kind(all[next as usize], cx);
     }
 
+    /// 顶部分段切类型：和点左边那条「自定义条目」是同一件事，只是不必先回列表。
+    pub(crate) fn set_custom_kind(&mut self, kind: ToolKind, cx: &mut Context<Self>) {
+        self.select_custom_kind(kind, cx);
+    }
+
     /// 选中「自定义条目」下的某一类（文件 / 文件夹 / 快捷终端）。
     pub(crate) fn select_custom_kind(&mut self, kind: ToolKind, cx: &mut Context<Self>) {
         self.commit_settings_inputs(cx);

@@ -120,39 +120,7 @@ pub(crate) fn render(
                             .text_ellipsis()
                             .child(strings::tools_page::USER_ITEMS),
                     ),
-            )
-            .when_some(custom_kind, |this, kind| {
-                this.children(ToolKind::USER.into_iter().map(move |item| {
-                    let selected = item == kind;
-                    h_flex()
-                        .id(SharedString::from(format!("nav-custom-{}", item.key())))
-                        .ml(px(18.))
-                        .px_2()
-                        .py_1p5()
-                        .rounded(px(6.))
-                        .text_sm()
-                        .cursor_pointer()
-                        .text_color(if selected {
-                            colors.accent_foreground
-                        } else {
-                            colors.muted_foreground
-                        })
-                        .when(selected, move |this| this.bg(colors.accent))
-                        .when(!selected, move |this| {
-                            this.hover(move |style| style.bg(colors.hover))
-                        })
-                        .on_click(cx.listener(move |launcher, _, _, cx| {
-                            launcher.select_custom_kind(item, cx)
-                        }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_ellipsis()
-                                .child(strings::tools_page::kind_label(item)),
-                        )
-                }))
-            });
+            );
 
     let section = listed
         .get(selected)
@@ -195,6 +163,17 @@ pub(crate) fn render(
                         .gap_2()
                         .px_2()
                         .pb_1()
+                        // 三种类型的筛选：文件 / 文件夹 / 快捷终端
+                        .child(crate::ui::settings_page::segmented(
+                            "custom-kind",
+                            ToolKind::USER
+                                .into_iter()
+                                .map(|item| (item, strings::tools_page::kind_label(item))),
+                            kind,
+                            colors,
+                            cx,
+                            |launcher, choice, cx| launcher.set_custom_kind(choice, cx),
+                        ))
                         .child(div().flex_1())
                         .child(
                             div().flex_shrink_0().w(px(180.)).child(

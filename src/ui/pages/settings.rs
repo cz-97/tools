@@ -10,7 +10,7 @@ use gpui_kit::{
 };
 use tools::firefox;
 use tools::matcher::MatchKind;
-use tools::settings::{HomeLayout, Settings, Theme as ColorScheme, ToolKind, UserTool};
+use tools::settings::{HomeLayout, Settings, Theme as ColorScheme, ToolKind};
 
 use crate::actions;
 use crate::app::stored_settings;

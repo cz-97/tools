@@ -232,6 +232,9 @@ pub mod tools_page {
     /// 工具条目已经不存在了（快捷键还记着它的号）。
     pub const UNKNOWN_TOOL: &str = "已删除的工具";
 
+    /// 行尾那个编辑按钮。
+    pub const EDIT: &str = "改";
+
     /// 新增按钮：文件和文件夹是先挑，终端是先填名字和命令。
     pub fn add_label(kind: ToolKind) -> &'static str {
         match kind {
