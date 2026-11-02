@@ -17,7 +17,7 @@ use tools::calculator;
 use tools::firefox;
 use tools::github;
 use tools::matcher::{Match, MatchAction, MatchConfig, MatchKind};
-use tools::settings::{HomeLayout, Settings, ToolKind, UserTool};
+use tools::settings::{HomeLayout, Settings, ToolKind};
 use tools::shell;
 
 use crate::app::{
@@ -338,10 +338,6 @@ impl ToolEditor {
 /// 这次挑东西是为谁挑的。
 #[derive(Clone, Copy)]
 pub(crate) enum PickFor {
-    /// 新增一条文件（现在新增走弹窗，保留这条是为了老路径仍能编译）。
-    NewFile,
-    /// 新增一条文件夹。
-    NewFolder,
     /// 把某一条的路径换掉（按它自己的种类决定挑文件还是挑目录）。
     Replace(i64),
     /// 改编辑区里「文件 / 文件夹 / 命令」那一行，还没保存。
@@ -452,7 +448,6 @@ pub struct Launcher {
     pub(crate) tools_search: Entity<InputState>,
     pub(crate) tools_query: String,
     /// 那三个列表自己的滚动位置（头部固定，只有列表滚）。
-    pub(crate) tools_scroll: ScrollHandle,
     /// 设置页右半边的滚动位置。
     ///
     /// 设置里那些列表（尤其快捷终端）能有几十条，比窗口高，必须能滚；换标签时要回到
@@ -602,7 +597,6 @@ impl Launcher {
             }),
             tools_search,
             tools_query: String::new(),
-            tools_scroll: ScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
             hovered_cell: None,
             _settings_events: settings_events
@@ -1324,7 +1318,7 @@ impl Launcher {
     /// 收起「自定义条目」，回到某个子模块的命令列表。
 
     /// 搜索词变了：把结果重新喂给列表。
-    
+
     pub(crate) fn select_tool_tab(
         &mut self,
         tab: ToolTab,
@@ -1429,6 +1423,12 @@ impl Launcher {
     /// `Tab` 和「焦点被别的东西拿走」都靠它收拾：面板里除了输入框没有该吃键盘的控件，
     /// 焦点一旦跑到别处，用户敲字就完全没有反应（GPUI 的 `Root` 把 `tab` 绑成了切焦点）。
     pub(crate) fn focus_active_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 弹窗开着时焦点只能回弹窗：送回页面搜索框的话，用户敲的字全进了搜索框，
+        // 表单一个字都填不进去（这就是「光标跳到搜索框」那个 bug）。
+        if let Some(editor) = self.tool_editor.as_ref() {
+            editor.name.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
         match self.page {
             Page::Commands => self.focus_search(window, cx),
             Page::List(_) => self.focus_list_search(window, cx),
@@ -1442,18 +1442,28 @@ impl Launcher {
                 if self.settings_input_focused(window, cx) {
                     return;
                 }
-                // 编辑区开着就把焦点送回名字框，用户接着改就行。
-                if let Some(editor) = self.tool_editor.as_ref() {
-                    editor.name.read(cx).focus_handle(cx).focus(window, cx);
-                    return;
-                }
                 window.blur(cx);
             }
         }
     }
 
+    /// 编辑弹窗（新增 / 修改）里的某个输入框是不是拿着焦点。
+    ///
+    /// 弹窗浮在所有页面之上，所以这个判断要压过「按页面找输入框」——否则弹窗开着时
+    /// 敲字会被当成「焦点丢了」，字符被吞掉、焦点被拽到页面搜索框上。
+    pub(crate) fn editor_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.tool_editor.as_ref().is_some_and(|editor| {
+            [&editor.name, &editor.target, &editor.start_dir]
+                .into_iter()
+                .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        })
+    }
+
     /// 这一页是不是已经有输入框拿着焦点。
     pub(crate) fn active_input_focused(&self, window: &Window, cx: &App) -> bool {
+        if self.editor_input_focused(window, cx) {
+            return true;
+        }
         match self.page {
             Page::Commands => self.search.read(cx).focus_handle(cx).is_focused(window),
             Page::UserTools => self
@@ -2178,11 +2188,10 @@ impl Launcher {
         self.start_tool_editor(kind, None, window, cx);
     }
 
-    
     /// 加一条文件夹：挑的是目录。
-    
+
     /// 开一个空的快捷终端编辑区。
-    
+
     /// 打开编辑区：`id` 为 `None` 时是新增，否则把那一条的内容填进去。
     pub(crate) fn start_tool_editor(
         &mut self,
@@ -2520,12 +2529,12 @@ impl Launcher {
         cx.notify();
         let owner = crate::app::panel_handle(cx);
         let folder = match purpose {
-            PickFor::NewFolder | PickFor::EditorStartDir => true,
+            PickFor::EditorStartDir => true,
             // 换路径时按这一条自己的种类走：文件夹条目不能再变成文件。
             PickFor::Replace(id) => stored_settings(cx)
                 .tool(id)
                 .is_some_and(|tool| tool.kind == ToolKind::Folder),
-            PickFor::NewFile | PickFor::EditorTarget => false,
+            PickFor::EditorTarget => false,
         };
         let title = if folder {
             strings::tools_page::PICK_FOLDER_TITLE
@@ -2567,18 +2576,6 @@ impl Launcher {
         };
         let target = path.display().to_string();
         match purpose {
-            PickFor::NewFile | PickFor::NewFolder => {
-                let kind = if matches!(purpose, PickFor::NewFile) {
-                    ToolKind::File
-                } else {
-                    ToolKind::Folder
-                };
-                let mut settings = stored_settings(cx);
-                let name = default_tool_name(&target);
-                settings.add_tool(kind, name, target);
-                store_settings(settings, cx);
-                self.refresh_catalogue(cx);
-            }
             PickFor::Replace(id) => {
                 let mut settings = stored_settings(cx);
                 if let Some(tool) = settings.tool(id).cloned() {

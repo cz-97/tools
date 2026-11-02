@@ -274,10 +274,9 @@ pub fn apply_shortcuts(cx: &mut App) {
     for (owner, hotkey) in wanted {
         match shortcuts.manager.register(hotkey) {
             Ok(()) => held.push((hotkey, owner)),
-            Err(error) => tools::admin::log(&format!(
-                "快捷键注册失败：{}（{error}）",
-                owner.label(cx)
-            )),
+            Err(error) => {
+                tools::admin::log(&format!("快捷键注册失败：{}（{error}）", owner.label(cx)))
+            }
         }
     }
 }
