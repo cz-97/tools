@@ -1,6 +1,6 @@
 [package]
 name = "tools"
-version = "0.31.2"
+version = "0.31.3"
 edition = "2024"
 default-run = "tools"
 repository = "https://github.com/cz-97/tools"

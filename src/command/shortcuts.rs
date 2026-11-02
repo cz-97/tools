@@ -268,16 +268,16 @@ pub fn apply_shortcuts(cx: &mut App) {
     let mut held = shortcuts.slots.borrow_mut();
     for (hotkey, _) in held.drain(..) {
         if let Err(error) = shortcuts.manager.unregister(hotkey) {
-            eprintln!("tools: 释放旧快捷键失败：{error}");
+            tools::admin::log(&format!("释放旧快捷键失败：{error}"));
         }
     }
     for (owner, hotkey) in wanted {
         match shortcuts.manager.register(hotkey) {
             Ok(()) => held.push((hotkey, owner)),
-            Err(error) => eprintln!(
-                "tools: 绑定\u{201c}{}\u{201d}的快捷键失败：{error}",
+            Err(error) => tools::admin::log(&format!(
+                "快捷键注册失败：{}（{error}）",
                 owner.label(cx)
-            ),
+            )),
         }
     }
 }
@@ -286,7 +286,7 @@ pub fn apply_shortcuts(cx: &mut App) {
 fn push_wanted(wanted: &mut Vec<(ShortcutOwner, HotKey)>, chord: &str, owner: ShortcutOwner) {
     match parse_chord(chord) {
         Some(hotkey) => wanted.push((owner, hotkey)),
-        None => eprintln!("tools: 认不出快捷键 {chord}"),
+        None => tools::admin::log(&format!("认不出快捷键 {chord}")),
     }
 }
 

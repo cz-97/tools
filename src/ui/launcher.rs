@@ -2055,6 +2055,13 @@ impl Launcher {
         let Some(target) = self.recording else {
             return;
         };
+        tools::admin::log(&format!(
+            "录制中收到按键 key={} ctrl={} alt={} shift={}",
+            keystroke.key,
+            keystroke.modifiers.control,
+            keystroke.modifiers.alt,
+            keystroke.modifiers.shift,
+        ));
         match keystroke.key.as_str() {
             "escape" => {
                 self.recording = None;
@@ -2163,6 +2170,7 @@ impl Launcher {
     /// 开始听下一组按键，作为某条用户工具的快捷键；再点一次取消。
     pub(crate) fn toggle_tool_recording(&mut self, id: i64, cx: &mut Context<Self>) {
         self.toggle_recording(RecordTarget::Tool(id), cx);
+        tools::admin::log(&format!("录制工具 {id} → {:?}", self.recording.is_some()));
     }
 
     /// 加一条文件：先让用户去系统文件框里挑，挑完再落库。
