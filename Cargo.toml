@@ -1,6 +1,6 @@
 [package]
 name = "tools"
-version = "0.31.7"
+version = "0.32.0"
 edition = "2024"
 default-run = "tools"
 repository = "https://github.com/cz-97/tools"
@@ -13,6 +13,7 @@ global-hotkey = "0.8"
 gpui-tray = { version = "0.1.4", default-features = false, features = ["gpui-kit"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde_json = "1"
+pinyin = { version = "0.11.0", default-features = false, features = ["plain"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

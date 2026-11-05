@@ -8,4 +8,5 @@ pub mod calculator;
 pub mod firefox;
 pub mod github;
 pub mod matcher;
+pub mod pinyin;
 pub mod settings;

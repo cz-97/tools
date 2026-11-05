@@ -71,7 +71,7 @@ impl Entry {
 
     /// 搜索用的一段文本：标题、描述、右侧信息都算。
     fn haystack(&self) -> String {
-        format!("{} {} {}", self.title, self.detail, self.meta).to_lowercase()
+        format!("{} {} {}", self.title, self.detail, self.meta)
     }
 }
 
@@ -350,23 +350,19 @@ impl EntryDelegate {
         true
     }
 
-    /// 按过滤词重算可见行。搜索词按空白切段，每一段都要在行里出现。
+    /// 按过滤词重算可见行。搜索词按空白切段，每一段都要在行里出现；
+    /// 原文里找不到的段再按拼音（全拼 / 首字母）找一遍。
     fn refine(&mut self) {
         if self.query.is_empty() {
             self.visible = (0..self.all.len()).collect();
         } else {
-            let tokens = self
-                .query
-                .split_whitespace()
-                .map(str::to_string)
-                .collect::<Vec<_>>();
             self.visible = self
                 .all
                 .iter()
                 .enumerate()
                 .filter(|(_, entry)| {
                     let haystack = entry.haystack();
-                    tokens.iter().all(|token| haystack.contains(token.as_str()))
+                    tools::pinyin::matches(&haystack, &self.query)
                 })
                 .map(|(index, _)| index)
                 .collect();

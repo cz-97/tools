@@ -59,6 +59,7 @@ src/
     firefox.rs            读火狐系浏览器的 places.sqlite（书签 / 历史 / 图标）
     github.rs             GitHub 仓库查询（个人项目 / 星标 / 搜索）
     matcher.rs            指令匹配（算式 / 金额 / 网址 / 路径）
+    pinyin.rs             拼音搜索（原文 / 全拼 / 首字母，中英混排）
     settings.rs           SQLite 持久化
   platform/               Windows 平台细节
     autostart.rs          HKCU Run 开机启动
@@ -201,6 +202,12 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - **搜索**：本地页（前四个）输入即过滤，不过滤也可以看；`Search` 页不做本地过滤
   （`language:rust` 这类限定符会被滤没），打字时不搜，回车或点右上角按钮才发请求；
   同一个词再回车就是「打开选中的仓库」。
+- **拼音搜索**：过滤一律走 `logic/pinyin.rs` 的 `pinyin::matches(haystack, query)`，
+  主页（命令 + 自定义条目）、五个列表页、设置里的自定义条目页三处都是它。规则是
+  「搜索词按空白切段，每段都要命中；每段先按原文（不区分大小写）找，找不到再看拼音」：
+  全拼（`dakaishezhi`）、首拼（`dksz`）、中英混排（`githubxb` / `gxb` /
+  `githubxingbiao`）都认。**不要**在别处再写一遍 `to_lowercase().contains()`，
+  那就是把拼音支持漏掉一条入口。
 - **焦点**：列表页的默认焦点永远是搜索框；点完行、点完右上角按钮都要把焦点还回去
   （`focus_list_search`）。**不要**做 `Tab` 切焦点的机制——试过，用户嫌复杂。
 - **`tab` 必须在拦截器里吞掉**：gpui-base 的 `Root` 把 `tab` 绑成了切焦点，焦点一旦

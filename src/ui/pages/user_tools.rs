@@ -66,14 +66,13 @@ impl UserToolsDelegate {
         self.selected = next;
     }
 
-    /// 当前类别 + 搜索词下能看到的条目。
+    /// 当前类别 + 搜索词下能看到的条目。名字和路径都能搜，
+    /// 原文找不到时按拼音（全拼 / 首字母）再找一遍。
     pub(crate) fn rows(&self, cx: &App) -> Vec<UserTool> {
         stored_settings(cx)
             .tools_of(self.kind)
             .filter(|tool| {
-                self.query.is_empty()
-                    || tool.name.to_lowercase().contains(&self.query)
-                    || tool.target.to_lowercase().contains(&self.query)
+                tools::pinyin::matches(&format!("{} {}", tool.name, tool.target), &self.query)
             })
             .cloned()
             .collect()

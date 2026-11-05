@@ -654,6 +654,7 @@ impl ToolDelegate {
     }
 
     /// 不区分大小写的匹配：搜索词按空白切成若干段，每一段都要在可搜索文本里出现。
+    /// 原文找不到时按拼音再找一遍（全拼和首字母都认）。
     fn matches_command(&self, command: &catalogue::Command) -> bool {
         self.matches_text(&format!(
             "{} {} {}",
@@ -668,14 +669,7 @@ impl ToolDelegate {
     }
 
     fn matches_text(&self, haystack: &str) -> bool {
-        let query = self.query.trim();
-        if query.is_empty() {
-            return true;
-        }
-        let haystack = haystack.to_lowercase();
-        query
-            .split_whitespace()
-            .all(|token| haystack.contains(&token.to_lowercase()))
+        tools::pinyin::matches(haystack, &self.query)
     }
 
     /// 列表总行数：命中的指令匹配 + 命令 + 用户工具。
