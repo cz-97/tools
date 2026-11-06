@@ -99,6 +99,9 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - 需要窗口的操作（换页、聚焦输入框、改列表选中）都在拿到 `&mut Window` 的地方做；
   只有 `&mut App` 的回调一律走 `with_launcher`（延后到下一拍，避免重入）。
 - 页面状态和设置存在 `Launcher` 上；不要把可变的临时状态塞进全局。
+- **换页统一走 `Launcher::show_page`**，它对 `Page` 的每个变体都有专门一臂（穷尽 match）。
+  新增 `Page` 变体时编译器会逼你补上——以前这段带 `_` 兜底，`Page::UserTools` 就这么被
+  兜去了命令页，表现是「收起面板再唤出，回不到自定义条目」。**不要给它加 `_` 兜底。**
 
 ### 4.2 设置页（`ui/pages/settings.rs`）
 
@@ -335,6 +338,17 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   放掉它的快捷键）、`取消`。
 - 编辑区（`Launcher::tool_editor`）是就地插在列表上方的一块表单：名字 + 目标，终端再加
   一行起始目录。**名字或目标空着不保存**；回车等于保存，换标签 / 回主页等于放弃。
+- **页头那排控件（`ui/launcher/view.rs` 的 `user_tools_header`）**：类型分段（`segmented_compact`）
+  → 开启状态筛选 → 新增。三者的高度都吃 `settings_page::HEADER_CONTROL_HEIGHT`，
+  两个按钮用 `small_button_fixed` 定宽（`HEADER_BUTTON_WIDTH`）——文字长短不一样时
+  按钮不会左右跳。**别在这里另起一套尺寸**，页头歪一两个像素很明显。
+- **开启状态筛选**（`Launcher::user_filter`，`EnabledFilter`）是三态循环按钮：
+  全部 → 已开启 → 未开启 → 全部，判定在 `EnabledFilter::keeps`，过滤发生在
+  `UserToolsDelegate::rows`。改筛选或换类型都要把高亮打回第一行（行数会变）。
+- **这一页的现场和仓库搜索页一个规矩**：收起面板时 `remember_page` 把类别、筛选、
+  关键词、高亮存进 `Launcher::user_state`，`resume_seconds` 内再唤出由 `open_user_tools`
+  摆回去；从主页命令进来则是干净的一页（类别回 `File`、筛选回 `All`、关键词清空）。
+  判定方式照 `open_list`：当前还是这一页 = 从记忆里回来的。
 
 ### 4.10 托盘、管理员模式与开机启动
 - **托盘左键单击唤出面板，右键出菜单**。`gpui-tray` 的 Windows 后端在「有菜单、没配

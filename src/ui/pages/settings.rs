@@ -691,6 +691,12 @@ pub(crate) fn tool_editor_block(
 }
 
 /// 一枚小按钮：`primary` 时是实心的（保存、新增），否则只是一圈淡边框。
+/// 页头那一排控件（分段选择、小按钮）的统一高度。
+///
+/// 页头里控件挨着排，高度差一两个像素就会显得歪；宽度同理，所以成对的按钮用
+/// [`small_button_fixed`] 定宽。以「新增」按钮为准——它是这排里最窄的基准。
+pub(crate) const HEADER_CONTROL_HEIGHT: f32 = 26.;
+
 pub(crate) fn small_button(
     id: SharedString,
     label: SharedString,
@@ -698,11 +704,38 @@ pub(crate) fn small_button(
     primary: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    small_button_inner(id, label, None, colors, primary, on_click)
+}
+
+/// 定宽的小按钮：文字长短不一样时，页头那排不会跟着左右抖。
+pub(crate) fn small_button_fixed(
+    id: SharedString,
+    label: SharedString,
+    width: f32,
+    colors: UiColors,
+    primary: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    small_button_inner(id, label, Some(width), colors, primary, on_click)
+}
+
+fn small_button_inner(
+    id: SharedString,
+    label: SharedString,
+    width: Option<f32>,
+    colors: UiColors,
+    primary: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     div()
         .id(id)
         .flex_shrink_0()
+        .h(px(HEADER_CONTROL_HEIGHT))
+        .when_some(width, |this, width| this.w(px(width)))
+        .flex()
+        .items_center()
+        .justify_center()
         .px_2()
-        .py_1()
         .rounded(px(6.))
         .border_1()
         .border_color(if primary {
@@ -925,9 +958,36 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(
     cx: &Context<Launcher>,
     on_select: impl Fn(&mut Launcher, T, &mut Context<Launcher>) + Copy + 'static,
 ) -> impl IntoElement {
+    segmented_with(id, options, selected, colors, cx, on_select, false)
+}
+
+/// 页头用的紧凑版：高度对齐 [`HEADER_CONTROL_HEIGHT`]，和小按钮并排时一样高。
+///
+/// 设置页里的分段控件不动：那边一行只有它一个控件，用常规字号更好看。
+pub(crate) fn segmented_compact<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: impl IntoIterator<Item = (T, &'static str)>,
+    selected: T,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+    on_select: impl Fn(&mut Launcher, T, &mut Context<Launcher>) + Copy + 'static,
+) -> impl IntoElement {
+    segmented_with(id, options, selected, colors, cx, on_select, true)
+}
+
+fn segmented_with<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: impl IntoIterator<Item = (T, &'static str)>,
+    selected: T,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+    on_select: impl Fn(&mut Launcher, T, &mut Context<Launcher>) + Copy + 'static,
+    compact: bool,
+) -> impl IntoElement {
     h_flex()
         .gap_0p5()
-        .p_0p5()
+        .p(px(if compact { 3. } else { 2. }))
+        .when(compact, |this| this.h(px(HEADER_CONTROL_HEIGHT)))
         .rounded(px(8.))
         .bg(colors.control)
         .children(
@@ -939,9 +999,12 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(
                     div()
                         .id(SharedString::from(format!("{id}-{ix}")))
                         .px_2()
-                        .py_1()
+                        .when(compact, |this| {
+                            // 紧凑版：外层高度是定死的，里面的胶囊撑满，字居中。
+                            this.h_full().flex().items_center().text_xs()
+                        })
+                        .when(!compact, |this| this.py_1().text_sm())
                         .rounded(px(6.))
-                        .text_sm()
                         .text_color(if current {
                             colors.accent_foreground
                         } else {

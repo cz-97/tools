@@ -19,7 +19,7 @@ use crate::ui::colors::UiColors;
 use crate::ui::commands_list;
 use crate::ui::lists;
 use crate::ui::pages::user_tools as user_tools_page;
-use crate::ui::settings_page::{self, small_button};
+use crate::ui::settings_page::{self, small_button, small_button_fixed};
 
 use super::{
     CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_CARET,
@@ -169,20 +169,32 @@ impl Launcher {
             )
             .child(div().flex_1())
             .child(
-                div().occlude().child(crate::ui::settings_page::segmented(
-                    "user-tools-kind",
-                    tools::settings::ToolKind::USER
-                        .into_iter()
-                        .map(|item| (item, strings::tools_page::kind_label(item))),
-                    kind,
-                    colors,
-                    cx,
-                    |launcher, choice, cx| launcher.set_user_kind(choice, cx),
-                )),
+                div()
+                    .occlude()
+                    .child(crate::ui::settings_page::segmented_compact(
+                        "user-tools-kind",
+                        tools::settings::ToolKind::USER
+                            .into_iter()
+                            .map(|item| (item, strings::tools_page::kind_label(item))),
+                        kind,
+                        colors,
+                        cx,
+                        |launcher, choice, cx| launcher.set_user_kind(choice, cx),
+                    )),
             )
-            .child(div().occlude().child(small_button(
+            // 开启状态筛选：全部 → 已开启 → 未开启，点一下换一种。
+            .child(div().occlude().child(small_button_fixed(
+                SharedString::from("user-tools-filter"),
+                self.user_filter.label().into(),
+                HEADER_BUTTON_WIDTH,
+                colors,
+                false,
+                cx.listener(|launcher, _, _, cx| launcher.cycle_user_filter(cx)),
+            )))
+            .child(div().occlude().child(small_button_fixed(
                 SharedString::from("user-tools-add"),
                 strings::tools_page::add_label(kind).into(),
+                HEADER_BUTTON_WIDTH,
                 colors,
                 true,
                 cx.listener(move |launcher, _, window, cx| {
@@ -294,6 +306,12 @@ fn list_hint(kind: ListKind) -> &'static str {
         ListKind::Search => strings::lists::SEARCH_REPOS,
     }
 }
+
+/// 页头并排那几个小按钮的宽度。
+///
+/// 「全部 / 已开启 / 未开启」和「新增」字数不一样，不定宽的话按钮会随内容左右跳，
+/// 点起来手感很差。宽度以最长的那句为准。
+const HEADER_BUTTON_WIDTH: f32 = 56.;
 
 /// 页脚那一行的高度（逻辑像素）。正文高度按它扣，所以它必须是定值。
 const FOOTER_HEIGHT: f32 = 34.;

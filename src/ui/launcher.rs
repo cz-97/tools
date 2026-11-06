@@ -293,6 +293,59 @@ struct SearchState {
     selected: usize,
 }
 
+/// 自定义条目页的「开启状态」筛选：一条条目上不上主页，是它自己的开关。
+///
+/// 三种状态轮着来，不额外放一个下拉：页头那排控件已经够挤了，一个按钮点到底最省地方。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum EnabledFilter {
+    /// 全看。
+    #[default]
+    All,
+    /// 只看上主页的。
+    Enabled,
+    /// 只看没上主页的。
+    Disabled,
+}
+
+impl EnabledFilter {
+    /// 点一下换成下一种。
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::All => Self::Enabled,
+            Self::Enabled => Self::Disabled,
+            Self::Disabled => Self::All,
+        }
+    }
+
+    /// 这一条该不该显示。
+    pub(crate) fn keeps(self, enabled: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Enabled => enabled,
+            Self::Disabled => !enabled,
+        }
+    }
+
+    /// 按钮上的字。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::All => strings::tools_page::FILTER_ALL,
+            Self::Enabled => strings::tools_page::FILTER_ENABLED,
+            Self::Disabled => strings::tools_page::FILTER_DISABLED,
+        }
+    }
+}
+
+/// 自定义条目页的现场：类别、筛选、关键词、高亮。和 [`SearchState`] 同一套路，
+/// 收起面板时留一份，保留期内再唤出直接摆回去。
+#[derive(Clone)]
+struct UserToolsState {
+    kind: ToolKind,
+    filter: EnabledFilter,
+    keyword: String,
+    selected: usize,
+}
+
 /// 计算器里的一行：一个公式输入框，和它的订阅。
 ///
 /// `id` 是稳定键，不是下标：行会被增删，下标会挪窝，订阅里记的下标会对不上行。
@@ -442,6 +495,10 @@ pub struct Launcher {
     pub(crate) user_kind: ToolKind,
     /// 自定义条目那张列表（和书签、历史同一套 `List`，滚动交给组件）。
     pub(crate) user_list: Entity<ListState<UserToolsDelegate>>,
+    /// 自定义条目页的「开启状态」筛选，页头那枚按钮点一下换一种。
+    pub(crate) user_filter: EnabledFilter,
+    /// 自定义条目页上次的现场：类别、筛选、搜索词、高亮。
+    user_state: Option<UserToolsState>,
     /// 设置里「文件 / 文件夹 / 快捷终端」列表的搜索框与关键词。
     ///
     /// 三页共用一份：换页时清空，免得带着上一页的关键词进来一片空白。
@@ -595,6 +652,8 @@ impl Launcher {
             user_list: cx.new(|cx| {
                 ListState::new(UserToolsDelegate::new(ToolKind::File), window, cx).selectable(false)
             }),
+            user_filter: EnabledFilter::All,
+            user_state: None,
             tools_search,
             tools_query: String::new(),
             settings_scroll: ScrollHandle::new(),
@@ -887,23 +946,37 @@ impl Launcher {
         });
         self.list
             .update(cx, |list, cx| list.set_query("", window, cx));
-        // 唤出时停在哪一页由记忆决定；列表页要重新装数据，所以走 `open_list`。
-        match self.resumed_page(cx) {
-            Some(Page::Calculator) => self.open_calculator(window, cx),
-            Some(Page::Settings(tab)) => {
+        // 唤出时停在哪一页由记忆决定：每页要重新装的东西不一样，统一交给 `show_page`。
+        let page = self.resumed_page(cx).unwrap_or(Page::Commands);
+        self.show_page(page, window, cx);
+        self.select_row(0, window, cx);
+        self.watch_focus(cx);
+        cx.notify();
+    }
+
+    /// 换到某一页，并把它摆成「一进来就能用」的样子。
+    ///
+    /// **`Page` 的每个变体都必须在这里有一臂。** 以前这段 match 带 `_` 兜底，
+    /// 于是 `Page::UserTools` 被兜去命令页——「收起再唤出回不到自定义条目」就是这么来的。
+    /// 现在穷尽写，以后新增页面漏了会直接编译不过。
+    fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        match page {
+            Page::Commands => {
+                self.page = Page::Commands;
+                // 停在命令页就等于把上一次的现场丢干净。
+                self.search_state = None;
+                self.user_state = None;
+                self.focus_search(window, cx);
+            }
+            Page::Settings(tab) => {
                 self.page = Page::Settings(tab);
                 // 设置页里没有默认输入框：焦点留在主页搜索框上，字会敲进看不见的地方。
                 window.blur(cx);
             }
-            Some(Page::List(kind)) => self.open_list(kind, window, cx),
-            _ => {
-                self.page = Page::Commands;
-                self.focus_search(window, cx);
-            }
+            Page::Calculator => self.open_calculator(window, cx),
+            Page::List(kind) => self.open_list(kind, window, cx),
+            Page::UserTools => self.open_user_tools(window, cx),
         }
-        self.select_row(0, window, cx);
-        self.watch_focus(cx);
-        cx.notify();
     }
 
     /// 别的窗口抢走前台就收起面板，启动器本来就该这样——**除非被钉住**。
@@ -1012,6 +1085,17 @@ impl Launcher {
             self.search_state = Some(SearchState {
                 keyword: self.list_search.read(cx).value().trim().to_string(),
                 rows,
+                selected,
+            });
+        }
+        // 自定义条目页也留一份：类别、筛选、关键词、高亮。这一页的数据是现算的，
+        // 不像仓库搜索要存结果，所以只要记住这四个值就能原样摆回去。
+        if self.page == Page::UserTools {
+            let selected = self.user_list.read(cx).delegate().selected();
+            self.user_state = Some(UserToolsState {
+                kind: self.user_kind,
+                filter: self.user_filter,
+                keyword: self.tools_query.clone(),
                 selected,
             });
         }
@@ -1216,6 +1300,7 @@ impl Launcher {
         self.pending = None;
         // 回到主页就是离开搜索了，现场不再留着。
         self.search_state = None;
+        self.user_state = None;
         // 编辑区里没保存的内容跟着走；提示框也一样，它只对当前这一刻有意义。
         self.tool_editor = None;
         self.tool_notice = None;
@@ -1227,9 +1312,39 @@ impl Launcher {
 
     /// 换一个设置子模块。计算器本体已经不在设置里，这里不再需要为它移交焦点。
     /// 打开自定义条目页（和书签、历史同一级的一页）。
+    ///
+    /// 从「收起后再唤出」回来，就把上次的类别、筛选、关键词、高亮摆回去；从主页命令
+    /// 进来则是干净的一页——和列表页同一个规矩（见 [`Self::open_list`]），
+    /// 判定方式也一样：当前还是这一页，说明是从记忆里回来的。
     pub(crate) fn open_user_tools(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let restored = (self.page == Page::UserTools)
+            .then(|| self.user_state.take())
+            .flatten();
         self.page = Page::UserTools;
-        self.sync_user_list(cx);
+
+        match restored {
+            Some(state) => {
+                self.user_kind = state.kind;
+                self.user_filter = state.filter;
+                self.tools_query = state.keyword.clone();
+                self.tools_search
+                    .update(cx, |input, cx| input.set_value(state.keyword, window, cx));
+                self.sync_user_list(cx);
+                self.user_list
+                    .update(cx, |list, _cx| list.delegate_mut().restore_selection(state.selected));
+            }
+            None => {
+                self.user_kind = ToolKind::File;
+                self.user_filter = EnabledFilter::All;
+                self.tools_query.clear();
+                self.tools_search
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                self.sync_user_list(cx);
+                self.user_list
+                    .update(cx, |list, _cx| list.delegate_mut().restore_selection(0));
+            }
+        }
+
         let handle = self.tools_search.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         cx.notify();
@@ -1245,14 +1360,15 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 把列表的「类别 + 搜索词」对齐到当前状态（数据由 delegate 现算）。
+    /// 把列表的「类别 + 筛选 + 搜索词」对齐到当前状态（数据由 delegate 现算）。
     pub(crate) fn sync_user_list(&mut self, cx: &mut Context<Self>) {
         let kind = self.user_kind;
         let query = self.tools_query.clone();
+        let filter = self.user_filter;
         let recording = self.recording_tool();
         let conflict = self.conflict.clone();
         self.user_list.update(cx, |list, _cx| {
-            list.delegate_mut().retarget(kind, &query);
+            list.delegate_mut().retarget(kind, &query, filter);
             list.delegate_mut().set_recording(recording, conflict);
         });
     }
@@ -1263,6 +1379,19 @@ impl Launcher {
             return;
         }
         self.user_kind = kind;
+        // 换了类别行数就变了，高亮不能留在原来那一行上。
+        self.user_list
+            .update(cx, |list, _cx| list.delegate_mut().restore_selection(0));
+        self.sync_user_list(cx);
+        cx.notify();
+    }
+
+    /// 页头那枚按钮：全部 → 已开启 → 未开启 → 全部。
+    pub(crate) fn cycle_user_filter(&mut self, cx: &mut Context<Self>) {
+        self.user_filter = self.user_filter.next();
+        // 过滤条件变了，行数跟着变，高亮回第一行。
+        self.user_list
+            .update(cx, |list, _cx| list.delegate_mut().restore_selection(0));
         self.sync_user_list(cx);
         cx.notify();
     }
@@ -2667,4 +2796,26 @@ fn repo_entries(rows: Vec<github::Repo>) -> Vec<Entry> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::EnabledFilter;
+
+    #[test]
+    fn the_filter_button_cycles_all_enabled_disabled() {
+        assert_eq!(EnabledFilter::All.next(), EnabledFilter::Enabled);
+        assert_eq!(EnabledFilter::Enabled.next(), EnabledFilter::Disabled);
+        assert_eq!(EnabledFilter::Disabled.next(), EnabledFilter::All);
+    }
+
+    #[test]
+    fn each_state_keeps_only_what_it_says() {
+        assert!(EnabledFilter::All.keeps(true));
+        assert!(EnabledFilter::All.keeps(false));
+        assert!(EnabledFilter::Enabled.keeps(true));
+        assert!(!EnabledFilter::Enabled.keeps(false));
+        assert!(!EnabledFilter::Disabled.keeps(true));
+        assert!(EnabledFilter::Disabled.keeps(false));
+    }
 }

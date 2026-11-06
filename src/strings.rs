@@ -249,6 +249,11 @@ pub mod tools_page {
         }
     }
 
+    /// 「开启状态」筛选按钮上的字：点一下在三种之间轮换。
+    pub const FILTER_ALL: &str = "全部";
+    pub const FILTER_ENABLED: &str = "已开启";
+    pub const FILTER_DISABLED: &str = "未开启";
+
     /// 一条都还没有时的提示。
     pub fn empty_hint(kind: ToolKind) -> &'static str {
         match kind {

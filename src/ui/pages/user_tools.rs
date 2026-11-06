@@ -19,12 +19,14 @@ use crate::app::stored_settings;
 
 use crate::strings;
 use crate::ui::colors::UiColors;
-use crate::ui::launcher::user_kind_icon;
+use crate::ui::launcher::{EnabledFilter, user_kind_icon};
 
 /// 某一类用户条目的列表数据。
 pub(crate) struct UserToolsDelegate {
     kind: ToolKind,
     query: String,
+    /// 「开启状态」筛选：全部 / 只看上主页的 / 只看没上主页的。
+    filter: EnabledFilter,
     /// 高亮在第几行（单击选中的就是它）。
     selected: usize,
     /// 正在录快捷键的那一条（行上的按钮要显示「按下组合键…」）。
@@ -38,17 +40,29 @@ impl UserToolsDelegate {
         Self {
             kind,
             query: String::new(),
+            filter: EnabledFilter::All,
             selected: 0,
             recording: None,
             conflict: None,
         }
     }
 
-    /// 换类别或搜索词。**数据不在这里存**：每次现从设置里筛，改动立刻反映出来，
+    /// 换类别、搜索词或筛选。**数据不在这里存**：每次现从设置里筛，改动立刻反映出来，
     /// 不用在添加/删除/编辑之后挨个地方记得刷新。
-    pub(crate) fn retarget(&mut self, kind: ToolKind, query: &str) {
+    pub(crate) fn retarget(&mut self, kind: ToolKind, query: &str, filter: EnabledFilter) {
         self.kind = kind;
         self.query = query.trim().to_lowercase();
+        self.filter = filter;
+    }
+
+    /// 高亮到第几行。收起面板时记现场用。
+    pub(crate) fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// 把高亮摆回第 `row` 行（过滤条件变了、或者从记忆里回来时用）。
+    pub(crate) fn restore_selection(&mut self, row: usize) {
+        self.selected = row;
     }
 
     /// 录制状态变了：按钮上的字跟着变。
@@ -66,11 +80,12 @@ impl UserToolsDelegate {
         self.selected = next;
     }
 
-    /// 当前类别 + 搜索词下能看到的条目。名字和路径都能搜，
+    /// 当前类别 + 筛选 + 搜索词下能看到的条目。名字和路径都能搜，
     /// 原文找不到时按拼音（全拼 / 首字母）再找一遍。
     pub(crate) fn rows(&self, cx: &App) -> Vec<UserTool> {
         stored_settings(cx)
             .tools_of(self.kind)
+            .filter(|tool| self.filter.keeps(tool.enabled))
             .filter(|tool| {
                 tools::pinyin::matches(&format!("{} {}", tool.name, tool.target), &self.query)
             })
