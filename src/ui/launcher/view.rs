@@ -23,7 +23,8 @@ use crate::ui::settings_page::{self, small_button, small_button_fixed};
 
 use super::{
     CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_CARET,
-    SEARCH_FIELD_MAX, SEARCH_FIELD_PADDING, SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE,
+    SEARCH_FIELD_MAX, SEARCH_FIELD_NARROW_MAX, SEARCH_FIELD_PADDING, SEARCH_FIELD_SLACK,
+    SEARCH_TEXT_SIZE,
 };
 
 impl Launcher {
@@ -138,12 +139,21 @@ impl Launcher {
     fn user_tools_header(
         &self,
         bar: gpui_kit::Stateful<gpui_kit::Div>,
-        _window: &Window,
+        window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
         let colors = UiColors::current(cx);
         let muted_fg = colors.muted_foreground;
         let kind = self.user_kind;
+        // 搜索框按文字量给宽度：这一页右上角还排着四个控件，不能再给它固定 180 那么宽。
+        let text = self.tools_search.read(cx).value().to_string();
+        let search_width = search_field_width_capped(
+            window,
+            cx,
+            &text,
+            strings::tools_page::SEARCH_HINT,
+            SEARCH_FIELD_NARROW_MAX,
+        );
 
         bar.child(Icon::new(IconName::FileText).size_4().text_color(muted_fg))
             .child(
@@ -159,7 +169,7 @@ impl Launcher {
                     .occlude()
                     .flex_shrink_0()
                     .ml_2()
-                    .w(px(180.))
+                    .w(search_width)
                     .child(
                         Input::new(&self.tools_search)
                             .small()
@@ -343,13 +353,24 @@ fn search_field_width_at_least(
     query: &str,
     hint: &str,
 ) -> Pixels {
+    search_field_width_capped(window, cx, query, hint, SEARCH_FIELD_MAX)
+}
+
+/// 同上，但自己指定上限：页头控件多的地方得把宽度压一压。
+fn search_field_width_capped(
+    window: &Window,
+    cx: &Context<Launcher>,
+    query: &str,
+    hint: &str,
+    max: f32,
+) -> Pixels {
     let measured = if query.is_empty() {
         0.
     } else {
         text_width(window, cx, query)
     };
     let floor = text_width(window, cx, hint);
-    px((measured.max(floor) + SEARCH_FIELD_PADDING + SEARCH_FIELD_SLACK).min(SEARCH_FIELD_MAX))
+    px((measured.max(floor) + SEARCH_FIELD_PADDING + SEARCH_FIELD_SLACK).min(max))
 }
 
 /// 一段文字排版之后有多宽。

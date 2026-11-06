@@ -225,6 +225,8 @@ pub mod tools_page {
     /// 文件。
     /// 工具页里那个合并了文件 / 文件夹 / 快捷命令的子标签。
     pub const USER_ITEMS: &str = "自定义条目";
+    /// 自定义条目页搜索框的占位提示。
+    pub const SEARCH_HINT: &str = "搜索条目";
     pub const FILE: &str = "文件";
     /// 文件夹。
     pub const FOLDER: &str = "文件夹";

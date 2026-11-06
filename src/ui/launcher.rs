@@ -64,6 +64,11 @@ const SEARCH_FIELD_CARET: f32 = 4.;
 const SEARCH_FIELD_SLACK: f32 = 14.;
 /// 输入框最宽到这儿，剩下的地方留给图标、提示和设置按钮。
 const SEARCH_FIELD_MAX: f32 = 560.;
+/// 自定义条目页的搜索框上限。
+///
+/// 那一页页头还排着「文件 / 文件夹 / 快捷命令」分段和两枚按钮，搜索框长到 560
+/// 会把右边挤出去；窄一点，留出位置。
+const SEARCH_FIELD_NARROW_MAX: f32 = 200.;
 /// 输入框里文字的字号，跟组件的中号输入框一致。
 const SEARCH_TEXT_SIZE: f32 = 14.;
 /// 面板多久看一眼自己还在不在前台。
@@ -570,7 +575,8 @@ impl Launcher {
         });
 
         // 设置里那三个工具列表的搜索框。
-        let tools_search = cx.new(|cx| InputState::new(window, cx));
+        let tools_search = cx
+            .new(|cx| InputState::new(window, cx).placeholder(strings::tools_page::SEARCH_HINT));
         let tools_search_events = cx.subscribe(&tools_search, |launcher, search, event, cx| {
             if matches!(event, InputEvent::Change) {
                 launcher.tools_query = search.read(cx).value().to_string();
