@@ -17,6 +17,7 @@ use crate::app::stored_settings;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
 use crate::ui::colors::UiColors;
+use crate::ui::metrics::{RADIUS_CONTROL, RADIUS_SURFACE};
 use crate::ui::commands_page;
 use crate::ui::commands_page::shortcut_button;
 use crate::ui::launcher::{
@@ -48,7 +49,7 @@ pub(crate) fn render(
                     .gap_2()
                     .px_3()
                     .py_2()
-                    .rounded(px(6.))
+                    .rounded(px(RADIUS_CONTROL))
                     .text_sm()
                     .text_color(if selected {
                         colors.accent_foreground
@@ -141,7 +142,7 @@ fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> 
                 .gap_2()
                 .px_2()
                 .py_1p5()
-                .rounded(px(6.))
+                .rounded(px(RADIUS_CONTROL))
                 .text_sm()
                 .cursor_pointer()
                 .text_color(if current {
@@ -572,7 +573,7 @@ pub(crate) fn tool_editor_block(
         .gap_2()
         .p_3()
         .mb_1()
-        .rounded(px(8.))
+        .rounded(px(RADIUS_SURFACE))
         .bg(colors.control)
         .child(div().text_xs().text_color(colors.muted_foreground).child(
             strings::tools_page::editor_heading(kind, editor.id.is_some()),
@@ -736,7 +737,7 @@ fn small_button_inner(
         .items_center()
         .justify_center()
         .px_2()
-        .rounded(px(6.))
+        .rounded(px(RADIUS_CONTROL))
         .border_1()
         .border_color(if primary {
             colors.accent
@@ -792,7 +793,7 @@ fn text_button(
         .id(id)
         .px_2()
         .py_1()
-        .rounded(px(6.))
+        .rounded(px(RADIUS_CONTROL))
         .border_1()
         .border_color(colors.surface)
         .text_xs()
@@ -886,7 +887,7 @@ pub(crate) fn settings_row(
         .gap_4()
         .px_3()
         .py_2()
-        .rounded(px(6.))
+        .rounded(px(RADIUS_CONTROL))
         .child(
             v_flex()
                 .flex_1()
@@ -931,7 +932,7 @@ pub(crate) fn action_row(
             .id(id)
             .gap_1()
             .py_1()
-            .rounded(px(6.))
+            .rounded(px(RADIUS_CONTROL))
             .cursor_pointer()
             .hover(move |style| style.bg(colors.hover))
             .on_click(on_click)
@@ -988,7 +989,7 @@ fn segmented_with<T: Copy + PartialEq + 'static>(
         .gap_0p5()
         .p(px(if compact { 3. } else { 2. }))
         .when(compact, |this| this.h(px(HEADER_CONTROL_HEIGHT)))
-        .rounded(px(8.))
+        .rounded(px(RADIUS_SURFACE))
         .bg(colors.control)
         .children(
             options
@@ -1004,7 +1005,7 @@ fn segmented_with<T: Copy + PartialEq + 'static>(
                             this.h_full().flex().items_center().text_xs()
                         })
                         .when(!compact, |this| this.py_1().text_sm())
-                        .rounded(px(6.))
+                        .rounded(px(RADIUS_CONTROL))
                         .text_color(if current {
                             colors.accent_foreground
                         } else {
@@ -1059,7 +1060,7 @@ pub(crate) fn stepper(
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(6.))
+            .rounded(px(RADIUS_CONTROL))
             .text_color(colors.foreground);
         if disabled {
             return button.opacity(crate::ui::colors::DISABLED_OPACITY);
@@ -1078,7 +1079,7 @@ pub(crate) fn stepper(
     h_flex()
         .gap_1()
         .p_0p5()
-        .rounded(px(8.))
+        .rounded(px(RADIUS_SURFACE))
         .bg(colors.control)
         .child(button(0, IconName::Minus, at_bottom))
         .child(

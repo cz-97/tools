@@ -13,6 +13,7 @@ use gpui_kit::{Context, FontWeight, IntoElement, SharedString, div, prelude::*, 
 
 use crate::strings;
 use crate::ui::colors::UiColors;
+use crate::ui::metrics::{RADIUS_CHIP, RADIUS_CONTROL};
 use crate::ui::launcher::{CalculatorRow, Launcher};
 
 /// 画出整个计算器页。
@@ -61,7 +62,7 @@ fn calculator_row(
         .gap_2()
         .px_2()
         .py_1p5()
-        .rounded(px(6.))
+        .rounded(px(RADIUS_CONTROL))
         .bg(colors.surface)
         .child(div().flex_1().min_w_0().child(
             // 多行、自动长高、自动换行；不要组件自己的底和边——行已经有一层纱了。
@@ -100,7 +101,7 @@ fn result_label(
         .id(SharedString::from(format!("calculator-result-{id}")))
         .flex_shrink_0()
         .px_1()
-        .rounded(px(4.))
+        .rounded(px(RADIUS_CHIP))
         .text_sm()
         .font_weight(FontWeight::MEDIUM)
         .text_color(text_color)

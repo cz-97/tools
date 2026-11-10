@@ -24,13 +24,15 @@ use tools::settings::Settings;
 
 /// 面板最低浓度。滑块的 30% 映射到这里，100% 映射到全实。
 ///
-/// 这是整套配色唯一的「物理常数」：低于约 0.72，浅色壁纸会把面板冲成中灰，
-/// 白字怎么调都发虚——问题不在字色，在面板不够黑。所以宁可让滑块的下半程
-/// 变化小一点，也不允许面板掉出这个区间。
+/// 当前是 0：不加下限，滑块从「只有亚克力」到「全实」线性。定成大于 0 的值
+/// 会把滑块下半程压平，用户的设置会突然变实——要改先问，别顺手调。
 const FROST_FLOOR: f32 = 0.0;
 
 /// 面板外沿那 1px 高光比面板本身亮/暗多少。
-const EDGE_MIX: f32 = 0.0;
+///
+/// **不能是 0**：0 等于「高光 = 面板色」，那条线画了也看不见，玻璃的顶边就没了。
+/// 8% 是暗色提亮、浅色压暗都还能读出「一条细边」的量，再多就变成描边。
+const EDGE_MIX: f32 = 0.08;
 
 /// 一套配色的具体值，浅色/深色各一份。颜色都带 alpha（纱就是这样来的）。
 struct Palette {
@@ -77,11 +79,14 @@ const DARK: Palette = Palette {
     border: 0xffffff14,
     surface: 0xffffff12,
     control: 0xffffff0a,
-    accent: 0x7aa2f71e,
+    // 选中块是这一屏唯一的重色，浓度按「在 #1f1f1f 上能被一眼认出来、又不至于像按钮」定。
+    // 12% 时变化量不到一档灰，光标停在哪一行读不出来。
+    accent: 0x7aa2f73d,
     accent_foreground: 0xffffffff,
     accent_tile: 0xffffff1f,
     on_accent_muted: 0xffffffb8,
-    hover: 0xffffff0d,
+    // 悬停比选中再弱两档，但得跟「没悬停」分得开：5% 在深色面板上等于没有。
+    hover: 0xffffff17,
     footer_key: 0xfffffff0,
     edge_tint: 0xffffffff,
 };
@@ -96,11 +101,11 @@ const LIGHT: Palette = Palette {
     border: 0x00000014,
     surface: 0x0000000d,
     control: 0x00000008,
-    accent: 0x1f6feb29,
+    accent: 0x1f6feb42,
     accent_foreground: 0x0d2440ff,
     accent_tile: 0x00000014,
     on_accent_muted: 0x0d2440c7,
-    hover: 0x0000000a,
+    hover: 0x00000012,
     footer_key: 0x12151bf0,
     edge_tint: 0x000000ff,
 };

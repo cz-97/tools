@@ -17,6 +17,7 @@ use crate::catalogue;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
 use crate::ui::colors::UiColors;
+use crate::ui::metrics::{RADIUS_CHIP, RADIUS_CONTROL};
 use crate::ui::launcher::Launcher;
 
 /// 列表需要知道的、关于一条命令的状态，从设置镜像过来。
@@ -125,7 +126,7 @@ impl RenderOnce for ToolRow {
             Some(chord) => div()
                 .px_1p5()
                 .py_0p5()
-                .rounded(px(4.))
+                .rounded(px(RADIUS_CHIP))
                 .bg(tile_bg)
                 .text_xs()
                 .text_color(chip_color)
@@ -146,7 +147,7 @@ impl RenderOnce for ToolRow {
                 .h(px(50.))
                 .px_3()
                 .gap_3()
-                .rounded(px(8.))
+                .rounded(px(RADIUS_CONTROL))
                 .when(selected, move |this| this.bg(colors.accent))
                 .when(!selected, move |this| {
                     this.hover(move |style| style.bg(colors.hover))
@@ -158,7 +159,7 @@ impl RenderOnce for ToolRow {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(8.))
+                        .rounded(px(RADIUS_CONTROL))
                         .bg(tile_bg)
                         .child(Icon::new(self.command.icon.clone()).size_4().text_color(
                             if selected {
@@ -301,7 +302,7 @@ impl RenderOnce for ToolItemRow {
             Some(chord) => div()
                 .px_1p5()
                 .py_0p5()
-                .rounded(px(4.))
+                .rounded(px(RADIUS_CHIP))
                 .bg(tile_bg)
                 .text_xs()
                 .text_color(chip_color)
@@ -321,7 +322,7 @@ impl RenderOnce for ToolItemRow {
                 .h(px(50.))
                 .px_3()
                 .gap_3()
-                .rounded(px(8.))
+                .rounded(px(RADIUS_CONTROL))
                 .when(selected, move |this| this.bg(colors.accent))
                 .when(!selected, move |this| {
                     this.hover(move |style| style.bg(colors.hover))
@@ -333,7 +334,7 @@ impl RenderOnce for ToolItemRow {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(8.))
+                        .rounded(px(RADIUS_CONTROL))
                         // 有真图标的条目不再垫底色：图标自己带形状和留白，再画一块
                         // 方块就成了「图标有背景」。（内置矢量图标还是要这块底，
                         // 否则细线条直接浮在面板上看不清。）
@@ -445,7 +446,7 @@ impl RenderOnce for MatchRow {
                 .h(px(50.))
                 .px_3()
                 .gap_3()
-                .rounded(px(8.))
+                .rounded(px(RADIUS_CONTROL))
                 .when(selected, move |this| this.bg(colors.accent))
                 .when(!selected, move |this| {
                     this.hover(move |style| style.bg(colors.hover))
@@ -457,7 +458,7 @@ impl RenderOnce for MatchRow {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(8.))
+                        .rounded(px(RADIUS_CONTROL))
                         .bg(tile_bg)
                         .child(Icon::new(icon).size_4().text_color(if selected {
                             colors.accent_foreground

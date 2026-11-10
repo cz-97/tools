@@ -18,6 +18,7 @@ use crate::ui::calculator_page;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_list;
 use crate::ui::lists;
+use crate::ui::metrics::{RADIUS_CARD, RADIUS_CHIP, RADIUS_CONTROL, RADIUS_SURFACE};
 use crate::ui::pages::user_tools as user_tools_page;
 use crate::ui::settings_page::{self, small_button, small_button_fixed};
 
@@ -49,7 +50,10 @@ impl Launcher {
             .items_center()
             .gap_2()
             .h(header_height(settings))
-            .px_3()
+            // 16 而不是 12：正文里每一行是 `px_1` + `px_3`，第一个图标落在 16。
+            // 页头的图标、每行的图标块、页脚的键帽必须站在同一条竖线上，
+            // 差 4px 肉眼就能看出来（左边像被人往里推了一下）。
+            .px_4()
             .border_b_1()
             .border_color(colors.border);
 
@@ -416,13 +420,21 @@ impl Render for Launcher {
         );
         let count = self.list.read(cx).delegate().command_count();
 
+        // 键帽：两个字的「↑↓」和五个字的「Enter」宽度差一大截，并排时重量会跳。
+        // 给个最小宽度让短键不缩，内边距用 `px_1p5` 而不是 `px_1`——`px_1` 时
+        // 键帽比字本身宽不了多少，看着像标签而不像键。
         let chip = |key: &'static str, label: &'static str| {
             h_flex()
                 .gap_1()
                 .child(
                     div()
-                        .px_1()
-                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .min_w_6()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded(px(RADIUS_CHIP))
                         .bg(muted)
                         .text_color(colors.footer_key)
                         .child(key),
@@ -477,7 +489,7 @@ impl Render for Launcher {
             .flex_shrink_0()
             .h(px(FOOTER_HEIGHT))
             .items_center()
-            .px_3()
+            .px_4()
             .gap_4()
             .border_t_1()
             .border_color(border)
@@ -559,7 +571,7 @@ impl Launcher {
             .w(px(420.))
             .gap_2()
             .p_4()
-            .rounded(px(10.))
+            .rounded(px(RADIUS_CARD))
             .border_1()
             .border_color(colors.border)
             .bg(backdrop)
@@ -590,7 +602,7 @@ impl Launcher {
             .w(px(360.))
             .gap_2()
             .p_4()
-            .rounded(px(10.))
+            .rounded(px(RADIUS_CARD))
             .border_1()
             .border_color(colors.border)
             .bg(backdrop)
@@ -744,7 +756,7 @@ fn home_grid(launcher: &Launcher, window: &mut Window, cx: &mut Context<Launcher
                 .w(px(TOOLTIP_WIDTH))
                 .px_2()
                 .py_1()
-                .rounded(px(6.))
+                .rounded(px(RADIUS_CONTROL))
                 .bg(colors.control)
                 .border_1()
                 .border_color(colors.surface)
@@ -834,7 +846,8 @@ fn grid_cell(
         .justify_center()
         // 图标和名字贴紧一点：格子里本来就有富余高度，再留 4px 就更散了。
         .gap_0p5()
-        .rounded(px(8.))
+        // 方格比行大得多（64~88），圆角留在容器那一档：跟列表行同值会显得方。
+        .rounded(px(RADIUS_SURFACE))
         .cursor_pointer()
         .when(selected, move |this| this.bg(colors.accent))
         .when(!selected, move |this| {

@@ -13,6 +13,7 @@ use crate::catalogue;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
 use crate::ui::colors::UiColors;
+use crate::ui::metrics::{RADIUS_CHIP, RADIUS_CONTROL};
 use crate::ui::launcher::{Launcher, MODULE_WIDTH, RecordTarget};
 
 /// 画出整个命令页。
@@ -49,7 +50,7 @@ pub(crate) fn render(
                 .gap_2()
                 .px_2()
                 .py_1p5()
-                .rounded(px(6.))
+                .rounded(px(RADIUS_CONTROL))
                 .text_sm()
                 .cursor_pointer()
                 .text_color(if current {
@@ -180,7 +181,7 @@ fn command_row(
         .gap_2()
         .px_2()
         .py_2()
-        .rounded(px(6.))
+        .rounded(px(RADIUS_CONTROL))
         .child(
             div()
                 .flex_shrink_0()
@@ -188,7 +189,7 @@ fn command_row(
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(4.))
+                .rounded(px(RADIUS_CHIP))
                 .child(
                     Icon::new(command.icon.clone())
                         .size_3()
@@ -253,7 +254,7 @@ pub(crate) fn shortcut_button(
         .id(id)
         .px_2()
         .py_1()
-        .rounded(px(6.))
+        .rounded(px(RADIUS_CONTROL))
         .border_1()
         .border_color(colors.surface)
         .text_xs()

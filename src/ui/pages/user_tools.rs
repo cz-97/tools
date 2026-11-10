@@ -19,6 +19,7 @@ use crate::app::stored_settings;
 
 use crate::strings;
 use crate::ui::colors::UiColors;
+use crate::ui::metrics::{RADIUS_CHIP, RADIUS_CONTROL};
 use crate::ui::launcher::{EnabledFilter, user_kind_icon};
 
 /// 某一类用户条目的列表数据。
@@ -206,7 +207,7 @@ impl RenderOnce for UserToolRow {
             .gap_3()
             .px_2()
             .py_1p5()
-            .rounded(px(6.))
+            .rounded(px(RADIUS_CONTROL))
             .cursor_pointer()
             .when(self.selected, move |this| this.bg(colors.accent))
             .when(!self.selected, move |this| {
@@ -384,7 +385,7 @@ fn row_button(
         .justify_center()
         .px_1p5()
         .py_0p5()
-        .rounded(px(4.))
+        .rounded(px(RADIUS_CHIP))
         .text_xs()
         .cursor_pointer()
         .text_color(colors.muted_foreground)

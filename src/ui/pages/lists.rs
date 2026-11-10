@@ -24,6 +24,7 @@ use tools::shell;
 
 use crate::strings;
 use crate::ui::colors::UiColors;
+use crate::ui::metrics::RADIUS_CONTROL;
 use crate::ui::launcher::{Launcher, ListKind};
 
 /// 「已复制」亮多久。
@@ -146,7 +147,7 @@ impl RenderOnce for EntryRow {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(8.))
+            .rounded(px(RADIUS_CONTROL))
             .bg(tile_bg)
             .child(match self.entry.icon {
                 Some(image) => img(image)
@@ -221,7 +222,7 @@ impl RenderOnce for EntryRow {
                 .h(height)
                 .px_3()
                 .gap_3()
-                .rounded(px(8.))
+                .rounded(px(RADIUS_CONTROL))
                 .when(selected, move |this| this.bg(colors.accent))
                 .when(!selected, move |this| {
                     this.hover(move |style| style.bg(colors.hover))
