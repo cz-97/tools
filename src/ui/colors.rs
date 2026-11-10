@@ -22,11 +22,23 @@ use tools::settings::Settings;
 // 1. 基础色：要换观感，改这一段
 // ---------------------------------------------------------------------------
 
-/// 面板最低浓度。滑块的 30% 映射到这里，100% 映射到全实。
+/// 面板最低浓度。滑块的 0% 映射到这里，100% 映射到全实。
 ///
-/// 当前是 0：不加下限，滑块从「只有亚克力」到「全实」线性。定成大于 0 的值
-/// 会把滑块下半程压平，用户的设置会突然变实——要改先问，别顺手调。
-const FROST_FLOOR: f32 = 0.0;
+/// 这个值直接决定白壁纸透上来多少：浓度乘在面板色上，剩下的亮度全由壁纸补。
+/// 我们面板基色是 `#1f1f1f`，合成到白底上：
+///
+/// | 浓度 | 白底合成 | 白字对比 | 次要字对比 |
+/// | --- | --- | --- | --- |
+/// | 0.50 | `#8f8f8f` | 3.2 | 2.1 |
+/// | 0.65 | `#6d6d6d` | 5.2 | 3.3 |
+///
+/// 0.5 那一行就是「发虚」：白字只有 3.2，次要文字掉到 2.1，浅灰字压在浅灰底上。
+/// 参照另一款同类软件在白壁纸上的实测值，面板正好是 `#6d6d6d`（白字 5.2、次要字 3.3），
+/// 也就是说它的「薄」其实是 65% 浓度，而不是 50%。
+///
+/// 取 0.30 是让滑块中点落在 0.65（`0.30 + 0.70 * 0.5`）：用户把滑块放在中间，
+/// 看到的就是那种「薄但不虚」的面板；再往右只会更实，往左才是真正的极透。
+const FROST_FLOOR: f32 = 0.30;
 
 /// 面板外沿那 1px 高光比面板本身亮/暗多少。
 ///
@@ -181,13 +193,27 @@ pub(crate) const DISABLED_OPACITY: f32 = 0.3;
 
 /// 滑块那一档对应面板多浓。
 ///
-/// 30% 就是 [`FROST_FLOOR`]，100% 是全实；中间线性。滑块叫「透明度」，但它真正
-/// 控制的是玻璃的薄厚，底子不会薄到让人看不清字。
+/// 滑块叫「透明度」，但它真正控制的是玻璃的薄厚：浓度低到一定值以下，白壁纸会
+/// 把面板冲成浅灰，字就糊了。所以 0% 落在 [`FROST_FLOOR`]，100% 是全实，中间线性。
+/// 滑块中点（50%）正好是 `0.65`——白底合成 `#6d6d6d`，白字对比 5.2。
 fn frost(panel_opacity: u32) -> f32 {
     let (low, high) = (Settings::PANEL_OPACITY_MIN, Settings::PANEL_OPACITY_MAX);
     let span = (high - low) as f32;
     let t = (panel_opacity.clamp(low, high) - low) as f32 / span;
     FROST_FLOOR + (1.0 - FROST_FLOOR) * t
+}
+
+/// 面板越薄，字色往白里混多少（0..1，0 = 不动）。
+///
+/// 面板薄了，白壁纸透上来的比例变大，面板本身会变浅；这时还按「深色面板」的字色画，
+/// 浅灰字压在浅灰底上就是发虚。浓度越低，次要文字和占位文字越往纯白提。
+///
+/// 只对深色主题做：浅色主题面板薄了会偏向壁纸色，但字是近黑，对比反而更好。
+fn text_lift(dark: bool, translucent: bool, frost: f32) -> f32 {
+    if !dark || !translucent {
+        return 0.0;
+    }
+    ((1.0 - frost) / (1.0 - FROST_FLOOR)).clamp(0.0, 1.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -235,10 +261,16 @@ impl UiColors {
     fn from_theme(theme: &Theme, translucent: bool, panel_opacity: u32) -> Self {
         let palette = palette(theme.is_dark());
         let base = color(palette.background);
+        let frost = frost(panel_opacity);
         let panel = if translucent {
-            base.opacity(frost(panel_opacity))
+            base.opacity(frost)
         } else {
             base
+        };
+        // 面板薄的时候，字要跟着提纯，见 `text_lift`。
+        let lift = text_lift(theme.is_dark(), translucent, frost);
+        let lift_to = |value: u32, amount: f32| {
+            mix_toward(color(value), color(0xffffffff), lift * amount)
         };
         Self {
             // 高光边不能是「半透明的白」：那样透过它看到的是壁纸，不是面板。
@@ -249,15 +281,72 @@ impl UiColors {
             control: color(palette.control),
             border: color(palette.border),
             foreground: color(palette.foreground),
-            muted_foreground: color(palette.muted_foreground),
-            on_surface_muted: color(palette.on_surface_muted),
+            muted_foreground: lift_to(palette.muted_foreground, 0.45),
+            on_surface_muted: lift_to(palette.on_surface_muted, 0.40),
             accent: color(palette.accent),
             accent_foreground: color(palette.accent_foreground),
             hover: color(palette.hover),
             accent_tile: color(palette.accent_tile),
-            on_accent_muted: color(palette.on_accent_muted),
+            on_accent_muted: lift_to(palette.on_accent_muted, 0.35),
             footer_key: color(palette.footer_key),
-            faint: color(palette.faint),
+            faint: lift_to(palette.faint, 0.45),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FROST_FLOOR, frost, text_lift};
+    use tools::settings::Settings;
+
+    /// 面板叠在纯白壁纸上之后是什么亮度（0..=255）。
+    ///
+    /// 只看 `#1f1f1f` 这一档基色就够：深浅两个主题里只有深色面板需要关心这件事。
+    fn on_white(opacity: u32) -> f32 {
+        let alpha = frost(opacity);
+        let base = 0x1f as f32;
+        base * alpha + 255.0 * (1.0 - alpha)
+    }
+
+    #[test]
+    fn the_slider_midpoint_lands_on_the_reference_panel() {
+        // 参照软件在白壁纸上的面板是 #6d6d6d；滑块放在中间就该是那个观感，
+        // 否则白字只剩 3.2 的对比，看着发虚。
+        let mid = on_white((Settings::PANEL_OPACITY_MIN + Settings::PANEL_OPACITY_MAX) / 2);
+        assert!(
+            (mid - 0x6d as f32).abs() <= 6.0,
+            "滑块中点合成到 {mid:.0}，期望接近 109(#6d)"
+        );
+    }
+
+    #[test]
+    fn more_transparent_never_makes_the_panel_darker() {
+        let mut previous = on_white(Settings::PANEL_OPACITY_MIN);
+        for opacity in Settings::PANEL_OPACITY_MIN..=Settings::PANEL_OPACITY_MAX {
+            let current = on_white(opacity);
+            assert!(
+                current <= previous + 0.001,
+                "滑块往右调（{opacity}%）反而更亮了：{previous:.1} -> {current:.1}"
+            );
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn the_floor_is_reachable_and_still_above_zero() {
+        // 0% 是「最薄」，但绝不能到全透明：那等于没有面板，也谈不上字。
+        assert!(FROST_FLOOR > 0.0);
+        assert!((frost(Settings::PANEL_OPACITY_MIN) - FROST_FLOOR).abs() < 1e-6);
+        assert!((frost(Settings::PANEL_OPACITY_MAX) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn text_only_lifts_when_the_panel_is_thin() {
+        // 全实面板用原来的字色；越薄提得越多，最多到 1。
+        assert_eq!(text_lift(true, true, 1.0), 0.0);
+        assert!((text_lift(true, true, FROST_FLOOR) - 1.0).abs() < 1e-6);
+        // 不半透明、或者浅色主题，都不提。
+        assert_eq!(text_lift(true, false, 0.5), 0.0);
+        assert_eq!(text_lift(false, true, 0.5), 0.0);
     }
 }
