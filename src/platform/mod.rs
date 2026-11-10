@@ -3,7 +3,6 @@
 
 pub mod admin;
 pub mod autostart;
-pub mod desktop;
 pub mod dialog;
 pub mod http;
 pub mod instance;

@@ -3,9 +3,9 @@
 //! 只有三条规矩：
 //!
 //! 1. **面板永远从同一个底色出发**：暗色主题是一点冷调的近黑（`#1f1f1f`），浅色主题
-//!    是近白。透明度滑块只调这一层的浓度，而且**下限由桌面亮度现算**（[`min_frost`]）：
-//!    桌面白就自动留够，桌面暗就真的全透。面板明度被钉在「字看得清」的那一侧，
-//!    文字颜色就敢写死，不用每次渲染去算对比度。
+//!    是近白。透明度滑块只调这一层的浓度，而且**有下限**（[`DARK_FLOOR`]）：
+//!    再透也不会淡到被底下的白冲成中灰。面板明度被钉在窄区间里，文字颜色就敢写死，
+//!    不用每次渲染去算对比度。
 //! 2. **块和线都是纱，不是实心色**：暗色主题叠白纱、浅色主题叠黑纱，浓度直接写在
 //!    [`Palette`] 的 rgba 里。纱让亚克力从块里透上来，块才像玻璃上的浮层，
 //!    而不是贴上去的黑补丁。
@@ -16,34 +16,29 @@
 
 use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::{App, Hsla, Rgba, rgba};
-use std::sync::atomic::{AtomicU8, Ordering};
 use tools::settings::Settings;
-use tools::window::NativeWindow;
 
 // ---------------------------------------------------------------------------
 // 1. 基础色：要换观感，改这一段
 // ---------------------------------------------------------------------------
 
-/// 面板最低浓度的**保底**部分：滑块 0% 时面板还剩多浓，由桌面亮度现算。
+/// 面板浓度的下限：滑块 0% 时面板还剩多浓。
 ///
-/// 半透明面板是叠在桌面上的，合成大致是字节线性：`C = base * a + desk * (1 - a)`。
-/// 桌面白（`desk = 255`）、`a = 0.30` 时面板合成到 `#bcbcbc`，白字只剩 1.9:1——
-/// 这就是「透明度拉到底就发虚」的全部原因，不是渲染糊，是对比度没了。
+/// 面板是叠在**窗口底下那一层**上的，而那一层实测接近白（`#da` 一带）：浓度 0 时
+/// 面板合成到 `#da`，白字只剩 1.3:1，整块界面像蒙了层雾——这就是「0% 发虚」。
 ///
-/// 单靠一个固定下限救不了：桌面是黑的时 0.30 就白瞎（本来可以全透），桌面是白的时
-/// 0.30 又远远不够。所以下限改成**按量到的桌面亮度解**，见 [`min_frost`]：
-/// 桌面越亮，0% 自动留得越厚；桌面够暗，0% 就是真的全透。
+/// 所以下限按最坏情况解，不按壁纸现算：
 ///
-/// 这两个数是「白/黑字还能看清」的分界灰阶：
+/// `C = 31 * a + 255 * (1 - a) = 112` → `a = 0.64`，合成 `#70`，白字 4.6:1。
 ///
-/// | 主题 | 字色 | 面板合成必须 | 分界 |
-/// | --- | --- | --- | --- |
-/// | 深色 | 近白 `#f6f8fc` | 不能亮过 `#70` | 4.6:1 |
-/// | 浅色 | 近黑 `#12151b` | 不能暗过 `#7d` | 4.6:1 |
+/// 参照软件的 `#6d6d6d` 面板正是同一个式子里的 65%——观感对得上，说明这个口径没错。
 ///
-/// 取 4.5:1（正文标准）而不是 3:1：面板上不止有大字，说明文字、元信息都在里面。
-const DARK_INK_LIMIT: f32 = 112.;
-const LIGHT_INK_LIMIT: f32 = 125.;
+/// **不要再改成「按壁纸亮度现算」**：试过，壁纸和面板底下那一层不是同一样东西，
+/// 量到暗壁纸就把下限算成 0，直接糊字（0.37.0 的回归）。
+const DARK_FLOOR: f32 = 0.64;
+
+/// 浅色主题：面板是近白，铺在什么底子上都比字色亮，不需要保底。
+const LIGHT_FLOOR: f32 = 0.0;
 
 /// 面板外沿那 1px 高光比面板本身亮/暗多少。
 ///
@@ -196,59 +191,6 @@ fn matches(theme: &Theme, palette: &Palette) -> bool {
 /// 禁用态控件的透明度。不是颜色，但和颜色一样只该有一份。
 pub(crate) const DISABLED_OPACITY: f32 = 0.3;
 
-/// 最近一次量到的桌面亮度（`0..=255`）。
-///
-/// 这是**环境读数**，不是页面状态：面板画在桌面上，桌面多亮决定了面板还能不能更薄，
-/// 而它和「当前在哪一页」没有关系，所以放在这里跟调色板做邻居，而不是塞进 `Launcher`。
-///
-/// 刷新点只有一个：`show_launcher` 每次唤出时量一次（那时窗口还没显示，量到的是干净的
-/// 桌面）。渲染路径里不再抓屏——每帧一次 `BitBlt` 是不可接受的。
-static BACKDROP: AtomicU8 = AtomicU8::new(255);
-
-/// 量一次面板背后的桌面亮度。抓不到就按「纯白桌面」算，也就是最厚的保底。
-///
-/// 宁可白留一层，也不要在白桌面上把字糊掉：两个方向的错误代价不对称。
-pub(crate) fn measure_backdrop(window: NativeWindow) {
-    let lightness = tools::desktop::backdrop_lightness(window).unwrap_or(255.0);
-    BACKDROP.store(lightness.round().clamp(0.0, 255.0) as u8, Ordering::Relaxed);
-}
-
-/// 当前认定的桌面亮度。
-fn backdrop() -> f32 {
-    BACKDROP.load(Ordering::Relaxed) as f32
-}
-
-/// 面板基色的灰阶当量（`0..=255`）：暗色主题 `#1f1f1f` 是 31，浅色 `#f6f8fb` 是 249。
-///
-/// 和桌面亮度用同一套口径（三通道均值），合成式才对得上。
-fn base_brightness(background: u32) -> f32 {
-    let red = (background >> 24) as f32;
-    let green = (background >> 16) as f32;
-    let blue = (background >> 8) as f32;
-    (red + green + blue) / 3.0
-}
-
-/// 面板**至少要**多浓，字才不会糊在桌面里（`0..1`）。
-///
-/// 合成式 `C = base * a + desk * (1 - a)` 对 `a` 是单调的，所以只有两种可能：
-/// `a = 0`（全透）本来就看得很清，那就不用保底；否则解出 `C = 分界值` 的那个 `a`。
-///
-/// - 白桌面 + 深色面板：`a = (112 - 255) / (31 - 255) = 0.64`，合成 `#70`，白字 4.6:1；
-/// - 黑桌面 + 深色面板：全透就是黑底白字，保底 0；
-/// - 黑桌面 + 浅色面板：`a = (125 - 0) / (249 - 0) = 0.50`，合成 `#7d`，黑字 4.6:1。
-fn min_frost(dark: bool, base: f32, desk: f32) -> f32 {
-    let limit = if dark { DARK_INK_LIMIT } else { LIGHT_INK_LIMIT };
-    let clear_at_zero = if dark { desk <= limit } else { desk >= limit };
-    if clear_at_zero {
-        return 0.0;
-    }
-    let denominator = base - desk;
-    if denominator.abs() < 1.0 {
-        return 1.0;
-    }
-    ((limit - desk) / denominator).clamp(0.0, 1.0)
-}
-
 /// 滑块位置：0% 到 100% 映射成 `0..1`。
 fn slider_position(panel_opacity: u32) -> f32 {
     let (low, high) = (Settings::PANEL_OPACITY_MIN, Settings::PANEL_OPACITY_MAX);
@@ -261,11 +203,10 @@ fn slider_position(panel_opacity: u32) -> f32 {
 
 /// 滑块那一档对应面板多浓。
 ///
-/// 滑块叫「透明度」，但它真正控制的是玻璃的薄厚，**下限由桌面亮度定**（[`min_frost`]）：
-/// 白桌面下 0% 已经是「刚好看得清」的那一档，再薄就是糊字，所以整段行程从保底起步，
-/// 100% 是全实。这样滑块的每一格都还有用，不会出现「拖了半天没反应」的死区。
-fn frost(dark: bool, base: f32, desk: f32, panel_opacity: u32) -> f32 {
-    let floor = min_frost(dark, base, desk);
+/// 滑块叫「透明度」，但它真正控制的是玻璃的薄厚：0% 就是下限（[`DARK_FLOOR`]），
+/// 100% 是全实，中间线性。这样每一格都还有用，不会出现「拖了没反应」的死区。
+fn frost(dark: bool, panel_opacity: u32) -> f32 {
+    let floor = if dark { DARK_FLOOR } else { LIGHT_FLOOR };
     floor + (1.0 - floor) * slider_position(panel_opacity)
 }
 
@@ -327,8 +268,7 @@ impl UiColors {
     fn from_theme(theme: &Theme, translucent: bool, panel_opacity: u32) -> Self {
         let palette = palette(theme.is_dark());
         let base = color(palette.background);
-        let base_level = base_brightness(palette.background);
-        let frost = frost(theme.is_dark(), base_level, backdrop(), panel_opacity);
+        let frost = frost(theme.is_dark(), panel_opacity);
         let panel = if translucent {
             base.opacity(frost)
         } else {
@@ -363,16 +303,18 @@ impl UiColors {
 
 #[cfg(test)]
 mod tests {
-    use super::{DARK_INK_LIMIT, LIGHT_INK_LIMIT, frost, min_frost, text_lift};
+    use super::{DARK_FLOOR, LIGHT_FLOOR, frost, text_lift};
     use tools::settings::Settings;
 
     /// 深色主题基色 `#1f1f1f`、浅色主题基色 `#f6f8fb` 的灰阶当量。
     const DARK_BASE: f32 = 0x1f as f32;
     const LIGHT_BASE: f32 = (0xf6 as f32 + 0xf8 as f32 + 0xfb as f32) / 3.0;
+    /// 面板底下那一层：实测接近白（见 `DARK_FLOOR` 的注释）。
+    const UNDERLAY: f32 = 255.0;
 
-    /// `a` 压在 `desk` 上合成出来的灰阶（字节线性，和 GDI 的混合一致）。
-    fn composite(base: f32, desk: f32, alpha: f32) -> f32 {
-        base * alpha + desk * (1.0 - alpha)
+    /// `a` 压在底子上合成出来的灰阶（字节线性，和 DWM 的混合一致）。
+    fn composite(base: f32, under: f32, alpha: f32) -> f32 {
+        base * alpha + under * (1.0 - alpha)
     }
 
     /// sRGB 灰阶 -> 相对亮度。
@@ -397,75 +339,52 @@ mod tests {
     }
 
     #[test]
-    fn a_white_desktop_still_keeps_the_panel_dark_enough() {
-        // 这就是用户报的那个现象：0% 时面板合成到 #bcbcbc，白字只剩 1.9:1。
-        // 现在 0% 会自动留到 #70 一带。
-        let alpha = frost(true, DARK_BASE, 255.0, Settings::PANEL_OPACITY_MIN);
-        let panel = composite(DARK_BASE, 255.0, alpha);
-        assert!(
-            contrast(panel, 0xf6 as f32) >= 4.5,
-            "0% 时面板合成到 {panel:.0}，白字只有 {:.2}:1",
-            contrast(panel, 0xf6 as f32)
-        );
+    fn zero_percent_is_still_readable_on_a_white_underlay() {
+        // 用户报的那个现象：0% 时面板合成到 #da，白字只剩 1.3:1，整块像蒙了雾。
+        // 现在 0% 合成到 #70，白字 4.6:1。
+        let alpha = frost(true, Settings::PANEL_OPACITY_MIN);
+        let panel = composite(DARK_BASE, UNDERLAY, alpha);
+        let ratio = contrast(panel, 0xf6 as f32);
+        assert!(ratio >= 4.5, "0% 时面板合成到 {panel:.0}，白字只有 {ratio:.2}:1");
         // 也不能厚得离谱：还该看得出是块玻璃。
         assert!(panel >= 0x60 as f32, "0% 时面板 {panel:.0} 太实了");
     }
 
     #[test]
-    fn a_dark_desktop_lets_the_panel_vanish() {
-        // 桌面够暗，0% 就是真的全透——这才是「透明度拉到底」该有的样子。
-        for desk in [0.0, 20.0, 60.0, 100.0] {
-            assert_eq!(min_frost(true, DARK_BASE, desk), 0.0, "桌面 {desk}");
-            assert_eq!(frost(true, DARK_BASE, desk, Settings::PANEL_OPACITY_MIN), 0.0);
-        }
-    }
-
-    #[test]
-    fn every_desktop_and_every_notch_stays_readable() {
-        // 桌面从纯黑到纯白、滑块从头到尾，两个主题都不能掉出 4.5:1。
+    fn every_notch_of_the_slider_is_readable() {
+        // 整段行程扫一遍：任何一档都不能掉出 4.5:1，也不能出现「往右反而更透」。
+        let mut previous = frost(true, Settings::PANEL_OPACITY_MIN);
         for opacity in Settings::PANEL_OPACITY_MIN..=Settings::PANEL_OPACITY_MAX {
-            for desk in (0..=255).step_by(5) {
-                let desk = desk as f32;
+            let alpha = frost(true, opacity);
+            assert!(alpha >= previous - 1e-6, "{opacity}% 反而更透了");
+            previous = alpha;
 
-                let dark_alpha = frost(true, DARK_BASE, desk, opacity);
-                let dark_panel = composite(DARK_BASE, desk, dark_alpha);
-                let dark_contrast = contrast(dark_panel, 0xf6 as f32);
-                assert!(
-                    dark_contrast >= 4.4,
-                    "深色：桌面 {desk:.0}、滑块 {opacity}% -> 面板 {dark_panel:.0}，白字 {dark_contrast:.2}:1"
-                );
-
-                let light_alpha = frost(false, LIGHT_BASE, desk, opacity);
-                let light_panel = composite(LIGHT_BASE, desk, light_alpha);
-                let light_contrast = contrast(light_panel, 0x12 as f32);
-                assert!(
-                    light_contrast >= 4.4,
-                    "浅色：桌面 {desk:.0}、滑块 {opacity}% -> 面板 {light_panel:.0}，黑字 {light_contrast:.2}:1"
-                );
-            }
+            let panel = composite(DARK_BASE, UNDERLAY, alpha);
+            let ratio = contrast(panel, 0xf6 as f32);
+            assert!(
+                ratio >= 4.5,
+                "滑块 {opacity}% -> 面板 {panel:.0}，白字 {ratio:.2}:1"
+            );
         }
+        assert_eq!(frost(true, Settings::PANEL_OPACITY_MAX), 1.0);
     }
 
     #[test]
-    fn the_floor_never_eats_the_whole_slider() {
-        // 有保底也不能让滑块变成一段死区：每一格都得真的更实一点。
-        let mut previous = frost(true, DARK_BASE, 255.0, Settings::PANEL_OPACITY_MIN);
-        for opacity in Settings::PANEL_OPACITY_MIN..=Settings::PANEL_OPACITY_MAX {
-            let current = frost(true, DARK_BASE, 255.0, opacity);
-            assert!(current >= previous - 1e-6, "{opacity}% 反而更透了");
-            previous = current;
-        }
-        assert_eq!(frost(true, DARK_BASE, 255.0, Settings::PANEL_OPACITY_MAX), 1.0);
-        // 白桌面上保底最厚，暗桌面上没有保底：两端都能到。
-        assert!(min_frost(true, DARK_BASE, 255.0) > 0.5);
-        assert_eq!(min_frost(true, DARK_BASE, 0.0), 0.0);
+    fn the_floor_does_not_eat_the_slider() {
+        // 有保底也不能让行程变成死区：0% 到 100% 之间得有可见变化。
+        let low = frost(true, Settings::PANEL_OPACITY_MIN);
+        let high = frost(true, Settings::PANEL_OPACITY_MAX);
+        assert_eq!(low, DARK_FLOOR);
+        assert!(high - low > 0.3, "滑块行程只剩 {:.2}", high - low);
     }
 
     #[test]
-    fn the_boundaries_match_the_contrast_targets() {
-        // 分界灰阶得真的对应 4.5:1，改常量的人一眼能看出该往哪边调。
-        assert!(contrast(DARK_INK_LIMIT, 0xf6 as f32) >= 4.5);
-        assert!(contrast(LIGHT_INK_LIMIT, 0x12 as f32) >= 4.5);
+    fn the_light_theme_needs_no_floor() {
+        // 浅色面板是近白，叠在近白的底子上怎么都亮，字是近黑，对比只会更好。
+        assert_eq!(LIGHT_FLOOR, 0.0);
+        let alpha = frost(false, Settings::PANEL_OPACITY_MIN);
+        let panel = composite(LIGHT_BASE, UNDERLAY, alpha);
+        assert!(contrast(panel, 0x12 as f32) >= 10.0);
     }
 
     #[test]

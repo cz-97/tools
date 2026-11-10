@@ -588,12 +588,6 @@ pub fn show_launcher(cx: &mut App) {
     if !vsync::resume() {
         eprintln!("tools: 渲染线程没能恢复，面板可能不刷新");
     }
-    // 面板马上要盖在桌面上：先量一下那片桌面多亮。透明度拉到底时面板要不要留一层、
-    // 留多厚，全看这个数（见 `ui::colors::min_frost`）。
-    // **必须在 `show()` 之前**：此刻窗口还收着，量到的像素里没有面板自己。
-    if let Some(panel) = cx.try_global::<LauncherPanel>() {
-        crate::ui::colors::measure_backdrop(panel.window);
-    }
     with_launcher(cx, |launcher, window, cx| launcher.reset(window, cx));
     if let Some(panel) = cx.try_global::<LauncherPanel>() {
         panel.window.show();

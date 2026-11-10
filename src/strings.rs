@@ -429,7 +429,7 @@ pub mod settings_page {
     /// 外观页：透明度的标题。
     pub const OPACITY_NAME: &str = "透明度";
     /// 外观页：透明度的说明。
-    pub const OPACITY_DESCRIPTION: &str = "半透明时底色的深浅；桌面太亮会自动留一层，保证字看得清";
+    pub const OPACITY_DESCRIPTION: &str = "半透明时底色的深浅；调到最低也会留一层，保证字看得清";
     /// 外观页：透明度的单位。
     pub fn opacity_value(opacity: u32) -> String {
         format!("{opacity}%")
