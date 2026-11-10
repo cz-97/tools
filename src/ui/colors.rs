@@ -67,7 +67,7 @@ struct Palette {
     edge_tint: u32,
 }
 
-/// 深色：冷墨玻璃 + 白纱 + 一点冷蓝的选中。
+/// 深色：冷墨玻璃 + 白纱 + 中性灰的选中。
 ///
 /// 底色不带纯黑：`#0f1116` 有一点点蓝，铺在白壁纸上会透出一层冷雾，比中性灰高级。
 const DARK: Palette = Palette {
@@ -81,7 +81,9 @@ const DARK: Palette = Palette {
     control: 0xffffff0a,
     // 选中块是这一屏唯一的重色，浓度按「在 #1f1f1f 上能被一眼认出来、又不至于像按钮」定。
     // 12% 时变化量不到一档灰，光标停在哪一行读不出来。
-    accent: 0x7aa2f73d,
+    //
+    // 色调一律走中性灰：整块界面没有第二种色相，选中只靠明度说话。
+    accent: 0xffffff33,
     accent_foreground: 0xffffffff,
     accent_tile: 0xffffff1f,
     on_accent_muted: 0xffffffb8,
@@ -91,7 +93,7 @@ const DARK: Palette = Palette {
     edge_tint: 0xffffffff,
 };
 
-/// 浅色：冷白玻璃 + 黑纱 + 同一种冷蓝的选中。
+/// 浅色：冷白玻璃 + 黑纱 + 同一种中性灰的选中。
 const LIGHT: Palette = Palette {
     background: 0xf6f8fbff,
     foreground: 0x12151bff,
@@ -101,10 +103,10 @@ const LIGHT: Palette = Palette {
     border: 0x00000014,
     surface: 0x0000000d,
     control: 0x00000008,
-    accent: 0x1f6feb42,
-    accent_foreground: 0x0d2440ff,
+    accent: 0x0000001f,
+    accent_foreground: 0x12151bff,
     accent_tile: 0x00000014,
-    on_accent_muted: 0x0d2440c7,
+    on_accent_muted: 0x3f464dff,
     hover: 0x00000012,
     footer_key: 0x12151bf0,
     edge_tint: 0x000000ff,

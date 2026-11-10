@@ -58,8 +58,13 @@ pub(crate) const SIDEBAR_WIDTH: f32 = 148.;
 /// 命令页里左侧子模块列的宽度。要放得下「GitHub 3/3」这种最长的组合。
 /// 输入框组件在内部画掉的左右留白（小号是 8 + 8），输入框得自己付这笔账。
 const SEARCH_FIELD_PADDING: f32 = 16.;
-/// 空输入框给光标留的宽度。再宽就是白占拖动区。
-const SEARCH_FIELD_CARET: f32 = 4.;
+/// 空输入框的宽度。
+///
+/// 现在没有占位提示了，框里空着的时候只剩光标；不给个固定宽度的话，
+/// 一整条页头就没有任何能点进去落光标的地方。
+const SEARCH_FIELD_IDLE: f32 = 168.;
+/// 同上，自定义条目页的页头控件多，空框窄一点。
+const SEARCH_FIELD_IDLE_NARROW: f32 = 96.;
 /// 按量出来的文字宽度再多留一点，免得差一个像素就把字滚出视野。
 const SEARCH_FIELD_SLACK: f32 = 14.;
 /// 输入框最宽到这儿，剩下的地方留给图标、提示和设置按钮。
@@ -574,9 +579,9 @@ impl Launcher {
             state.delegate_mut().view = Some(view);
         });
 
-        // 设置里那三个工具列表的搜索框。
-        let tools_search = cx
-            .new(|cx| InputState::new(window, cx).placeholder(strings::tools_page::SEARCH_HINT));
+        // 设置里那三个工具列表的搜索框。没有占位提示：页头已经很窄，
+        // 一句「搜索条目」会把类型筛选和新增挤出去。
+        let tools_search = cx.new(|cx| InputState::new(window, cx));
         let tools_search_events = cx.subscribe(&tools_search, |launcher, search, event, cx| {
             if matches!(event, InputEvent::Change) {
                 launcher.tools_query = search.read(cx).value().to_string();

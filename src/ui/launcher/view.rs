@@ -23,9 +23,9 @@ use crate::ui::pages::user_tools as user_tools_page;
 use crate::ui::settings_page::{self, small_button, small_button_fixed};
 
 use super::{
-    CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_CARET,
-    SEARCH_FIELD_MAX, SEARCH_FIELD_NARROW_MAX, SEARCH_FIELD_PADDING, SEARCH_FIELD_SLACK,
-    SEARCH_TEXT_SIZE,
+    CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_IDLE,
+    SEARCH_FIELD_IDLE_NARROW, SEARCH_FIELD_MAX, SEARCH_FIELD_NARROW_MAX, SEARCH_FIELD_PADDING,
+    SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE,
 };
 
 impl Launcher {
@@ -76,15 +76,6 @@ impl Launcher {
                                 .cleanable(false),
                         ),
                 )
-                .when(field_text.is_empty(), |this| {
-                    // 提示属于拖动区，不属于输入框：它是让人一边拖一边读的。
-                    this.child(
-                        div()
-                            .text_sm()
-                            .text_color(muted_fg)
-                            .child(strings::launcher::SEARCH_HINT),
-                    )
-                })
                 .child(div().flex_1())
                 .child(
                     div().id("settings-button").occlude().flex_shrink_0().child(
@@ -155,7 +146,7 @@ impl Launcher {
             window,
             cx,
             &text,
-            strings::tools_page::SEARCH_HINT,
+            SEARCH_FIELD_IDLE_NARROW,
             SEARCH_FIELD_NARROW_MAX,
         );
 
@@ -234,7 +225,6 @@ impl Launcher {
         let settings = stored_settings(cx);
         let loading = self.entries.read(cx).delegate().is_loading();
         let text = self.list_search.read(cx).value().to_string();
-        let hint = list_hint(kind);
 
         // 左上角只留这一页的图标和标题：返回交给 `Esc`，搜索框前面也不挂放大镜。
         let bar = bar
@@ -252,7 +242,13 @@ impl Launcher {
                     .occlude()
                     .flex_shrink_0()
                     .ml_2()
-                    .w(search_field_width_at_least(window, cx, &text, hint))
+                    .w(search_field_width_capped(
+                        window,
+                        cx,
+                        &text,
+                        SEARCH_FIELD_IDLE,
+                        SEARCH_FIELD_MAX,
+                    ))
                     .h(px(settings.search_height as f32))
                     .child(
                         Input::new(&self.list_search)
@@ -261,16 +257,6 @@ impl Launcher {
                             .cleanable(false),
                     ),
             )
-            .when(text.is_empty(), |this| {
-                // 提示画在拖动区里，跟着输入框走，不在框内。
-                this.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_sm()
-                        .text_color(muted_fg)
-                        .child(hint),
-                )
-            })
             .child(div().flex_1());
 
         // 右上角按钮：只有「要手动去取」的页面才给。
@@ -310,17 +296,6 @@ impl Launcher {
     }
 }
 
-/// 这一页搜索框里的提示；`Tab` 那枚按钮的悬浮提示也用得上。
-fn list_hint(kind: ListKind) -> &'static str {
-    match kind {
-        ListKind::Bookmarks => strings::lists::SEARCH_BOOKMARKS,
-        ListKind::History => strings::lists::SEARCH_HISTORY,
-        ListKind::Projects => strings::lists::SEARCH_PROJECTS,
-        ListKind::Stars => strings::lists::SEARCH_STARS,
-        ListKind::Search => strings::lists::SEARCH_REPOS,
-    }
-}
-
 /// 页头并排那几个小按钮的宽度。
 ///
 /// 「全部 / 已开启 / 未开启」和「新增」字数不一样，不定宽的话按钮会随内容左右跳，
@@ -340,41 +315,25 @@ fn header_height(settings: Settings) -> Pixels {
 ///
 /// 宽度按文字算而不是铺满搜索栏：它多占一像素，面板就少一像素可拖。
 fn search_field_width(window: &Window, cx: &Context<Launcher>, query: &str) -> Pixels {
-    let padding = px(SEARCH_FIELD_PADDING);
-    if query.is_empty() {
-        return padding + px(SEARCH_FIELD_CARET);
-    }
-    px(
-        (text_width(window, cx, query) + SEARCH_FIELD_PADDING + SEARCH_FIELD_SLACK)
-            .min(SEARCH_FIELD_MAX),
-    )
+    search_field_width_capped(window, cx, query, SEARCH_FIELD_IDLE, SEARCH_FIELD_MAX)
 }
 
-/// 列表页的输入框：空着的时候也得放得下那句提示，不能只剩半个字。
-fn search_field_width_at_least(
-    window: &Window,
-    cx: &Context<Launcher>,
-    query: &str,
-    hint: &str,
-) -> Pixels {
-    search_field_width_capped(window, cx, query, hint, SEARCH_FIELD_MAX)
-}
-
-/// 同上，但自己指定上限：页头控件多的地方得把宽度压一压。
+/// 同上，但空框的宽度和上限由调用方定。
+///
+/// 空着的时候不再有占位提示撑着，宽度必须给个定值，否则框会缩成一个光标，
+/// 页头上一整片都是拖动区，点不进去。打字之后就按字数长，到 `max` 收住。
 fn search_field_width_capped(
     window: &Window,
     cx: &Context<Launcher>,
     query: &str,
-    hint: &str,
+    idle: f32,
     max: f32,
 ) -> Pixels {
-    let measured = if query.is_empty() {
-        0.
-    } else {
-        text_width(window, cx, query)
-    };
-    let floor = text_width(window, cx, hint);
-    px((measured.max(floor) + SEARCH_FIELD_PADDING + SEARCH_FIELD_SLACK).min(max))
+    if query.is_empty() {
+        return px(idle);
+    }
+    let measured = text_width(window, cx, query);
+    px((measured + SEARCH_FIELD_PADDING + SEARCH_FIELD_SLACK).min(max))
 }
 
 /// 一段文字排版之后有多宽。

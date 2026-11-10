@@ -98,8 +98,6 @@ pub mod sections {
 
 /// 主面板（命令列表）。
 pub mod launcher {
-    /// 搜索框为空时的提示，同时是拖动区的一部分。
-    pub const SEARCH_HINT: &str = "搜索命令\u{2026}";
     /// 页脚：上下键的说明。
     pub const FOOTER_NAVIGATE: &str = "选择";
     /// 页脚：回车的说明。
@@ -150,16 +148,6 @@ pub mod lists {
     pub const FOOTER_OPEN: &str = super::common::OPEN;
     /// 页脚：搜索页里回车的说明。
     pub const FOOTER_SEARCH: &str = "搜索";
-    /// 搜索框里的提示：书签页。
-    pub const SEARCH_BOOKMARKS: &str = "搜索书签";
-    /// 搜索框里的提示：历史页。
-    pub const SEARCH_HISTORY: &str = "搜索历史";
-    /// 搜索框里的提示：个人项目页。
-    pub const SEARCH_PROJECTS: &str = "搜索仓库";
-    /// 搜索框里的提示：星标页。
-    pub const SEARCH_STARS: &str = "搜索星标";
-    /// 搜索框里的提示：查询仓库页。
-    pub const SEARCH_REPOS: &str = "搜索 GitHub 仓库";
     /// 有数据但一行都过滤不出来时的空状态。
     pub fn no_match(query: &str) -> String {
         format!("没有匹配 \u{201c}{query}\u{201d} 的条目")
@@ -225,8 +213,6 @@ pub mod tools_page {
     /// 文件。
     /// 工具页里那个合并了文件 / 文件夹 / 快捷命令的子标签。
     pub const USER_ITEMS: &str = "自定义条目";
-    /// 自定义条目页搜索框的占位提示。
-    pub const SEARCH_HINT: &str = "搜索条目";
     pub const FILE: &str = "文件";
     /// 文件夹。
     pub const FOLDER: &str = "文件夹";
