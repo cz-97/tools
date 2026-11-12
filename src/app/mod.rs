@@ -450,11 +450,16 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
         return;
     }
     // 保险：焦点不知怎么跑到别处了（点按钮之后的极端情况），敲字时先把它拽回来。
-    // 这一下字符会丢，但后面接着敲就正常了——总比整页没反应强。
+    // **这一下字符不能丢**：以前是「聚焦 + 吞掉」，用户点一下列表再打 `ip`，只有 `p`
+    // 进得去（用户报过两次）。带搜索框的页面走 `type_into_search`，字符直接补进去；
+    // 设置页、计算器页没有默认输入框，还是原来的聚焦逻辑。
     if types_text(&event.keystroke) && !active_input_focused(window, cx) {
-        with_launcher(cx, |launcher, window, cx| {
-            launcher.focus_active_input(window, cx)
-        });
+        let text = event.keystroke.key_char.clone().unwrap_or_default();
+        if !type_into_search(&text, window, cx) {
+            with_launcher(cx, |launcher, window, cx| {
+                launcher.focus_active_input(window, cx)
+            });
+        }
         cx.stop_propagation();
         return;
     }
@@ -528,6 +533,25 @@ fn active_input_focused(window: &Window, cx: &App) -> bool {
                 .ok()
         })
         .unwrap_or(true)
+}
+
+/// 焦点不在输入框时敲下的那个字符，塞进本页搜索框；返回 `true` 表示这一页有搜索框、
+/// 字符已经进去了，调用方该吞掉这次按键。
+///
+/// 和 [`active_input_focused`] 一样**同步**执行：要不要吞掉这一下按键，只能在当前这一拍
+/// 决定，`with_launcher`（`cx.defer`）拿到结果时已经晚了。
+fn type_into_search(text: &str, window: &mut Window, cx: &mut App) -> bool {
+    let Some(view) = cx
+        .try_global::<LauncherHandle>()
+        .map(|handle| handle.view.clone())
+    else {
+        return false;
+    };
+    let text = text.to_string();
+    view.update(cx, move |launcher, cx| {
+        launcher.type_into_search(&text, window, cx)
+    })
+    .unwrap_or(false)
 }
 
 /// 面板里是不是有个「多行/编辑中」的输入框正拿着焦点（计算器公式行、工具编辑区）。

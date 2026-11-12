@@ -217,7 +217,10 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - **`tab` 必须在拦截器里吞掉**：gpui-base 的 `Root` 把 `tab` 绑成了切焦点，焦点一旦
   跑去按钮上，敲字母数字就完全没反应（`app::intercept_key` 里 `tab` 分支 +
   `Launcher::focus_active_input`）。另外对可打印字符有兜底：焦点不在任何输入框时，
-  那一下按键先用来把焦点拽回来。
+  **这一下字符要直接补进本页搜索框**（`intercept_key` → `type_into_search` →
+  `Launcher::type_into_search`），**不许只聚焦再吞掉**——那样用户点一下列表再打 `ip`，
+  只有 `p` 进得去（报过两次）。主页、书库几页、自定义条目三处共用这一条，别再写第二份。
+  设置页 / 计算器页没有「默认输入框」，那里仍走 `focus_active_input`。
 - **点击**：行自己挂 `on_click`（`ListState` 建的时候 `selectable(false)`，不然
   `List` 的 `confirm` 分不出单击双击）。**单击** = 选中 + 复制链接，**双击** = 打开。
 - 行是 `Entry`：标题 / 描述 / 右侧元信息 / 打开目标 / 站点图标。目标一律交给
@@ -330,6 +333,10 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - 新增文件 / 文件夹**先弹系统对话框**（`platform/dialog.rs`：文件是
   `GetOpenFileNameW`，目录是 `SHBrowseForFolderW`；都是阻塞接口、跑在后台线程），
   选完按文件（夹）名建一条；名字想改就点行尾那支笔。
+- **挑什么框由「种类」决定，别写死**：`PickFor::EditorTarget` 要看编辑区当前的
+  `kind`（文件夹条目 → 目录框），`PickFor::Replace(id)` 看数据库里那一条的 kind。
+  之前编辑区里写死 `false`（永远文件框），文件夹条目点「选择文件夹」弹出的是文件框，
+  在框里双击目录只会进去、选不中（用户报过）。
 - 对话框开着时 `Launcher::dialog` 是 `Some`，`watch_focus` 据此**不收起面板**——用户
   正在挑文件，面板一消失就白挑。这个字段**不要和 `pending` 合并**：`pending` 会跟着
   换页被丢掉，丢了这个任务就等于对话框永远开着，自动收起从此失效。关掉对话框之后还有

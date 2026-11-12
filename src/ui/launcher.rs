@@ -1615,6 +1615,47 @@ impl Launcher {
         cx.notify();
     }
 
+    /// 焦点不在输入框时敲下的那个字符：**别丢掉，直接送进本页的搜索框。**
+    ///
+    /// 以前这一下是「聚焦 + 吞掉」，用户得再敲一次才进字——列表拿到焦点之后打 `ip`，
+    /// 只有 `p` 进去了。所有带搜索框的页面（主页、书库那几页、自定义条目）都走这一条，
+    /// 手感必须一样；设置页和计算器页没有「默认输入框」，那里还是原来的聚焦逻辑。
+    ///
+    /// 返回 `true` 表示这一页有搜索框、字符已经进去了（调用方吞掉这次按键）。
+    pub(crate) fn type_into_search(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let input = match self.page {
+            Page::Commands => self.search.clone(),
+            Page::List(_) => self.list_search.clone(),
+            Page::UserTools => self.tools_search.clone(),
+            _ => return false,
+        };
+        // `insert` 是「在光标处插入」，撤销栈和光标都按正常输入处理；
+        // 它是 silent 的（不发 `InputEvent::Change`），所以搜索词得自己同步一次。
+        input.update(cx, |input, cx| input.insert(text, window, cx));
+        let value = input.read(cx).value().to_string();
+        match self.page {
+            Page::Commands => self.search_changed(value, cx),
+            Page::List(kind) => {
+                if kind != ListKind::Search {
+                    self.list_search_changed(value, cx);
+                }
+            }
+            Page::UserTools => {
+                self.tools_query = value;
+                self.sync_user_list(cx);
+            }
+            _ => {}
+        }
+        input.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+        true
+    }
+
     /// 把焦点交回这一页该有输入的地方。
     ///
     /// `Tab` 和「焦点被别的东西拿走」都靠它收拾：面板里除了输入框没有该吃键盘的控件，
@@ -2736,7 +2777,13 @@ impl Launcher {
             PickFor::Replace(id) => stored_settings(cx)
                 .tool(id)
                 .is_some_and(|tool| tool.kind == ToolKind::Folder),
-            PickFor::EditorTarget => false,
+            // 新增/编辑时按编辑区当前的种类走。**别写死成 false**：文件夹条目点
+            // 「选择文件夹」弹出一个文件框，用户在框里双击一下目录就进去了，
+            // 对话框不会关、也选不中目录（用户报过）。
+            PickFor::EditorTarget => self
+                .tool_editor
+                .as_ref()
+                .is_some_and(|editor| editor.kind == ToolKind::Folder),
         };
         let title = if folder {
             strings::tools_page::PICK_FOLDER_TITLE
