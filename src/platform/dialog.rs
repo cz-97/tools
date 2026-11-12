@@ -26,16 +26,10 @@ mod sys {
     use std::path::PathBuf;
 
     use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::System::Com::{
-        COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree,
-    };
+    use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows_sys::Win32::UI::Controls::Dialogs::{
         GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST,
         OPENFILENAMEW,
-    };
-    use windows_sys::Win32::UI::Shell::{
-        BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, SHBrowseForFolderW,
-        SHGetPathFromIDListW,
     };
 
     /// 缓冲多长。`MAX_PATH` 是 260，给长路径留四倍余量。
@@ -84,37 +78,51 @@ mod sys {
         (!text.is_empty()).then(|| PathBuf::from(text))
     }
 
-    /// 挑文件夹走的是另一套老 API（`SHBrowseForFolderW`）。
+    /// 挑文件夹：**和文件框是同一个对话框**，只是加了 `FOS_PICKFOLDERS`。
     ///
-    /// 新的 `IFileOpenDialog` 加 `FOS_PICKFOLDERS` 更好看，但它是一整套 COM 接口，
-    /// 为「挑一个目录」写一百多行 vtable 调用不值当。`BIF_NEWDIALOGSTYLE` 给的是
-    /// 可拖动大小的那版，能建新文件夹，够用了。
+    /// 用的是 Vista 之后的 Common Item Dialog（`IFileOpenDialog`）：左边导航窗格、
+    /// 地址栏、搜索框、新建文件夹、拖大拖小全都在。老式的 `SHBrowseForFolderW` 长得
+    /// 完全是另一个东西——那个树形小窗口用户一眼就看出「不是文件选择器那种对话框」。
     pub fn pick_folder(owner: usize, title: &str) -> Option<PathBuf> {
-        prepare();
-
-        let title = wide(title);
-        let mut display = vec![0u16; BUFFER];
-        let browse = BROWSEINFOW {
-            hwndOwner: owner as HWND,
-            pszDisplayName: display.as_mut_ptr(),
-            lpszTitle: title.as_ptr(),
-            ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
-            ..Default::default()
+        use windows::Win32::Foundation::{ERROR_CANCELLED, HWND};
+        use windows::Win32::System::Com::{
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoTaskMemFree,
         };
-        let list = unsafe { SHBrowseForFolderW(&browse) };
-        if list.is_null() {
-            return None;
+        use windows::Win32::UI::Shell::{
+            FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog,
+            IFileOpenDialog, SIGDN_FILESYSPATH,
+        };
+        use windows::core::HSTRING;
+
+        unsafe {
+            // COM 已经在这个线程上初始化过就是 `S_FALSE`，无所谓。
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            let mut options = dialog.GetOptions().ok()?;
+            // 「只认真实目录」+「只回文件系统路径」：库、网络位置里的虚拟项拿不到路径。
+            options |= FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
+            dialog.SetOptions(options).ok()?;
+            if !title.is_empty() {
+                dialog.SetTitle(&HSTRING::from(title)).ok()?;
+            }
+
+            let owner = HWND(owner as *mut core::ffi::c_void);
+            if let Err(error) = dialog.Show(Some(owner)) {
+                // 用户点取消不是错误，别当成失败去记日志。
+                if error.code() != ERROR_CANCELLED.to_hresult() {
+                    eprintln!("tools: 选文件夹对话框没能打开：{error}");
+                }
+                return None;
+            }
+
+            let item = dialog.GetResult().ok()?;
+            let path = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+            let text = path.to_string().ok()?;
+            // 这串是 shell 分配给我们（CoTaskMemAlloc）的，用完要还。
+            CoTaskMemFree(Some(path.0 as *const core::ffi::c_void));
+            (!text.is_empty()).then(|| PathBuf::from(text))
         }
-        let mut path = vec![0u16; BUFFER];
-        let ok = unsafe { SHGetPathFromIDListW(list, path.as_mut_ptr()) } != 0;
-        // 这个 ITEMIDLIST 是 shell 分配给我们的，用完要还。
-        unsafe { CoTaskMemFree(list as *mut core::ffi::c_void) };
-        if !ok {
-            return None;
-        }
-        let end = path.iter().position(|unit| *unit == 0).unwrap_or(0);
-        let text = String::from_utf16_lossy(&path[..end]);
-        (!text.is_empty()).then(|| PathBuf::from(text))
     }
 }
 

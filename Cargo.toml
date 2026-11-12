@@ -1,6 +1,6 @@
 [package]
 name = "tools"
-version = "0.39.4"
+version = "0.39.5"
 edition = "2024"
 default-run = "tools"
 repository = "https://github.com/cz-97/tools"
@@ -16,6 +16,16 @@ serde_json = "1"
 pinyin = { version = "0.11.0", default-features = false, features = ["plain"] }
 
 [target.'cfg(windows)'.dependencies]
+#
+# `windows-sys` 只有扁平函数和原始句柄，没有 COM 接口；选文件夹要走 Vista 之后的
+# `IFileOpenDialog`（和文件框同一个对话框，`FOS_PICKFOLDERS` 就是「选目录」形态），
+# 那个接口只有带 vtable 的 `windows` crate 才有。只开这几个 feature，别全开——
+# 那个 crate 全量编一遍要好几分钟。
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
