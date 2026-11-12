@@ -230,7 +230,10 @@ impl RenderOnce for UserToolRow {
         let index = self.index;
 
         h_flex()
-            .id(SharedString::from(format!("user-tool-{}", self.index)))
+            // **element id 一律用数据库主键，不用行号。** 行号会随着过滤、增删、排序换位置，
+            // 而 gpui 的命中链和动画状态是按 id 记的：用行号的话，列表一重建，原来第 3 行
+            // 的开关状态就套到了新的第 3 行身上（用户报过「点一下快捷键，后面几行的开关在动」）。
+            .id(SharedString::from(format!("user-tool-row-{id}")))
             .w_full()
             .min_w_0()
             .gap_3()
@@ -298,7 +301,7 @@ impl RenderOnce for UserToolRow {
                     .w(px(104.))
                     .flex_shrink_0()
                     .child(crate::ui::commands_page::shortcut_button(
-                    SharedString::from(format!("user-tool-shortcut-{}", self.index)),
+                    SharedString::from(format!("user-tool-shortcut-{id}")),
                     if self.recording {
                         self.conflict
                             .clone()
@@ -335,10 +338,7 @@ impl RenderOnce for UserToolRow {
                     .block_mouse_except_scroll()
                     .w(px(40.))
                     .child(
-                        Switch::new(SharedString::from(format!(
-                            "user-tool-switch-{}",
-                            self.index
-                        )))
+                        Switch::new(SharedString::from(format!("user-tool-switch-{id}")))
                         .checked(self.tool.enabled)
                         .on_change(move |checked, _window, cx| {
                             let checked = *checked;
@@ -356,7 +356,7 @@ impl RenderOnce for UserToolRow {
                     strings::tools_page::MODE_LOCATION
                 };
                 this.child(row_button(
-                    SharedString::from(format!("user-tool-mode-{}", self.index)),
+                    SharedString::from(format!("user-tool-mode-{id}")),
                     mode.into(),
                     64.,
                     colors,
@@ -374,7 +374,7 @@ impl RenderOnce for UserToolRow {
                     strings::tools_page::MODE_TERMINAL
                 };
                 this.child(row_button(
-                    SharedString::from(format!("user-tool-mode-{}", self.index)),
+                    SharedString::from(format!("user-tool-mode-{id}")),
                     mode.into(),
                     64.,
                     colors,
@@ -387,7 +387,7 @@ impl RenderOnce for UserToolRow {
             })
             // 改：弹窗从这一行旁边点开，比先选中再找按钮快。
             .child(row_button(
-                SharedString::from(format!("user-tool-edit-{}", self.index)),
+                SharedString::from(format!("user-tool-edit-{id}")),
                 strings::tools_page::EDIT.into(),
                 32.,
                 colors,
@@ -399,7 +399,7 @@ impl RenderOnce for UserToolRow {
             ))
             // 删：直接删，没有二次确认——设置里那条也是这样。
             .child(row_button(
-                SharedString::from(format!("user-tool-delete-{}", self.index)),
+                SharedString::from(format!("user-tool-delete-{id}")),
                 strings::tools_page::DELETE.into(),
                 32.,
                 colors,

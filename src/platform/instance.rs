@@ -29,7 +29,7 @@ impl Instance {
     /// 抢单例身份。已经有人在跑就返回 `None`——调用方该做的只有一件事：
     /// [`Instance::wake_existing`]，然后退出。
     pub fn acquire() -> Option<Self> {
-        Self::acquire_named(MUTEX_NAME, WAKE_NAME)
+        Self::acquire_named(MUTEX_NAME, WAKE_NAME, QUIT_NAME)
     }
 
     /// 请求已经在跑的那个实例把面板亮出来，成功返回 `true`。
@@ -69,10 +69,12 @@ impl Instance {
 
     /// 换一套名字抢身份。生产代码用 [`Instance::acquire`]，这里给测试一个独立命名空间：
     /// 机器上真跑着一个实例时，测试也不能被它挡掉。
-    fn acquire_named(mutex: &str, wake: &str) -> Option<Self> {
-        // 退出事件的名字跟着唤醒事件派生，测试的独立命名空间也就一起有了。
-        let quit = format!("{wake}.quit");
-        sys::acquire((mutex, wake, &quit)).map(|held| Self { held })
+    ///
+    /// **三个名字必须和 [`Instance::wake_existing`] / [`Instance::quit_existing`] 打到的那两个
+    /// 对上**，否则信号发出去没人接（踩过：quit 从 wake 派生，生产名字却写死，结果
+    /// `--quit` 一直报「没有实例在跑」）。
+    fn acquire_named(mutex: &str, wake: &str, quit: &str) -> Option<Self> {
+        sys::acquire((mutex, wake, quit)).map(|held| Self { held })
     }
 }
 
@@ -317,12 +319,22 @@ mod tests {
         )
     }
 
+    /// 测试用的三个名字：各自独立，都不许和生产名字撞上。
+    fn names(prefix: &str) -> (String, String, String) {
+        (
+            unique(&format!("{prefix}-mutex")),
+            unique(&format!("{prefix}-wake")),
+            unique(&format!("{prefix}-quit")),
+        )
+    }
+
     #[test]
     fn a_second_instance_is_turned_away() {
-        let (mutex, wake) = (unique("test-mutex"), unique("test-wake"));
-        let first = Instance::acquire_named(&mutex, &wake).expect("第一个该拿到");
+        let (mutex, wake, quit) = names("test");
+        let first =
+            Instance::acquire_named(&mutex, &wake, &quit).expect("第一个该拿到");
         assert!(
-            Instance::acquire_named(&mutex, &wake).is_none(),
+            Instance::acquire_named(&mutex, &wake, &quit).is_none(),
             "第二个必须被拒"
         );
 
@@ -333,18 +345,18 @@ mod tests {
 
         // 交还身份之后别人就能接手（重启靠的就是这条）。
         drop(first);
-        assert!(Instance::acquire_named(&mutex, &wake).is_some());
+        assert!(Instance::acquire_named(&mutex, &wake, &quit).is_some());
     }
 
     #[test]
     fn both_signals_are_delivered_on_the_same_wait() {
         // `--quit` 和「再双击一次」走的是同一条等待线程，两个事件得能分别认出来。
         // **这里只能打测试命名空间的事件**：打到生产名字上就等于把正在跑的启动器关掉。
-        let (mutex, wake) = (unique("test-signal-mutex"), unique("test-signal-wake"));
-        let held = Instance::acquire_named(&mutex, &wake).expect("第一个该拿到");
+        let (mutex, wake, quit) = names("test-signal");
+        let held = Instance::acquire_named(&mutex, &wake, &quit).expect("第一个该拿到");
         let events = [held.wake_handle(), held.quit_handle()];
 
-        assert!(sys::signal(&format!("{wake}.quit")));
+        assert!(sys::signal(&quit));
         assert_eq!(wait_signals(&events), Some(1), "退出信号落在第二个句柄上");
 
         assert!(sys::signal(&wake));
@@ -354,11 +366,12 @@ mod tests {
     #[test]
     fn a_released_instance_can_be_reclaimed_at_once() {
         // 重启的路径：旧进程先丢身份，新进程马上就能拿到，不用等。
-        let (mutex, wake) = (unique("test-restart-mutex"), unique("test-restart-wake"));
-        let first = Instance::acquire_named(&mutex, &wake).expect("第一个该拿到");
+        let (mutex, wake, quit) = names("test-restart");
+        let first = Instance::acquire_named(&mutex, &wake, &quit).expect("第一个该拿到");
         drop(first);
-        let second = Instance::acquire_named(&mutex, &wake).expect("旧的一走新的就该拿到");
-        assert!(Instance::acquire_named(&mutex, &wake).is_none());
+        let second =
+            Instance::acquire_named(&mutex, &wake, &quit).expect("旧的一走新的就该拿到");
+        assert!(Instance::acquire_named(&mutex, &wake, &quit).is_none());
         drop(second);
     }
 }

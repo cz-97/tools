@@ -349,9 +349,16 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   （行数会变）。
 - **条目是缓存的，不是现算的**：`items_count` / `render_item` 每帧每行都要问一遍，
   在那里现读设置再全量克隆就是「滚动卡顿」。`UserToolsDelegate::rows` 只在 `retarget`
-  里重建，而 `retarget` 由 `Launcher::sync_user_list` 调——**增删改、开关、绑快捷键
-  之后必须走 `sync_user_list`**，否则列表还是旧的一批（条件和数据无关，不能靠
-  「条件没变就早退」省这次重建）。
+  里重建，而 `retarget` 由 `Launcher::sync_user_list` 调。
+- **所有「改数据」的动作都必须让缓存失效，统一挂在 `refresh_catalogue` 上**：增删改、
+  开关、静默/默认应用、绑快捷键都是在改完之后调它，所以 `refresh_catalogue` 结尾
+  一并 `sync_user_list`。**别再往单个动作里补**——补一处漏三处，之前就是只在几个动作里
+  手动调，结果开关点了没反应、新增的条目要退出再进才出现（用户报过）。新写一个改
+  设置的动作时，只要记得「改完调 `refresh_catalogue`」这一条就够。
+- **行内控件的 element id 用数据库主键（`tool.id`），不要用行号**：行号会随筛选、增删、
+  排序换位置，而 gpui 的命中链和 `Switch` 之类的动画状态都是按 id 记的。用行号时列表
+  一重建就把第 3 行的状态套到新的第 3 行上——用户看到的是「点一下快捷键，后面几行的
+  开关自己动」。
 - **选中态归 `ListState`，delegate 里那个只是镜像**：行上画的选中来自
   `ListState::set_selected_index`，只改 delegate 的 `selected` 字段画面上一点反应都没有
   （用户报过「↑↓ 没反应」）。所以上下键和单击都要 `set_selected_index` +
