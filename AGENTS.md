@@ -346,6 +346,13 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   放掉它的快捷键）、`取消`。
 - 编辑区（`Launcher::tool_editor`）是就地插在列表上方的一块表单：名字 + 目标，终端再加
   一行起始目录。**名字或目标空着不保存**；回车等于保存，换标签 / 回主页等于放弃。
+  - **名字那一栏可以留空**：文件和文件夹用路径最后一段兜底（`name_from_path`，
+    `D:\资料\周报.docx` → `周报.docx`）。只有终端的命令（和盘符根目录）推不出名字，
+    仍然报「名字不能空」。
+  - **聚焦要推到下一帧再做一次**：编辑区是这一拍刚塞进元素树的，元素还没渲染时
+    `window.focus` 会落空。`start_tool_editor` 里先 focus 一次、再 `window.defer` 一次；
+    少了第二次，用户点开「改」立刻打中文时第一个字母进不了输入法组字（只会作为普通
+    字符落到搜索框或丢失）。
 - **页头那排控件（`ui/launcher/view.rs` 的 `user_tools_header`）**：类型分段（`segmented_compact`）
   → 开启状态筛选 → 新增。三者的高度都吃 `settings_page::HEADER_CONTROL_HEIGHT`，
   两个按钮用 `small_button_fixed` 定宽（`HEADER_BUTTON_WIDTH`）——文字长短不一样时

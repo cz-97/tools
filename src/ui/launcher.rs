@@ -1628,6 +1628,11 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // 编辑区开着时不能往搜索框里塞：这些字属于那张表（名字 / 路径）。
+        // 焦点还没落到表里的话，交给 `focus_active_input`——它优先把焦点给名字框。
+        if self.tool_editor.is_some() {
+            return false;
+        }
         let input = match self.page {
             Page::Commands => self.search.clone(),
             Page::List(_) => self.list_search.clone(),
@@ -2481,7 +2486,14 @@ impl Launcher {
                         .unwrap_or_default(),
                 )
         });
-        name.read(cx).focus_handle(cx).focus(window, cx);
+        // 编辑区是这一拍刚塞进元素树的：元素还没渲染，**这一次 focus 会落空**。
+        // 下一帧再聚焦一次，用户点开「改」立刻打中文，第一个字母才进得了输入法组字
+        // （否则它会落到别处，或者被拦截器当成普通字符插进去，中文就组不出来）。
+        let handle = name.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        window.defer(cx, move |window, cx| {
+            window.focus(&handle, cx);
+        });
         // 几个框里按回车都等于点「保存」：填表的手感就该是这样。事件回调里没有窗口，
         // 所以走 `with_launcher` 推到下一拍。
         let events = [&name, &target, &start_dir]
@@ -2518,17 +2530,30 @@ impl Launcher {
             return;
         };
         let (kind, id) = (editor.kind, editor.id);
-        let name = editor.name_text(cx);
+        let typed_name = editor.name_text(cx);
         let target = editor.target_text(cx);
         let start_dir = editor.start_dir_text(cx);
-        if name.is_empty() {
-            self.tool_notice = Some(strings::tools_page::NAME_REQUIRED);
-            return;
-        }
         if target.is_empty() {
             self.tool_notice = Some(strings::tools_page::target_required(kind));
             return;
         }
+        // 名字空着就**不用让人再填一遍**：文件和文件夹的名字本来就在路径最后一段里
+        // （`report.pdf` / `项目A`）。终端是一条命令，没有可推的名字，仍然要求填。
+        let name = if !typed_name.is_empty() {
+            typed_name
+        } else if kind.is_path() {
+            match name_from_path(&target) {
+                Some(name) => name,
+                // 根目录（`C:\`）没有最后一段，只能让用户自己起名。
+                None => {
+                    self.tool_notice = Some(strings::tools_page::NAME_REQUIRED);
+                    return;
+                }
+            }
+        } else {
+            self.tool_notice = Some(strings::tools_page::NAME_REQUIRED);
+            return;
+        };
         self.tool_editor = None;
 
         let mut settings = stored_settings(cx);
@@ -2856,6 +2881,17 @@ impl Launcher {
     }
 }
 
+/// 名字空着时，拿路径的最后一段当名字。
+///
+/// 只给文件和文件夹用：`D:\资料\周报.docx` → `周报.docx`。根目录没有最后一段
+/// （`C:\`、`D:`），返回 `None`——那种情况还得让用户自己起名字。
+fn name_from_path(target: &str) -> Option<String> {
+    std::path::Path::new(target.trim())
+        .file_name()
+        .map(|name| name.to_string_lossy().trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
 /// 书签行：标题是书签名字，副行是网址，右边补一句页面标题（和书签名字不一样时才写）。
 fn bookmark_entries(rows: Vec<firefox::Bookmark>) -> Vec<Entry> {
     rows.into_iter()
@@ -2937,5 +2973,29 @@ mod filter_tests {
         assert!(!EnabledFilter::Enabled.keeps(false));
         assert!(!EnabledFilter::Disabled.keeps(true));
         assert!(EnabledFilter::Disabled.keeps(false));
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::name_from_path;
+
+    #[test]
+    fn an_empty_name_falls_back_to_the_last_path_segment() {
+        assert_eq!(
+            name_from_path(r"D:\资料\周报.docx").as_deref(),
+            Some("周报.docx")
+        );
+        assert_eq!(name_from_path(r"D:\资料\项目A").as_deref(), Some("项目A"));
+        // 末尾带斜杠也认：用户从资源管理器复制的路径常常是这种。
+        assert_eq!(name_from_path(r"D:\资料\项目A\").as_deref(), Some("项目A"));
+    }
+
+    #[test]
+    fn a_drive_root_has_no_last_segment() {
+        // 盘符根目录推不出名字，只能让用户自己填。
+        assert_eq!(name_from_path(r"C:\"), None);
+        assert_eq!(name_from_path(""), None);
+        assert_eq!(name_from_path("   "), None);
     }
 }
