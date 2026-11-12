@@ -331,7 +331,11 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - 快捷键：`ShortcutOwner::Tool(id)` / `RecordTarget::Tool(id)`，和命令共用一套录制、
   冲突检测和 `apply_shortcuts` 全量重绑。
 - 新增文件 / 文件夹**先弹系统对话框**（`platform/dialog.rs`：文件是
-  `GetOpenFileNameW`，目录是 `SHBrowseForFolderW`；都是阻塞接口、跑在后台线程），
+  `GetOpenFileNameW`，目录是 `IFileOpenDialog` + `FOS_PICKFOLDERS`；都是阻塞接口、
+  跑在后台线程）。**两者必须是同一个对话框**：目录框以前用 `SHBrowseForFolderW`，
+  那个老树形窗口用户一眼就看出来「不是文件选择器那种对话框」。
+  `windows-sys` 没有 COM 接口，选目录这条路依赖 `windows` crate（`Cargo.toml` 里只开了
+  Foundation / Com / Shell 三个 feature，别全开）。
   选完按文件（夹）名建一条；名字想改就点行尾那支笔。
 - **挑什么框由「种类」决定，别写死**：`PickFor::EditorTarget` 要看编辑区当前的
   `kind`（文件夹条目 → 目录框），`PickFor::Replace(id)` 看数据库里那一条的 kind。
