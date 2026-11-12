@@ -52,6 +52,15 @@ actions!(
 );
 
 /// 启动器。
+/// 命令行里是不是要求「让已经在跑的那个退出」。
+///
+/// 只认 `--quit`（也认 `/quit`、`-quit`，免得有人按 Windows 习惯打斜杠）。
+fn quit_requested() -> bool {
+    std::env::args()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "--quit" | "-quit" | "/quit"))
+}
+
 /// 手动启动时把「以管理员身份」补上；返回 `true` 表示提权的新实例已经接手，本进程该退。
 ///
 /// 只在「任务在 + 当前没提权」时才动手，判断只用 `admin` 那两个查询（**不碰数据库**）：
@@ -80,6 +89,17 @@ fn elevate_handoff() -> bool {
 }
 
 pub fn launch() {
+    // `tools.exe --quit`：不是启动，是叫已经在跑的那个**自己**退出。
+    //
+    // 这一步必须在提权和抢单例**之前**：它一个副作用都不该有。部署时靠这条收旧进程——
+    // 普通权限的进程杀不动提权进程（要 UAC 授权），但可以让它自己走。
+    if quit_requested() {
+        if !instance::Instance::quit_existing() {
+            admin::log("退出请求：没有实例在跑，或者对方是老版本（没有退出事件）");
+        }
+        return;
+    }
+
     // 管理员模式开着、但这次是**手动**起来的（双击 exe、从快捷方式）：先交给计划任务
     // 重开一个提权的自己，这个进程安静退出。不这么做的话，手动启动永远是个普通权限
     // 实例，设置里那颗「重启」按钮就一直亮着——用户会以为开关没生效。
@@ -229,8 +249,8 @@ pub fn launch() {
             });
 
             shortcuts::install(cx);
-            // 别的进程又启动了一次，就是在叫我们把面板亮出来。
-            watch_wakeup(cx);
+            // 别的进程又启动了一次，就是在叫我们把面板亮出来；带 `--quit` 则是叫我们退出。
+            watch_signals(cx);
             // 窗口尺寸改在事件循环起来之后再跟 GPUI 对一次账（见函数说明）。
             settle_viewport(cx);
         });
@@ -274,35 +294,36 @@ pub(crate) fn release_singleton(cx: &mut App) {
     }
 }
 
-/// 盯着「有人又启动了一次」这个信号：收到就把面板亮出来。
+/// 盯着别的进程丢过来的信号：`0` 是「再启动了一次」（把面板亮出来），
+/// `1` 是 `--quit`（自己退出）。
 ///
-/// 一条后台线程**阻塞**等那个自动复位事件，事件到手再把它丢进 channel；前台任务被
+/// 一条后台线程**阻塞**等那两个自动复位事件，事件到手再把它丢进 channel；前台任务被
 /// 唤醒后才执行（GPUI 的 `App` 只能在主线程上碰）。
 ///
 /// **这里不许轮询**：挂机时别的进程可能一整天都不叫我们，而每 200ms 醒一次看事件
 /// 是之前这个程序唯一的空闲开销。
-fn watch_wakeup(cx: &mut App) {
-    let event = cx
-        .try_global::<Singleton>()
-        .and_then(|singleton| {
-            singleton
-                .0
-                .lock()
-                .expect("单例锁不会中毒")
-                .as_ref()
-                .map(instance::Instance::wake_handle)
-        })
-        .filter(|handle| *handle != 0);
-    let Some(event) = event else {
+fn watch_signals(cx: &mut App) {
+    let events = cx.try_global::<Singleton>().and_then(|singleton| {
+        singleton
+            .0
+            .lock()
+            .expect("单例锁不会中毒")
+            .as_ref()
+            .map(|held| [held.wake_handle(), held.quit_handle()])
+    });
+    let Some(events) = events else {
         return;
     };
+    if events.contains(&0) {
+        return;
+    }
 
-    let (sender, mut receiver) = futures::channel::mpsc::unbounded::<()>();
+    let (sender, mut receiver) = futures::channel::mpsc::unbounded::<usize>();
     std::thread::Builder::new()
-        .name("wakeup".into())
+        .name("signals".into())
         .spawn(move || {
-            while instance::wait_wakeup(event) {
-                if sender.unbounded_send(()).is_err() {
+            while let Some(which) = instance::wait_signals(&events) {
+                if sender.unbounded_send(which).is_err() {
                     break;
                 }
             }
@@ -310,8 +331,15 @@ fn watch_wakeup(cx: &mut App) {
         .ok();
 
     cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
-        while receiver.next().await.is_some() {
-            cx.update(|cx| show_launcher(cx));
+        while let Some(which) = receiver.next().await {
+            cx.update(|cx| match which {
+                0 => show_launcher(cx),
+                // 退出前把位置记下来，和托盘菜单里那条「退出」是同一件事。
+                _ => {
+                    remember_window_position(cx);
+                    cx.quit();
+                }
+            });
         }
     })
     .detach();

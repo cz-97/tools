@@ -749,7 +749,7 @@ impl Launcher {
         match self.page {
             Page::Commands => self.move_selection(delta, window, cx),
             Page::Settings(tab) => self.select_tab(tab.shifted(delta), window, cx),
-            Page::UserTools => self.move_user_selection(delta, cx),
+            Page::UserTools => self.move_user_selection(delta, window, cx),
             Page::Calculator => {}
             Page::List(_) => self.move_entry(delta, window, cx),
         }
@@ -1132,8 +1132,15 @@ impl Launcher {
         }
         match self.page {
             Page::Commands => {}
-            // 自定义条目页：回车由 `List` 自己的 confirm 处理。
-            Page::UserTools => {}
+            // 自定义条目页：回车跑高亮那一条。列表没拿焦点（焦点在搜索框里），
+            // `List` 自己的 confirm 不会被派下来，所以在这里办。
+            Page::UserTools => {
+                let id = self.user_list.read(cx).delegate().selected_id();
+                if let Some(id) = id {
+                    crate::app::run_tool(id, cx);
+                }
+                return;
+            }
             Page::Settings(_) => {
                 // 编辑区开着时回车 = 保存，和填表一个手感。
                 if self.tool_editor.is_some() {
@@ -1356,31 +1363,81 @@ impl Launcher {
             }
         }
 
+        // 选中态归 `ListState` 的 `selected_index`，delegate 里那个只是它的镜像：
+        // 不推回去的话进来一行都不高亮，`↑↓` 也就看不出在动。
+        self.user_list.update(cx, |list, cx| {
+            let row = list.delegate().selected();
+            list.set_selected_index(Some(IndexPath::new(row)), window, cx);
+        });
+
         let handle = self.tools_search.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         cx.notify();
     }
 
     /// 上下键在自定义条目页里挪高亮（和书签、历史同一套手感）。
-    fn move_user_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+    ///
+    /// **必须走 `ListState::set_selected_index`**：行上画的选中态是 `ListState` 自己的
+    /// `selected_index` 派下去的，只改 delegate 里的那个字段等于白改（用户报过「上下键
+    /// 没反应」）。顺带 `scroll_to_selected_item` 才会跟着滚。
+    fn move_user_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.user_list.read(cx).delegate().len();
+        if count == 0 {
+            return;
+        }
+        let current = self.user_list.read(cx).delegate().selected();
+        let next = (current as isize + delta).clamp(0, count as isize - 1) as usize;
+        if next == current {
+            return;
+        }
         self.user_list.update(cx, |list, cx| {
-            let count = list.delegate().rows(cx).len();
-            list.delegate_mut().shift_selection(delta, count);
-            cx.notify();
+            list.set_selected_index(Some(IndexPath::new(next)), window, cx);
+            list.scroll_to_selected_item(window, cx);
         });
+    }
+
+    /// 自定义条目页里点了一行：单击选中，双击执行，然后把焦点还给搜索框。
+    pub(crate) fn user_row_clicked(
+        &mut self,
+        row: usize,
+        clicks: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.page, Page::UserTools) {
+            return;
+        }
+        self.user_list.update(cx, |list, cx| {
+            list.set_selected_index(Some(IndexPath::new(row)), window, cx);
+        });
+
+        if clicks >= 2 {
+            let id = self.user_list.read(cx).delegate().id_at(row);
+            if let Some(id) = id {
+                crate::app::run_tool(id, cx);
+            }
+            return;
+        }
+
+        // 点行会把焦点从搜索框拿走，敲字就没反应了，还回去。
+        let handle = self.tools_search.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
         cx.notify();
     }
 
-    /// 把列表的「类别 + 筛选 + 搜索词」对齐到当前状态（数据由 delegate 现算）。
+    /// 把列表的「类别 + 筛选 + 搜索词」对齐到当前状态，并让它重建缓存。
+    ///
+    /// 所有会改变条目内容的地方（增删改、开关、绑快捷键）都得走这里，否则列表还是旧的一批。
     pub(crate) fn sync_user_list(&mut self, cx: &mut Context<Self>) {
         let kind = self.user_kind;
         let query = self.tools_query.clone();
         let filter = self.user_filter;
         let recording = self.recording_tool();
         let conflict = self.conflict.clone();
-        self.user_list.update(cx, |list, _cx| {
-            list.delegate_mut().retarget(kind, &query, filter);
+        self.user_list.update(cx, |list, cx| {
+            list.delegate_mut().retarget(kind, &query, filter, cx);
             list.delegate_mut().set_recording(recording, conflict);
+            cx.notify();
         });
     }
 

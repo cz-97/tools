@@ -4,6 +4,10 @@
 //! 把「亮一下面板」的信号丢给已经跑着的那个，然后自己退出。所以重复双击 exe
 //! 的效果等于「把面板叫回来」，而不是长出第二个后台进程。
 //!
+//! 同一套信号里还有一条「安静退出」（`tools.exe --quit`）：面板自己以管理员身份跑着时，
+//! 普通权限的进程**杀不掉**它（要 UAC 授权），但它可以让它自己走——收到信号就
+//! `cx.quit()`。部署脚本靠这条收旧进程，不必弹权限框。
+//!
 //! 重启靠**旧的先交身份**（[`Instance`] 一丢，内核对象就没了），新进程照常抢就行——
 //! 不用让新的等在单例上，那种跨进程的等待既慢又难判断卡在哪。
 //!
@@ -11,6 +15,8 @@
 
 /// 「把面板亮出来」这个请求的名字。
 const WAKE_NAME: &str = r"Local\tools.wake";
+/// 「安静退出」这个请求的名字。
+const QUIT_NAME: &str = r"Local\tools.quit";
 /// 单例身份的名字。
 const MUTEX_NAME: &str = r"Local\tools.singleton";
 
@@ -30,7 +36,15 @@ impl Instance {
     ///
     /// 拿不到事件（没有实例在跑，或者是老版本）就返回 `false`，调用方照常退出。
     pub fn wake_existing() -> bool {
-        sys::wake(WAKE_NAME)
+        sys::signal(WAKE_NAME)
+    }
+
+    /// 请求已经在跑的那个实例**自己退出**，成功返回 `true`。
+    ///
+    /// 这是唯一不用 UAC 就能收掉提权进程的路子：普通权限的进程杀不动 High 完整性的
+    /// 进程，但能让它自己走。
+    pub fn quit_existing() -> bool {
+        sys::signal(QUIT_NAME)
     }
 
     /// 非阻塞地问一句：有别人在叫我们把面板亮出来吗。
@@ -45,25 +59,34 @@ impl Instance {
     /// 句柄在 [`Instance`] 被丢弃后就失效了，但那时进程正准备退出（重启会让旧进程
     /// 先交身份），等它的线程会拿到 `WAIT_FAILED` 自己退出，不会卡住。
     pub fn wake_handle(&self) -> usize {
-        sys::handle(&self.held)
+        sys::wake_handle(&self.held)
+    }
+
+    /// 退出事件的句柄值，和唤醒事件一起交给那条线程死等。
+    pub fn quit_handle(&self) -> usize {
+        sys::quit_handle(&self.held)
     }
 
     /// 换一套名字抢身份。生产代码用 [`Instance::acquire`]，这里给测试一个独立命名空间：
     /// 机器上真跑着一个实例时，测试也不能被它挡掉。
     fn acquire_named(mutex: &str, wake: &str) -> Option<Self> {
-        sys::acquire((mutex, wake)).map(|held| Self { held })
+        // 退出事件的名字跟着唤醒事件派生，测试的独立命名空间也就一起有了。
+        let quit = format!("{wake}.quit");
+        sys::acquire((mutex, wake, &quit)).map(|held| Self { held })
     }
 }
 
-/// 死等下一次唤醒，**不消耗 CPU**。
+/// 死等**任意一个**信号，返回它是第几个（按传进来的顺序）。
 ///
-/// 参数是 [`Instance::wake_handle`] 交出来的句柄值；之所以走模块级自由函数，是因为
-/// 等它的线程不该攥着整个 [`Instance`]（那是主线程持有的身份）。
+/// 参数是 [`Instance::wake_handle`] / [`Instance::quit_handle`] 交出来的句柄值；之所以走
+/// 模块级自由函数，是因为等它的线程不该攥着整个 [`Instance`]（那是主线程持有的身份）。
 ///
 /// 面板挂机时别的进程可能永远不叫我们，所以这里必须阻塞等待、不能轮询：一个 200ms
 /// 的轮询循环看着不贵，却是之前这个程序挂机时唯一持续醒着的东西。
-pub fn wait_wakeup(event: usize) -> bool {
-    sys::wait(event)
+///
+/// 句柄失效时返回 `None`，那条线程就该收工。
+pub fn wait_signals(events: &[usize]) -> Option<usize> {
+    sys::wait_any(events)
 }
 
 /// 等一个新的同名进程出现，最多等 `timeout`；等到了返回 `true`。
@@ -91,11 +114,14 @@ mod sys {
         WAIT_FAILED, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject,
+        CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForMultipleObjects,
+        WaitForSingleObject,
     };
 
-    /// `WaitForSingleObject` 的「一直等」。
+    /// `WaitForMultipleObjects` 的「一直等」。
     const INFINITE: u32 = 0xffff_ffff;
+    /// 「只等所有句柄」而不是「等到任意一个」，这里永远是「任意一个」。
+    const WAIT_ANY: i32 = 0;
 
     /// 打开一个事件只需要「能 SetEvent」这一项权限。
     const EVENT_MODIFY_STATE: u32 = 0x0002;
@@ -104,14 +130,17 @@ mod sys {
         /// 单例身份。只靠它「存在」来判重，不真的去占有它。
         mutex: HANDLE,
         /// 别的实例用它叫我们亮面板。
-        event: HANDLE,
+        wake: HANDLE,
+        /// 别的实例用它叫我们自己退出。
+        quit: HANDLE,
     }
 
     impl Drop for Held {
         fn drop(&mut self) {
             // 关掉句柄就等于放弃身份：没有别的句柄时内核对象跟着销毁。
             unsafe {
-                CloseHandle(self.event);
+                CloseHandle(self.quit);
+                CloseHandle(self.wake);
                 CloseHandle(self.mutex);
             }
         }
@@ -121,8 +150,8 @@ mod sys {
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    pub fn acquire(names: (&str, &str)) -> Option<Held> {
-        let (mutex, event) = (wide(names.0), wide(names.1));
+    pub fn acquire(names: (&str, &str, &str)) -> Option<Held> {
+        let (mutex, wake, quit) = (wide(names.0), wide(names.1), wide(names.2));
         // `CreateMutexW` 成功时**不会**清掉上一次的错误码，先归零再判，
         // 免得把上一轮的 `ERROR_ALREADY_EXISTS` 当成这一轮的结果。
         unsafe { SetLastError(0) };
@@ -134,15 +163,28 @@ mod sys {
             unsafe { CloseHandle(held) };
             return None;
         }
-        let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, event.as_ptr()) };
-        if event.is_null() {
+        let wake = unsafe { CreateEventW(std::ptr::null(), 0, 0, wake.as_ptr()) };
+        if wake.is_null() {
             unsafe { CloseHandle(held) };
             return None;
         }
-        Some(Held { mutex: held, event })
+        let quit = unsafe { CreateEventW(std::ptr::null(), 0, 0, quit.as_ptr()) };
+        if quit.is_null() {
+            unsafe {
+                CloseHandle(wake);
+                CloseHandle(held);
+            }
+            return None;
+        }
+        Some(Held {
+            mutex: held,
+            wake,
+            quit,
+        })
     }
 
-    pub fn wake(name: &str) -> bool {
+    /// 给同名事件打个信号（唤醒、退出共用）。
+    pub fn signal(name: &str) -> bool {
         let name = wide(name);
         let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
         if event.is_null() {
@@ -155,26 +197,35 @@ mod sys {
 
     pub fn take(held: &Held) -> bool {
         // 0 毫秒 = 只看一眼，别把 UI 线程挂住。
-        (unsafe { WaitForSingleObject(held.event, 0) }) == WAIT_OBJECT_0
+        (unsafe { WaitForSingleObject(held.wake, 0) }) == WAIT_OBJECT_0
     }
 
-    pub fn handle(held: &Held) -> usize {
-        held.event as usize
+    pub fn wake_handle(held: &Held) -> usize {
+        held.wake as usize
     }
 
-    pub fn wait(event: usize) -> bool {
-        let handle = event as HANDLE;
-        if handle.is_null() {
-            return false;
+    pub fn quit_handle(held: &Held) -> usize {
+        held.quit as usize
+    }
+
+    pub fn wait_any(events: &[usize]) -> Option<usize> {
+        if events.is_empty() {
+            return None;
         }
+        let handles: Vec<HANDLE> = events.iter().map(|value| *value as HANDLE).collect();
         loop {
-            match unsafe { WaitForSingleObject(handle, INFINITE) } {
-                WAIT_OBJECT_0 => return true,
-                // 句柄已经随着旧进程的身份一起没了，线程该收工。
-                WAIT_FAILED | WAIT_ABANDONED => return false,
-                // `INFINITE` 不该超时；真遇上就接着等，别把线程放跑。
-                _ => continue,
+            let result = unsafe {
+                WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), WAIT_ANY, INFINITE)
+            };
+            // 句柄已经随着旧进程的身份一起没了，线程该收工。
+            if result == WAIT_FAILED || result == WAIT_ABANDONED {
+                return None;
             }
+            let index = result.wrapping_sub(WAIT_OBJECT_0) as usize;
+            if index < handles.len() {
+                return Some(index);
+            }
+            // `INFINITE` 不该给出别的结果；真遇上就接着等，别把线程放跑。
         }
     }
 
@@ -223,11 +274,11 @@ mod sys {
 mod sys {
     pub struct Held;
 
-    pub fn acquire(_: (&str, &str)) -> Option<Held> {
+    pub fn acquire(_: (&str, &str, &str)) -> Option<Held> {
         Some(Held)
     }
 
-    pub fn wake(_: &str) -> bool {
+    pub fn signal(_: &str) -> bool {
         false
     }
 
@@ -235,12 +286,16 @@ mod sys {
         false
     }
 
-    pub fn handle(_: &Held) -> usize {
+    pub fn wake_handle(_: &Held) -> usize {
         0
     }
 
-    pub fn wait(_: usize) -> bool {
-        false
+    pub fn quit_handle(_: &Held) -> usize {
+        0
+    }
+
+    pub fn wait_any(_: &[usize]) -> Option<usize> {
+        None
     }
 
     pub fn another_running() -> bool {
@@ -272,13 +327,28 @@ mod tests {
         );
 
         // 唤醒信号只送一次：自动复位的事件读一遍就清掉。
-        assert!(sys::wake(&wake));
+        assert!(sys::signal(&wake));
         assert!(first.take_wakeup());
         assert!(!first.take_wakeup());
 
         // 交还身份之后别人就能接手（重启靠的就是这条）。
         drop(first);
         assert!(Instance::acquire_named(&mutex, &wake).is_some());
+    }
+
+    #[test]
+    fn both_signals_are_delivered_on_the_same_wait() {
+        // `--quit` 和「再双击一次」走的是同一条等待线程，两个事件得能分别认出来。
+        // **这里只能打测试命名空间的事件**：打到生产名字上就等于把正在跑的启动器关掉。
+        let (mutex, wake) = (unique("test-signal-mutex"), unique("test-signal-wake"));
+        let held = Instance::acquire_named(&mutex, &wake).expect("第一个该拿到");
+        let events = [held.wake_handle(), held.quit_handle()];
+
+        assert!(sys::signal(&format!("{wake}.quit")));
+        assert_eq!(wait_signals(&events), Some(1), "退出信号落在第二个句柄上");
+
+        assert!(sys::signal(&wake));
+        assert_eq!(wait_signals(&events), Some(0), "唤醒信号落在第一个句柄上");
     }
 
     #[test]

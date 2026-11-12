@@ -345,7 +345,25 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
   按钮不会左右跳。**别在这里另起一套尺寸**，页头歪一两个像素很明显。
 - **开启状态筛选**（`Launcher::user_filter`，`EnabledFilter`）是三态循环按钮：
   全部 → 已开启 → 未开启 → 全部，判定在 `EnabledFilter::keeps`，过滤发生在
-  `UserToolsDelegate::rows`。改筛选或换类型都要把高亮打回第一行（行数会变）。
+  `UserToolsDelegate::retarget`（重建 `rows` 缓存）里。改筛选或换类型都要把高亮打回第一行
+  （行数会变）。
+- **条目是缓存的，不是现算的**：`items_count` / `render_item` 每帧每行都要问一遍，
+  在那里现读设置再全量克隆就是「滚动卡顿」。`UserToolsDelegate::rows` 只在 `retarget`
+  里重建，而 `retarget` 由 `Launcher::sync_user_list` 调——**增删改、开关、绑快捷键
+  之后必须走 `sync_user_list`**，否则列表还是旧的一批（条件和数据无关，不能靠
+  「条件没变就早退」省这次重建）。
+- **选中态归 `ListState`，delegate 里那个只是镜像**：行上画的选中来自
+  `ListState::set_selected_index`，只改 delegate 的 `selected` 字段画面上一点反应都没有
+  （用户报过「↑↓ 没反应」）。所以上下键和单击都要 `set_selected_index` +
+  `scroll_to_selected_item`，和 `move_entry` / `entry_clicked` 一个写法。
+  `UserToolRow` 的 `Selectable::selected` 故意**不认**框架推下来的值：增删条目之后
+  `ListState` 里那个下标会过期，认了就是「高亮在 A、回车执行 B」。
+- **回车也要在这里办**：焦点在搜索框里，`List` 的 `confirm` 派不下来，
+  `activate_selected` 的 `Page::UserTools` 分支自己取 `selected_id()` 执行。
+- **行里的控件用 `block_mouse_except_scroll`，不要用 `occlude`**：`occlude` 是
+  `HitboxBehavior::BlockMouse`，会把鼠标底下的 hitbox 从命中链里截断，列表的滚动容器
+  就再也拿不到 `should_handle_scroll`——表现是「鼠标停在按钮/开关上滚不动列表」。
+  前者只挡点击和悬停，滚轮照传（见 §11）。
 - **这一页的现场和仓库搜索页一个规矩**：收起面板时 `remember_page` 把类别、筛选、
   关键词、高亮存进 `Launcher::user_state`，`resume_seconds` 内再唤出由 `open_user_tools`
   摆回去；从主页命令进来则是干净的一页（类别回 `File`、筛选回 `All`、关键词清空）。
@@ -392,6 +410,12 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - **交给任务之后必须确认新进程真的起来了**（`instance::wait_for_new`，3 秒）再退出：
   `schtasks /Run` 返回成功只代表任务被接受，任务可能一直排队——拿它当证据就是
   「退出后什么都没有」。等不到就 `spawn_self` 兜底，宁可给个普通权限的实例。
+- **要「结束」这个进程，用 `tools.exe --quit`，不要 `taskkill`**：提权的进程，普通权限
+  的 `taskkill` 一律拒绝访问，`Stop-Process` 同理，只能靠 `Start-Process -Verb RunAs`
+  弹一次 UAC。`--quit` 走的是单例那套命名事件（`Local\tools.quit`）：新进程一个副作用
+  都不做（不提权、不抢单例），只给事件打个信号就退，跑着的那个收到信号自己
+  `remember_window_position` + `cx.quit()`。**这条分支必须在 `elevate_handoff` 之前**，
+  否则 `--quit` 会先把一个提权实例拉起来再退。
 
 ### 4.11 钉住面板（右键切换）
 
@@ -597,6 +621,14 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
   `window_control_area(Drag)` 让系统返回 `HTCAPTION`。
 - 拖动区命中测试查的是上一次已分发的鼠标位置；脚本注入要先补一次 move。
 - 拖动区里要接鼠标的子控件必须 `.occlude()`（BlockMouse），否则父级拖动区跟着命中。
+- **但可滚动容器里的子控件不能用 `occlude`，要用 `block_mouse_except_scroll`**：
+  `occlude` 是 `HitboxBehavior::BlockMouse`，`hit_test` 一碰到它就把后面的 hitbox 全丢掉
+  （`window.rs` 的 `hit_test` 里直接 `break`），滚动容器因此拿不到
+  `should_handle_scroll`——「鼠标停在按钮/开关上滚不动」。后者是
+  `BlockMouseExceptScroll`，只把 `is_hovered` 置假，滚轮照传。
+- **`ListState::set_selected_index` 才是选中态的真相**：`List` 渲染每个 item 时会用
+  它自己那个 `selected_index` 覆盖 delegate 传下来的 `selected()`。只改 delegate 字段 =
+  画面不动（「↑↓ 没反应」）。滚动也一样，`scroll_to_selected_item` 读的就是它。
 - List 用 `searchable(false)`，但仍可用 `ListState::set_query`（需 `&mut Window`，走
   `with_launcher` 延后）。
 - `Input` 根节点 `size_full()`，宽高由外层控制；`input_px` / `input_py` 看 `Size`，

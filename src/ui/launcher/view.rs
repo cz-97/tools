@@ -424,7 +424,7 @@ impl Render for Launcher {
                     ("Enter", strings::launcher::FOOTER_OPEN),
                     ("Esc", strings::launcher::FOOTER_BACK),
                 ],
-                String::new(),
+                strings::lists::count(self.user_list.read(cx).delegate().len()),
             ),
             Page::List(kind) => {
                 let enter = if kind == ListKind::Search {

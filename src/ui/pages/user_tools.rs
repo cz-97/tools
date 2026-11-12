@@ -23,11 +23,17 @@ use crate::ui::metrics::{RADIUS_CHIP, RADIUS_CONTROL};
 use crate::ui::launcher::{EnabledFilter, user_kind_icon};
 
 /// 某一类用户条目的列表数据。
+///
+/// **条目是缓存的**：`items_count`、`render_item` 每帧都要问一遍，如果每次都现读设置再
+/// 全量克隆一遍，滚一下就卡一下（用户报过）。缓存只在 [`Self::retarget`] 里重建——
+/// 增删改、开关、筛选、换类别都会走到 `Launcher::sync_user_list`，那就是唯一的刷新点。
 pub(crate) struct UserToolsDelegate {
     kind: ToolKind,
     query: String,
     /// 「开启状态」筛选：全部 / 只看上主页的 / 只看没上主页的。
     filter: EnabledFilter,
+    /// 当前类别 + 筛选 + 搜索词下能看到的条目。
+    rows: Vec<UserTool>,
     /// 高亮在第几行（单击选中的就是它）。
     selected: usize,
     /// 正在录快捷键的那一条（行上的按钮要显示「按下组合键…」）。
@@ -42,18 +48,48 @@ impl UserToolsDelegate {
             kind,
             query: String::new(),
             filter: EnabledFilter::All,
+            rows: Vec::new(),
             selected: 0,
             recording: None,
             conflict: None,
         }
     }
 
-    /// 换类别、搜索词或筛选。**数据不在这里存**：每次现从设置里筛，改动立刻反映出来，
-    /// 不用在添加/删除/编辑之后挨个地方记得刷新。
-    pub(crate) fn retarget(&mut self, kind: ToolKind, query: &str, filter: EnabledFilter) {
+    /// 换类别、搜索词或筛选，并按新条件重建缓存。
+    ///
+    /// 条件没变也照样重建：增删改、开关都不改这三个条件，只改数据库里的内容，
+    /// 早退一次就会留着旧的那一批。
+    pub(crate) fn retarget(
+        &mut self,
+        kind: ToolKind,
+        query: &str,
+        filter: EnabledFilter,
+        cx: &App,
+    ) {
         self.kind = kind;
         self.query = query.trim().to_lowercase();
         self.filter = filter;
+        self.reload(cx);
+    }
+
+    /// 现从设置里筛一遍。名字和路径都能搜，原文找不到时按拼音（全拼 / 首字母）再找一遍。
+    fn reload(&mut self, cx: &App) {
+        self.rows = stored_settings(cx)
+            .tools_of(self.kind)
+            .filter(|tool| self.filter.keeps(tool.enabled))
+            .filter(|tool| {
+                tools::pinyin::matches(&format!("{} {}", tool.name, tool.target), &self.query)
+            })
+            .cloned()
+            .collect();
+        if self.selected >= self.rows.len() {
+            self.selected = 0;
+        }
+    }
+
+    /// 能看见的行数。
+    pub(crate) fn len(&self) -> usize {
+        self.rows.len()
     }
 
     /// 高亮到第几行。收起面板时记现场用。
@@ -63,7 +99,17 @@ impl UserToolsDelegate {
 
     /// 把高亮摆回第 `row` 行（过滤条件变了、或者从记忆里回来时用）。
     pub(crate) fn restore_selection(&mut self, row: usize) {
-        self.selected = row;
+        self.selected = row.min(self.rows.len().saturating_sub(1));
+    }
+
+    /// 第 `row` 行是哪一条（双击执行用）。
+    pub(crate) fn id_at(&self, row: usize) -> Option<i64> {
+        self.rows.get(row).map(|tool| tool.id)
+    }
+
+    /// 高亮那一行是哪一条（回车执行用）。
+    pub(crate) fn selected_id(&self) -> Option<i64> {
+        self.id_at(self.selected)
     }
 
     /// 录制状态变了：按钮上的字跟着变。
@@ -71,44 +117,22 @@ impl UserToolsDelegate {
         self.recording = recording;
         self.conflict = conflict;
     }
-
-    /// 上下键挪一行。
-    pub(crate) fn shift_selection(&mut self, delta: isize, count: usize) {
-        if count == 0 {
-            return;
-        }
-        let next = (self.selected as isize + delta).clamp(0, count as isize - 1) as usize;
-        self.selected = next;
-    }
-
-    /// 当前类别 + 筛选 + 搜索词下能看到的条目。名字和路径都能搜，
-    /// 原文找不到时按拼音（全拼 / 首字母）再找一遍。
-    pub(crate) fn rows(&self, cx: &App) -> Vec<UserTool> {
-        stored_settings(cx)
-            .tools_of(self.kind)
-            .filter(|tool| self.filter.keeps(tool.enabled))
-            .filter(|tool| {
-                tools::pinyin::matches(&format!("{} {}", tool.name, tool.target), &self.query)
-            })
-            .cloned()
-            .collect()
-    }
 }
 
 impl ListDelegate for UserToolsDelegate {
     type Item = UserToolRow;
 
-    fn items_count(&self, _section: usize, cx: &App) -> usize {
-        self.rows(cx).len()
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.rows.len()
     }
 
     fn render_item(
         &mut self,
         ix: IndexPath,
         _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
+        _cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
-        let tool = self.rows(cx).get(ix.row)?.clone();
+        let tool = self.rows.get(ix.row)?.clone();
         let selected = self.selected == ix.row;
         let recording = self.recording == Some(tool.id);
         let conflict = self.conflict.clone();
@@ -125,12 +149,12 @@ impl ListDelegate for UserToolsDelegate {
         &mut self,
         ix: Option<IndexPath>,
         _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
+        cx: &mut Context<ListState<Self>>,
     ) {
-        // 单击选中：记住是高亮哪一行，画的时候点亮。
-        if let Some(ix) = ix {
-            self.selected = ix.row;
-        }
+        // 单击、上下键都走到这儿（`ListState` 自己那个 `selected_index` 才是真相，
+        // 行上画的选中态也是它派下来的）。
+        self.selected = ix.map(|path| path.row).unwrap_or(0);
+        cx.notify();
     }
 
     fn confirm(
@@ -140,8 +164,7 @@ impl ListDelegate for UserToolsDelegate {
         cx: &mut Context<ListState<Self>>,
     ) {
         let app: &mut App = cx;
-        let selected = self.selected;
-        let Some(id) = self.rows(app).get(selected).map(|tool| tool.id) else {
+        let Some(id) = self.id_at(self.selected) else {
             return;
         };
         crate::app::run_tool(id, app);
@@ -174,8 +197,13 @@ pub(crate) struct UserToolRow {
 }
 
 impl Selectable for UserToolRow {
-    fn selected(mut self, selected: bool) -> Self {
-        self.selected = selected;
+    /// **不认 `List` 推下来的选中态。**
+    ///
+    /// 这一页的选中是 delegate 自己管的（单击、双击语义和别的页不一样，`ListState` 建的时候
+    /// 就 `selectable(false)` 交出来了）。`ListState` 仍然会拿它自己那个 `selected_index`
+    /// 调这个方法把行刷新一遍——增删条目之后那个下标会过期，认了就会出现「高亮在 A、
+    /// 回车执行 B」。`selected_index` 我们只用来滚动，所以这里原样返回。
+    fn selected(self, _selected: bool) -> Self {
         self
     }
 
@@ -199,6 +227,7 @@ impl RenderOnce for UserToolRow {
         };
         let id = self.tool.id;
         let kind = self.tool.kind;
+        let index = self.index;
 
         h_flex()
             .id(SharedString::from(format!("user-tool-{}", self.index)))
@@ -214,11 +243,13 @@ impl RenderOnce for UserToolRow {
                 this.hover(move |style| style.bg(colors.hover))
             })
             .on_click(move |event: &gpui_kit::ClickEvent, _window, cx| {
-                // 单击只选中（`List` 自己会记），双击才执行。
+                // 单击只选中（和书签、历史同一套手感），双击才执行。
+                // 选中态归 `ListState`，所以得绕回 `Launcher` 去改。
                 cx.stop_propagation();
-                if event.click_count() >= 2 {
-                    crate::app::run_tool(id, cx);
-                }
+                let clicks = event.click_count();
+                crate::app::with_launcher(cx, move |launcher, window, cx| {
+                    launcher.user_row_clicked(index, clicks, window, cx);
+                });
             })
             .child(div().flex_shrink_0().child(icon))
             .child(
@@ -256,8 +287,17 @@ impl RenderOnce for UserToolRow {
                     .child(strings::common::uses(self.tool.uses)),
             )
             // 快捷键：点一下开始录，右键清掉（和设置里那条一样的操作）。
-            .child(div().occlude().w(px(104.)).flex_shrink_0().child(
-                crate::ui::commands_page::shortcut_button(
+            //
+            // 行里的控件一律用 `block_mouse_except_scroll`，**不要用 `occlude`**：
+            // `occlude` 是 `HitboxBehavior::BlockMouse`，它会把鼠标底下的所有 hitbox
+            // 从命中链里**截断**，列表的滚动容器也就拿不到 `should_handle_scroll`——
+            // 表现是「鼠标停在按钮/开关上滚不动」。前者只挡点击和悬停，滚轮照传。
+            .child(
+                div()
+                    .block_mouse_except_scroll()
+                    .w(px(104.))
+                    .flex_shrink_0()
+                    .child(crate::ui::commands_page::shortcut_button(
                     SharedString::from(format!("user-tool-shortcut-{}", self.index)),
                     if self.recording {
                         self.conflict
@@ -290,19 +330,23 @@ impl RenderOnce for UserToolRow {
             ))
             // 开关：这一条上不上主页。
             .child(
-                div().flex_shrink_0().occlude().w(px(40.)).child(
-                    Switch::new(SharedString::from(format!(
-                        "user-tool-switch-{}",
-                        self.index
-                    )))
-                    .checked(self.tool.enabled)
-                    .on_change(move |checked, _window, cx| {
-                        let checked = *checked;
-                        crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                            launcher.set_tool_enabled(id, checked, cx)
-                        });
-                    }),
-                ),
+                div()
+                    .flex_shrink_0()
+                    .block_mouse_except_scroll()
+                    .w(px(40.))
+                    .child(
+                        Switch::new(SharedString::from(format!(
+                            "user-tool-switch-{}",
+                            self.index
+                        )))
+                        .checked(self.tool.enabled)
+                        .on_change(move |checked, _window, cx| {
+                            let checked = *checked;
+                            crate::app::with_launcher(cx, move |launcher, _window, cx| {
+                                launcher.set_tool_enabled(id, checked, cx)
+                            });
+                        }),
+                    ),
             )
             // 文件是「用默认应用开」还是「打开所在位置」；终端是「静默跑」还是「留窗口」。
             .when(kind == ToolKind::File, |this| {
@@ -378,7 +422,8 @@ fn row_button(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .occlude()
+        // 只挡点击和悬停，滚轮要能传给列表（`occlude` 会把滚轮一起截掉）。
+        .block_mouse_except_scroll()
         .flex_shrink_0()
         .w(px(width))
         .flex()
