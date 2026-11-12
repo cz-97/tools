@@ -320,13 +320,20 @@ impl RenderOnce for UserToolRow {
                     colors,
                     px(96.),
                     move |_, _, cx| {
-                        crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                            launcher.toggle_tool_recording(id, cx)
+                        crate::app::with_launcher(cx, move |launcher, window, cx| {
+                            launcher.toggle_tool_recording(id, cx);
+                            // 点完控件就把焦点还给搜索框：否则焦点留在按钮上，用户接着
+                            // 用中文输入法打字，第一个字母进不了输入法上下文。
+                            launcher.focus_active_input(window, cx);
                         });
                     },
                     move |_, _, cx| {
-                        crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                            launcher.clear_shortcut(crate::ui::launcher::RecordTarget::Tool(id), cx)
+                        crate::app::with_launcher(cx, move |launcher, window, cx| {
+                            launcher.clear_shortcut(
+                                crate::ui::launcher::RecordTarget::Tool(id),
+                                cx,
+                            );
+                            launcher.focus_active_input(window, cx);
                         });
                     },
                 ),
@@ -342,8 +349,9 @@ impl RenderOnce for UserToolRow {
                         .checked(self.tool.enabled)
                         .on_change(move |checked, _window, cx| {
                             let checked = *checked;
-                            crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                                launcher.set_tool_enabled(id, checked, cx)
+                            crate::app::with_launcher(cx, move |launcher, window, cx| {
+                                launcher.set_tool_enabled(id, checked, cx);
+                                launcher.focus_active_input(window, cx);
                             });
                         }),
                     ),
@@ -361,8 +369,9 @@ impl RenderOnce for UserToolRow {
                     64.,
                     colors,
                     move |_, _window, cx| {
-                        crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                            launcher.toggle_tool_open_default(id, cx)
+                        crate::app::with_launcher(cx, move |launcher, window, cx| {
+                            launcher.toggle_tool_open_default(id, cx);
+                            launcher.focus_active_input(window, cx);
                         });
                     },
                 ))
@@ -379,8 +388,9 @@ impl RenderOnce for UserToolRow {
                     64.,
                     colors,
                     move |_, _window, cx| {
-                        crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                            launcher.toggle_tool_quiet(id, cx)
+                        crate::app::with_launcher(cx, move |launcher, window, cx| {
+                            launcher.toggle_tool_quiet(id, cx);
+                            launcher.focus_active_input(window, cx);
                         });
                     },
                 ))
@@ -403,11 +413,12 @@ impl RenderOnce for UserToolRow {
                 strings::tools_page::DELETE.into(),
                 32.,
                 colors,
-                move |_, _window, cx| {
-                    crate::app::with_launcher(cx, move |launcher, _window, cx| {
-                        launcher.delete_tool(id, cx)
-                    });
-                },
+                    move |_, _window, cx| {
+                        crate::app::with_launcher(cx, move |launcher, window, cx| {
+                            launcher.delete_tool(id, cx);
+                            launcher.focus_active_input(window, cx);
+                        });
+                    },
             ))
     }
 }

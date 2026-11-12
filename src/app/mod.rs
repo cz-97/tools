@@ -449,15 +449,17 @@ fn intercept_key(event: &gpui_kit::KeystrokeEvent, window: &mut Window, cx: &mut
         cx.stop_propagation();
         return;
     }
-    // 保险：焦点不知怎么跑到别处了（点按钮之后的极端情况），敲字时先把它拽回来。
-    // **这一下字符不能丢**：以前是「聚焦 + 吞掉」，用户点一下列表再打 `ip`，只有 `p`
-    // 进得去（用户报过两次）。带搜索框的页面走 `type_into_search`，字符直接补进去；
-    // 设置页、计算器页没有默认输入框，还是原来的聚焦逻辑。
+    // 保险：焦点不知怎么跑到别处了（点列表、点按钮之后），敲字时先把它拽回来。
+    //
+    // **这一下按键既不能丢，也不能绕过输入法。** 以前是「聚焦 + 吞掉」，用户点一下
+    // 列表再打 `ip`，只有 `p` 进得去；后来改成手动把字符插进搜索框，英文字符是进去了，
+    // 中文输入法却组不出字——手插的字符不经过 IME（用户报过）。正解是：**先同步聚焦，
+    // 再把这一下按键重放给窗口**，重放走的是正常派发链路，输入法就在那条链路上。
     if types_text(&event.keystroke) && !active_input_focused(window, cx) {
-        let text = event.keystroke.key_char.clone().unwrap_or_default();
-        if !type_into_search(&text, window, cx) {
-            with_launcher(cx, |launcher, window, cx| {
-                launcher.focus_active_input(window, cx)
+        let keystroke = event.keystroke.clone();
+        if focus_page_input(cx, window) {
+            window.defer(cx, move |window, cx| {
+                window.dispatch_keystroke(keystroke, cx);
             });
         }
         cx.stop_propagation();
@@ -535,23 +537,21 @@ fn active_input_focused(window: &Window, cx: &App) -> bool {
         .unwrap_or(true)
 }
 
-/// 焦点不在输入框时敲下的那个字符，塞进本页搜索框；返回 `true` 表示这一页有搜索框、
-/// 字符已经进去了，调用方该吞掉这次按键。
+/// 把焦点放回这一页该有输入的地方；返回 `false` 表示面板已经不在了。
 ///
-/// 和 [`active_input_focused`] 一样**同步**执行：要不要吞掉这一下按键，只能在当前这一拍
-/// 决定，`with_launcher`（`cx.defer`）拿到结果时已经晚了。
-fn type_into_search(text: &str, window: &mut Window, cx: &mut App) -> bool {
+/// 和 [`active_input_focused`] 一样**同步**执行：重放按键必须在同一拍里先把焦点摆好，
+/// `with_launcher`（`cx.defer`）拿到结果时这一下按键早过去了。
+fn focus_page_input(cx: &mut App, window: &mut Window) -> bool {
     let Some(view) = cx
         .try_global::<LauncherHandle>()
         .map(|handle| handle.view.clone())
     else {
         return false;
     };
-    let text = text.to_string();
     view.update(cx, move |launcher, cx| {
-        launcher.type_into_search(&text, window, cx)
+        launcher.focus_active_input(window, cx)
     })
-    .unwrap_or(false)
+    .is_ok()
 }
 
 /// 面板里是不是有个「多行/编辑中」的输入框正拿着焦点（计算器公式行、工具编辑区）。

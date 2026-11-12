@@ -675,7 +675,7 @@ pub(crate) fn tool_editor_block(
                     strings::tools_page::CANCEL.into(),
                     colors,
                     false,
-                    cx.listener(|launcher, _, _, cx| launcher.cancel_tool_editor(cx)),
+                    cx.listener(|launcher, _, window, cx| launcher.cancel_tool_editor(window, cx)),
                 ))
                 .child(div().flex_1())
                 .when_some(launcher.tool_notice, |this, notice| {

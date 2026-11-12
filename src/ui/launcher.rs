@@ -1288,7 +1288,7 @@ impl Launcher {
             return;
         }
         if self.tool_editor.is_some() {
-            self.cancel_tool_editor(cx);
+            self.cancel_tool_editor(window, cx);
             return;
         }
         if matches!(
@@ -1613,52 +1613,6 @@ impl Launcher {
         // 列表页的搜索框永远是默认焦点：进来就能过滤。
         self.focus_list_search(window, cx);
         cx.notify();
-    }
-
-    /// 焦点不在输入框时敲下的那个字符：**别丢掉，直接送进本页的搜索框。**
-    ///
-    /// 以前这一下是「聚焦 + 吞掉」，用户得再敲一次才进字——列表拿到焦点之后打 `ip`，
-    /// 只有 `p` 进去了。所有带搜索框的页面（主页、书库那几页、自定义条目）都走这一条，
-    /// 手感必须一样；设置页和计算器页没有「默认输入框」，那里还是原来的聚焦逻辑。
-    ///
-    /// 返回 `true` 表示这一页有搜索框、字符已经进去了（调用方吞掉这次按键）。
-    pub(crate) fn type_into_search(
-        &mut self,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        // 编辑区开着时不能往搜索框里塞：这些字属于那张表（名字 / 路径）。
-        // 焦点还没落到表里的话，交给 `focus_active_input`——它优先把焦点给名字框。
-        if self.tool_editor.is_some() {
-            return false;
-        }
-        let input = match self.page {
-            Page::Commands => self.search.clone(),
-            Page::List(_) => self.list_search.clone(),
-            Page::UserTools => self.tools_search.clone(),
-            _ => return false,
-        };
-        // `insert` 是「在光标处插入」，撤销栈和光标都按正常输入处理；
-        // 它是 silent 的（不发 `InputEvent::Change`），所以搜索词得自己同步一次。
-        input.update(cx, |input, cx| input.insert(text, window, cx));
-        let value = input.read(cx).value().to_string();
-        match self.page {
-            Page::Commands => self.search_changed(value, cx),
-            Page::List(kind) => {
-                if kind != ListKind::Search {
-                    self.list_search_changed(value, cx);
-                }
-            }
-            Page::UserTools => {
-                self.tools_query = value;
-                self.sync_user_list(cx);
-            }
-            _ => {}
-        }
-        input.read(cx).focus_handle(cx).focus(window, cx);
-        cx.notify();
-        true
     }
 
     /// 把焦点交回这一页该有输入的地方。
@@ -2486,12 +2440,15 @@ impl Launcher {
                         .unwrap_or_default(),
                 )
         });
-        // 编辑区是这一拍刚塞进元素树的：元素还没渲染，**这一次 focus 会落空**。
-        // 下一帧再聚焦一次，用户点开「改」立刻打中文，第一个字母才进得了输入法组字
-        // （否则它会落到别处，或者被拦截器当成普通字符插进去，中文就组不出来）。
+        // 编辑区是这一拍刚塞进元素树的：`window.defer` 在本帧渲染**之前**就跑，
+        // 元素还不存在，focus 照样落空。改成 `on_next_frame`——它在一帧画完之后执行，
+        // 那时候输入框已经在树里，焦点才真的落得下去。
+        //
+        // 这一步决定中文输入法能不能用：焦点没到输入框时，用户敲的第一个字母不会进
+        // 输入法上下文，只会成为一个孤立的字母（用户报过「c 进去了但没参与拼写」）。
         let handle = name.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
-        window.defer(cx, move |window, cx| {
+        window.on_next_frame(move |window, cx| {
             window.focus(&handle, cx);
         });
         // 几个框里按回车都等于点「保存」：填表的手感就该是这样。事件回调里没有窗口，
@@ -2574,14 +2531,21 @@ impl Launcher {
         store_settings(settings, cx);
         self.tool_notice = None;
         self.refresh_catalogue(cx);
-        window.blur(cx);
+        // 保存完焦点还给搜索框。以前这里是 `blur`，焦点落空——用户保存后接着打中文，
+        // 第一个字母就丢了（还要靠拦截器兜底，兜一次就是一次手感断裂）。
+        self.focus_active_input(window, cx);
         cx.notify();
     }
 
     /// 放弃编辑区里的内容。
-    pub(crate) fn cancel_tool_editor(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// **必须把焦点还给这一页的搜索框**：编辑区一关，那个名字框就没了，焦点悬在
+    /// 一个已经不存在的元素上。用户接着用中文输入法打字，第一个字母既进不了搜索框
+    /// 也组不了字（用户报过）。
+    pub(crate) fn cancel_tool_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tool_editor = None;
         self.tool_notice = None;
+        self.focus_active_input(window, cx);
         cx.notify();
     }
 
