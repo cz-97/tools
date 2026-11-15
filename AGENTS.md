@@ -37,51 +37,75 @@ Rust + GPUI 的 Windows 启动器，个人自用。这份文档是唯一的项�
 
 ## 3. 源码结构
 
-`lib` 放宿主侧服务（纯逻辑 + 平台细节），`bin` 放面板与界面。`lib.rs` / `main.rs` 用
-`pub use` 把子目录里的模块重新导出到顶层，所以旧的 `tools::settings`、
-`crate::catalogue` 这类路径仍然有效——挪文件不必改调用点。
+工作区三个成员，依赖只能往下走，跨层的调用在编译期就被挡住：
+
+| 成员 | 包名 | 里面是什么 | 允许依赖 |
+| --- | --- | --- | --- |
+| `crates/platform` | `tools-platform` | Win32 原语：窗口外壳、单例、开机启动、管理员模式、图标、HTTP、对话框、交给 shell 打开 | 无 |
+| `crates/core` | `tools-core` | 业务逻辑：计算、拼音、指令匹配、设置持久化、火狐书库、GitHub 查询 | `tools-platform` |
+| `crates/app` | `tools` | 界面、命令表、热键、二进制（`tools.exe`） | 上面两个 |
+
+- 版本号只写在根 `Cargo.toml` 的 `[workspace.package]`，三个包 `version.workspace = true`
+  继承；依赖版本同理集中在 `[workspace.dependencies]`。升版本改根目录一处。
+- 分层是硬约束：`platform` 里不许出现「设置」「命令」「页面」，也不许 `use tools_core`；
+  `core` 里不许出现 `gpui`。写到一半发现要反过来依赖，就是分错了，别加 `#[allow]` 绕。
+- 各 crate 的 `lib.rs` / `main.rs` 仍用 `pub use` 把子模块重新导出到本 crate 顶层，所以
+  自己 crate 内继续写 `crate::settings`、`crate::catalogue` 这类短路径。跨 crate 用全名：
+  `tools_core::settings`、`tools_platform::shell`。**别在 app 里再造一层转发模块**。
 
 ```text
-src/
-  main.rs                 bin 入口：mod 声明 + 顶层 re-export
-  lib.rs                  lib 入口：logic / platform + 顶层 re-export
-  strings.rs              所有界面文案（改文案只动这里）
-  app/                    应用外壳
-    mod.rs                启动流程、全局状态、面板显隐、按键拦截、with_launcher
-    actions.rs            命令动作的具体实现
-    tray_theme.rs         托盘图标与菜单配色
-  command/                命令与热键
-    catalogue.rs          命令静态表 COMMANDS、Section
-    shortcuts.rs          全局热键注册 / 冲突检测
-  logic/                  纯逻辑，可单测
-    calculator.rs         表达式求值
-    cache.rs              网络结果的文件缓存
-    firefox.rs            读火狐系浏览器的 places.sqlite（书签 / 历史 / 图标）
-    github.rs             GitHub 仓库查询（个人项目 / 星标 / 搜索）
-    matcher.rs            指令匹配（算式 / 金额 / 网址 / 路径）
-    pinyin.rs             拼音搜索（原文 / 全拼 / 首字母，中英混排）
-    settings.rs           SQLite 持久化
-  platform/               Windows 平台细节
-    autostart.rs          HKCU Run 开机启动
-    dialog.rs             系统的「打开文件」对话框（用户挑文件用）
-    instance.rs           单例（命名互斥量 + 唤醒事件）
-    logo.rs               纯计算图标光栅化
-    shell.rs              ShellExecuteW 打开外部目标、开新终端
-    window.rs             无边框窗口外壳
-  ui/                     界面
-    mod.rs
-    colors.rs             配色表 DARK / LIGHT、面板浓度下限（DARK_FLOOR）
-    metrics.rs            圆角四档（改观感先看这里）
-    commands_list.rs      主页列表（命令 + 用户工具 + 指令匹配）及其 ListDelegate
-    launcher/
-      mod.rs              面板状态与行为：导航、换页、动作
-      view.rs             绘制：页头、页脚、整页骨架、impl Render
-    pages/
-      commands.rs         设置里的「命令」页
-      settings.rs         设置页各标签
-      calculator.rs       计算器一级页面
-      lists.rs            工具列表页（书签 / 历史 / 个人项目 / 星标 / 查询仓库）
+crates/
+  platform/                     tools-platform
+    src/
+      lib.rs                    mod 声明
+      admin.rs                管理员模式（计划任务 / 提权判断 / 日志）
+      autostart.rs            HKCU Run 开机启动
+      dialog.rs               系统的「打开文件 / 文件夹」对话框
+      http.rs                 WinInet 的 GET，GitHub 查询走它
+      instance.rs             单例（命名互斥量 + 唤醒事件）
+      logo.rs                 纯计算图标光栅化（本地构建脚本也包含它）
+      shell.rs                ShellExecuteW 打开外部目标、开新终端
+      vsync.rs                DWM 刷新节奏
+      window.rs               无边框窗口外壳
+  core/                         tools-core
+    src/
+      lib.rs                    mod 声明 + 顶层 re-export
+      logic/                    纯逻辑，可单测
+        calculator.rs           表达式求值
+        cache.rs                网络结果的文件缓存
+        firefox.rs              读火狐系浏览器的 places.sqlite（书签 / 历史 / 图标）
+        github.rs               GitHub 仓库查询（个人项目 / 星标 / 搜索）
+        matcher.rs              指令匹配（算式 / 金额 / 网址 / 路径）
+        pinyin.rs               拼音搜索（原文 / 全拼 / 首字母，中英混排）
+        settings.rs             SQLite 持久化
+  app/                          tools（bin）
+    build.rs                    图标与版本资源
+    src/
+      main.rs                   bin 入口：mod 声明 + 顶层 re-export
+      strings.rs                所有界面文案（改文案只动这里）
+      app/                      应用外壳
+        mod.rs                  启动流程、全局状态、面板显隐、按键拦截、with_launcher
+        actions.rs              命令动作的具体实现
+        tray_theme.rs           托盘图标与菜单配色
+      command/                  命令与热键
+        catalogue.rs            命令静态表 COMMANDS、Section
+        shortcuts.rs            全局热键注册 / 冲突检测
+      ui/                       界面
+        colors.rs               配色表 DARK / LIGHT、面板浓度下限（DARK_FLOOR）
+        metrics.rs              圆角四档（改观感先看这里）
+        commands_list.rs        主页列表（命令 + 用户工具 + 指令匹配）及其 ListDelegate
+        launcher/
+          mod.rs                面板状态与行为：导航、换页、动作
+          view.rs               绘制：页头、页脚、整页骨架、impl Render
+        pages/
+          commands.rs           设置里的「命令」页
+          settings.rs           设置页各标签
+          calculator.rs         计算器一级页面
+          lists.rs              工具列表页（书签 / 历史 / 个人项目 / 星标 / 查询仓库）
 ```
+
+下面各节写 `logic/xxx.rs`、`platform/xxx.rs`、`ui/xxx.rs` 时，路径都是相对**所属 crate
+的 `src/`**——文件名没变，只是外面多包了一层 member。
 
 ## 4. 主要模块
 
@@ -577,7 +601,7 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 - 滑块整段行程 = `[下限, 1.0]`，所以每一格都还有用（不会出现拖了没反应的死区）。
 - 面板越薄，字色越要往白里提（`text_lift`），否则浅灰字压在浅灰底上必糊。
 - 想改「多透」就调 `DARK_FLOOR`：改小 = 更透但字更糊，改大 = 更稳但面板更实。
-  改完 `cargo test --bin tools colors` 会把整段行程逐档验一遍对比度。
+  改完 `cargo test -p tools colors` 会把整段行程逐档验一遍对比度。
 - 面板外沿 1px 高光边（`UiColors::panel_edge`）是玻璃感的关键，别删；`EDGE_MIX` **不能是 0**
   （0 等于高光等于面板色，那条线画了看不见）。
 - 选中态（`accent`）和悬停（`hover`）的浓度要「一眼认得出来」：12% 的选中块在深色面板上
@@ -599,9 +623,10 @@ Page::List(ListKind)     工具列表页（书签/历史/个人项目/星标/查
 ## 7. 图标
 
 `platform/logo.rs` 是唯一图形来源：纯计算光栅化，`rgba(size)` 给托盘，`ico()` 给 exe。
-`build.rs` 用 `#[path = "src/platform/logo.rs"]` 包含它，生成 `.ico` + `.rc`，找 `rc.exe`
-编成 `.res` 链进去；找不到 `rc.exe` 只警告、照常构建。窗口图标由
-`NativeWindow::set_icon(1)` 从 exe 资源 id 1 取。改图形只动 `logo.rs`。
+`crates/app/build.rs` 用 `#[path = "../platform/src/logo.rs"]` 把这一个文件当模块包含进来
+（它自己不带依赖，所以构建脚本能直接用），生成 `.ico` + `.rc`，找 `rc.exe` 编成 `.res`
+链进去；找不到 `rc.exe` 只警告、照常构建。窗口图标由 `NativeWindow::set_icon(1)` 从 exe
+资源 id 1 取。改图形只动 `logo.rs`，构建脚本那边不用跟着改。
 
 ## 8. 设置持久化（`logic/settings.rs`）
 
@@ -686,7 +711,7 @@ CREATE TABLE commands (section TEXT NOT NULL, id TEXT NOT NULL,
 - 改动要分得清：行为变更与纯格式/挪文件分开提交。
 - 版本号按改动程度升（功能 = minor，修复/重构 = patch）。
 
-验证口径：
+验证口径（在仓库根目录跑，命令默认作用于整个工作区）：
 
 ```sh
 cargo fmt --check
@@ -695,6 +720,8 @@ cargo test           # 见下
 cargo build          # debug
 ```
 
+- 只跑一块用 `-p`：`cargo test -p tools-core` 是纯逻辑那一套（快），
+  `cargo test -p tools` 是界面那一套；`cargo check -p tools-platform` 只查平台层。
 - **不做 release 构建**；要看效果用 `cargo run`（debug，保留控制台）。
 - 验证前先杀掉正在跑的 `tools` 进程，再 `cargo run`，免得旧实例占着单例/热键。
 - `cargo test` 里 `ui::colors::tests::text_stays_readable_on_a_white/black_wallpaper` 是
