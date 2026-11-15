@@ -1,0 +1,13 @@
+[package]
+name = "tools-platform"
+description = "Windows 平台原语：窗口外壳、单例、开机启动、管理员模式、图标、HTTP、系统对话框"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+# 这层只认 Win32，不认识任何业务概念：不许依赖 tools-core，也不许依赖 gpui。
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+windows-sys = { workspace = true }

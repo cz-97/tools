@@ -1,0 +1,19 @@
+[package]
+name = "tools"
+description = "快捷键唤出的 Windows 启动器"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+default-run = "tools"
+
+[dependencies]
+tools-core = { workspace = true }
+tools-platform = { workspace = true }
+image = { workspace = true }
+gpui-kit = { workspace = true }
+futures = { workspace = true }
+global-hotkey = { workspace = true }
+gpui-tray = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

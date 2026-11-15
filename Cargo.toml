@@ -1,11 +1,18 @@
-[package]
-name = "tools"
-version = "0.39.5"
+[workspace]
+# 三个成员，依赖只能往下走：
+#   crates/platform  系统原语，不知道「设置」「命令」是什么
+#   crates/core      业务逻辑，靠 platform 碰磁盘/网络
+#   crates/app       界面 + 可执行文件，上面两个都用
+# 版本号写在 [workspace.package] 里一处，三个包都继承它。
+resolver = "3"
+members = ["crates/platform", "crates/core", "crates/app"]
+
+[workspace.package]
+version = "0.39.6"
 edition = "2024"
-default-run = "tools"
 repository = "https://github.com/cz-97/tools"
 
-[dependencies]
+[workspace.dependencies]
 image = { version = "0.25", default-features = false }
 gpui-kit = "0.7.3"
 futures = "0.3"
@@ -15,7 +22,9 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde_json = "1"
 pinyin = { version = "0.11.0", default-features = false, features = ["plain"] }
 
-[target.'cfg(windows)'.dependencies]
+tools-platform = { path = "crates/platform" }
+tools-core = { path = "crates/core" }
+
 #
 # `windows-sys` 只有扁平函数和原始句柄，没有 COM 接口；选文件夹要走 Vista 之后的
 # `IFileOpenDialog`（和文件框同一个对话框，`FOS_PICKFOLDERS` 就是「选目录」形态），

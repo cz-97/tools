@@ -1,0 +1,17 @@
+[package]
+name = "tools-core"
+description = "纯逻辑：计算、拼音、指令匹配、设置持久化、火狐书库、GitHub 查询"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+# 不碰 gpui：这里的东西应该能脱离界面单独测。
+[dependencies]
+tools-platform = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+pinyin = { workspace = true }
+
+# `logic/firefox.rs` 要把 SQLite 里的时间转成本地时间，那里直接用到了 Win32。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

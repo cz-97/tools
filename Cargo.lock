@@ -6566,16 +6566,33 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tools"
-version = "0.39.5"
+version = "0.39.6"
 dependencies = [
  "futures",
  "global-hotkey",
  "gpui-kit",
  "gpui-tray",
  "image",
+ "tools-core",
+ "tools-platform",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tools-core"
+version = "0.39.6"
+dependencies = [
  "pinyin",
  "rusqlite",
  "serde_json",
+ "tools-platform",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tools-platform"
+version = "0.39.6"
+dependencies = [
  "windows 0.61.3",
  "windows-sys 0.61.2",
 ]
