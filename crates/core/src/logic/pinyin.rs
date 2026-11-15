@@ -1,49 +1,69 @@
-//! 拼音搜索：把一段文本展开成「原文 / 全拼 / 首字母」几种形态，供各列表过滤用。
+//! 拼音搜索：把文本拆成「音节序列」，搜索词按音节**前缀**匹配。
 //!
-//! 匹配顺序是「先原文、后拼音」：搜索词能直接在原文里找到就一分钱不花，
-//! 只有原文找不到的那一段才去展开拼音。所以纯中文、纯英文的搜索和从前一样快，
-//! 拼音只是多出来的一条兜底路子。
+//! 规则照输入法的找字习惯来：
 //!
-//! 四种形态（以「GitHub 星标」为例）：
+//! 1. 每个汉字是一个音节（全拼），连续的一串字母数字是一个音节；
+//! 2. 搜索词可以从**任意一个音节的开头**开始——`bao` 能搜到「周报」；
+//! 3. 但**不能从音节中间开始**——`oub`、`houb` 搜不到「周报」，它们是从
+//!    `zhoubao` 中间切出来的；
+//! 4. 每一段取的是音节的前缀——`zho` 能匹配 `zhong`，`ho` / `hon` / `hong` 都不行。
 //!
-//! | 形态 | 内容 | 能搜到 |
-//! | --- | --- | --- |
-//! | 原文 | `github 星标` | `星标`、`github` |
-//! | 全拼（按字隔开） | `github xing biao ` | `xing`、`biao` |
-//! | 全拼（连写） | `githubxingbiao` | `xingbiao`、`githubxing` |
-//! | 首字母（英文留整词） | `githubxb` | `xb`、`githubxb` |
-//! | 首字母（英文也缩写） | `gxb` | `gxb` |
+//! 于是「周报」能命中的是 `zhoubao` / `zhouba` / `zhoub` / `zho` / `zh` / `zb` /
+//! `bao` / `b`，而不是 `ub` / `oub` / `ouba` / `houb`。
 //!
-//! 中英混杂不需要特殊处理：字母数字原样留着，汉字换成拼音，两边自然接在同一串上。
+//! 原文匹配（不区分大小写的子串）在 [`matches`] 里先做：纯英文、纯中文的搜索
+//! 一分钱不花，拼音只是原文找不到时的第二条路。
 
 use pinyin::ToPinyin;
 
-/// 一段文本展开后的拼音形态。
-pub struct Folded {
-    /// 汉字换成全拼、字间留空格，其余字符照抄：`github xing biao `。
-    spaced: String,
-    /// 只留字母数字的全拼连写：`githubxingbiao`。
-    tight: String,
-    /// 首字母，英文留整词：`githubxb`。
-    mixed: String,
-    /// 首字母，英文也缩成一个字母：`gxb`。
-    initials: String,
+/// 一段文本展开后的音节序列。
+struct Folded {
+    /// 每个汉字一个全拼音节；连续字母数字一个音节。标点、空格只是边界。
+    syllables: Vec<String>,
 }
 
 impl Folded {
-    /// 这一段是不是出现在展开后的文本里。
-    pub fn contains(&self, token: &str) -> bool {
-        self.spaced.contains(token)
-            || self.tight.contains(token)
-            || self.mixed.contains(token)
-            || self.initials.contains(token)
+    /// 搜索词能不能按「音节前缀」匹配上。
+    ///
+    /// 用一张 `dp[i][j]` 表：前 `i` 个音节能不能吃掉搜索词的前 `j` 个字符。
+    /// 每个音节只能从它的第 0 个字符开始吃，吃 1..=音节长度 个字符（前缀）。
+    fn matches_token(&self, token: &str) -> bool {
+        let chars: Vec<char> = token.chars().collect();
+        if chars.is_empty() {
+            return true;
+        }
+        let count = self.syllables.len();
+        let width = chars.len();
+        let mut dp = vec![vec![false; width + 1]; count + 1];
+        // 从任意音节开始都算数（`bao` 要能搜到「周报」）。
+        for row in dp.iter_mut() {
+            row[0] = true;
+        }
+        for (index, syllable) in self.syllables.iter().enumerate() {
+            let unit: Vec<char> = syllable.chars().collect();
+            for taken in 0..=width {
+                if !dp[index][taken] {
+                    continue;
+                }
+                let room = unit.len().min(width - taken);
+                for step in 1..=room {
+                    // 跨过音节的第一个字符就不是前缀了，后面更长的也不用看。
+                    if chars[taken + step - 1] != unit[step - 1] {
+                        break;
+                    }
+                    dp[index + 1][taken + step] = true;
+                }
+            }
+        }
+        // 搜索词吃完就算命中：后面还有没有音节不管（`zho` 只用到「周」）。
+        dp.iter().any(|row| row[width])
     }
 }
 
 /// 这个搜索词能不能命中这段文本。
 ///
 /// 搜索词按空白切成若干段，每一段都要命中；每一段先当原文找（不区分大小写），
-/// 找不到再看拼音的全拼和首字母。
+/// 找不到再按音节前缀匹配拼音。
 pub fn matches(haystack: &str, query: &str) -> bool {
     let query = query.trim();
     if query.is_empty() {
@@ -60,63 +80,37 @@ pub fn matches(haystack: &str, query: &str) -> bool {
         if token.chars().any(is_han) {
             return false;
         }
-        folded.get_or_insert_with(|| fold(&lower)).contains(&token)
+        folded.get_or_insert_with(|| fold(&lower)).matches_token(&token)
     })
 }
 
-/// 展开成拼音形态。`text` 不必先小写——查表与大小写无关，大小写在这里统一抹平。
+/// 拆成音节序列。
 ///
-/// 「英文词」指连续的字母数字：整词进 `mixed`，只有词首进 `initials`。
-/// 汉字的每个首字母两种串都进。
+/// 汉字取全拼（`plain()` 与大小写无关）；连续字母数字整段算一个音节（`vscode`
+/// 是一个，不是六个）；其余字符只当边界，不进序列。
 fn fold(text: &str) -> Folded {
-    let mut spaced = String::with_capacity(text.len() * 4);
-    let mut tight = String::with_capacity(text.len() * 4);
-    let mut mixed = String::with_capacity(text.len() * 2);
-    let mut initials = String::with_capacity(text.len() * 2);
-    // 上一个字符是不是字母数字：用来判断「英文词」的边界。
-    let mut in_word = false;
+    let mut syllables: Vec<String> = Vec::new();
+    let mut word = String::new();
     for ch in text.chars() {
         if let Some(pinyin) = ch.to_pinyin() {
-            let plain = pinyin.plain();
-            spaced.push_str(plain);
-            spaced.push(' ');
-            tight.push_str(plain);
-            mixed.push_str(pinyin.first_letter());
-            initials.push_str(pinyin.first_letter());
-            in_word = false;
+            push_word(&mut word, &mut syllables);
+            syllables.push(pinyin.plain().to_string());
             continue;
         }
-        for lower in ch.to_lowercase() {
-            if is_han(lower) {
-                // 没有拼音数据的生僻字：字面留在各形态里，至少不会凭空消失。
-                spaced.push(lower);
-                tight.push(lower);
-                mixed.push(lower);
-                initials.push(lower);
-                in_word = false;
-            } else if lower.is_alphanumeric() {
-                spaced.push(lower);
-                tight.push(lower);
-                mixed.push(lower);
-                if !in_word {
-                    initials.push(lower);
-                }
-                in_word = true;
-            } else if lower.is_whitespace() {
-                spaced.push(' ');
-                in_word = false;
-            } else {
-                // 标点只留在原文形态里；连写和首字母串不该被 `-` `.` 打断。
-                spaced.push(lower);
-                in_word = false;
-            }
+        if ch.is_alphanumeric() {
+            word.extend(ch.to_lowercase());
+            continue;
         }
+        // 标点、空格、没有拼音数据的生僻字：都是音节边界。
+        push_word(&mut word, &mut syllables);
     }
-    Folded {
-        spaced,
-        tight,
-        mixed,
-        initials,
+    push_word(&mut word, &mut syllables);
+    Folded { syllables }
+}
+
+fn push_word(word: &mut String, syllables: &mut Vec<String>) {
+    if !word.is_empty() {
+        syllables.push(std::mem::take(word));
     }
 }
 
@@ -216,13 +210,48 @@ mod tests {
         assert!(matches("随便什么", "   "));
     }
 
+    /// 用户报过的那个例子：`ub` 是 `zhoubao` 中间的两个字母，不该命中。
+    #[test]
+    fn a_syllable_only_matches_from_its_first_letter() {
+        let text = "周报";
+        // 前序完整拼音、前序拼音、首拼都认
+        assert!(matches(text, "zhoubao"));
+        assert!(matches(text, "zhouba"));
+        assert!(matches(text, "zhoub"));
+        assert!(matches(text, "zho"));
+        assert!(matches(text, "zh"));
+        assert!(matches(text, "zb"));
+        assert!(matches(text, "bao")); // 从第二个字开始也认
+        assert!(matches(text, "b"));
+        // 从音节中间切出来的都不认
+        assert!(!matches(text, "ub"));
+        assert!(!matches(text, "oub"));
+        assert!(!matches(text, "ouba"));
+        assert!(!matches(text, "houb"));
+        assert!(!matches(text, "houba"));
+    }
+
+    #[test]
+    fn a_single_syllable_must_start_at_the_beginning() {
+        let text = "中文";
+        assert!(matches(text, "zhong"));
+        assert!(matches(text, "zho"));
+        assert!(matches(text, "zhongw"));
+        assert!(!matches(text, "hong"));
+        assert!(!matches(text, "hon"));
+        assert!(!matches(text, "ong"));
+    }
+
     #[test]
     fn shape_of_a_mixed_string() {
-        let folded = fold("GitHub 星标");
-        assert_eq!(folded.spaced, "github xing biao ");
-        assert_eq!(folded.tight, "githubxingbiao");
-        assert_eq!(folded.mixed, "githubxb");
-        assert_eq!(folded.initials, "gxb");
+        let folded = fold("github 星标");
+        assert_eq!(folded.syllables, ["github", "xing", "biao"]);
+        // 标点和空格只是边界，不产生空音节。
+        let folded = fold("C:\\Users\\cz\\Desktop\\喝水提醒.exe");
+        assert_eq!(
+            folded.syllables,
+            ["c", "users", "cz", "desktop", "he", "shui", "ti", "xing", "exe"]
+        );
     }
 
     /// 拿程序里真实在用的文案试，别只在人造字符串上过。
