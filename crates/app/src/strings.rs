@@ -51,15 +51,10 @@ pub mod common {
 ///
 /// 名称尽量复用 [`common`] 里同功能的词，这里只放命令独有的那几句说明。
 pub mod commands {
-    pub const CONFIG_FOLDER_DESCRIPTION: &str = "打开启动器的配置文件夹";
     /// 主页「设置」命令。
     pub const OPEN_SETTINGS_DESCRIPTION: &str = "打开启动器设置";
     /// 主页「计算器」命令。
     pub const OPEN_CALCULATOR_DESCRIPTION: &str = "打开计算器，算表达式的值";
-    /// 主页「程序所在位置」命令。
-    pub const PROGRAM_FOLDER_DESCRIPTION: &str = "打开启动器所在的文件夹";
-    /// 主页「项目仓库」命令。
-    pub const REPOSITORY_DESCRIPTION: &str = "在浏览器打开项目仓库";
     /// 主页「书签」命令。
     pub const USER_TOOLS_NAME: &str = "自定义条目";
     pub const USER_TOOLS_DESCRIPTION: &str = "管理自己加的文件、文件夹和快捷命令";

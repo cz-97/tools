@@ -230,6 +230,14 @@ fn system_page(
             ),
         ))
         .child(action_row(
+            "open-folder",
+            strings::settings_page::PROGRAM_FOLDER_NAME,
+            actions::program_dir().display().to_string(),
+            strings::settings_page::FOLDER_OPEN,
+            colors,
+            cx.listener(|_, _, _, cx| actions::open_program_folder(cx)),
+        ))
+        .child(action_row(
             "open-config",
             strings::settings_page::CONFIG_FOLDER,
             crate::app::about_directory(),
@@ -395,14 +403,6 @@ fn about_page(colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
             strings::settings_page::REPOSITORY_OPEN,
             colors,
             cx.listener(|_, _, _, cx| actions::open_repository(cx)),
-        ))
-        .child(action_row(
-            "open-folder",
-            strings::settings_page::PROGRAM_FOLDER_NAME,
-            actions::program_dir().display().to_string(),
-            strings::settings_page::FOLDER_OPEN,
-            colors,
-            cx.listener(|_, _, _, cx| actions::open_program_folder(cx)),
         ))
         .into_any_element()
 }
