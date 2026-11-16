@@ -94,6 +94,13 @@ pub mod sections {
     pub const MATCHERS: &str = "指令匹配";
     /// 关于。
     pub const ABOUT: &str = "关于";
+    /// 其他（自定义条目、计算器、关于这些内容少的命令归到一组）。
+    pub const OTHER: &str = "其他";
+}
+
+/// 某个工具右上角那枚齿轮的悬浮提示（也是弹窗的标题来源）。
+pub fn tool_settings_tooltip(name: &str) -> String {
+    format!("{name}的设置")
 }
 
 /// 主面板（命令列表）。
@@ -174,17 +181,6 @@ pub mod lists {
 
 /// 命令页（设置里的「命令」标签）。
 pub mod commands_page {
-    /// 右侧列表上方的一行标题。顺带把快捷键按钮的两个操作说清楚：
-    /// 右键没有提示、也没有别的入口，不写在明处就只能靠猜。
-    pub fn caption(section: &str) -> String {
-        format!("{section}的命令\u{2002}\u{00b7}\u{2002}左键录制，右键清除")
-    }
-    /// 该子模块下没有任何命令时的一行字。
-    pub const EMPTY: &str = "这个子模块还没有命令";
-    /// 左侧子模块后面的「启用数/总数」。
-    pub fn enabled_ratio(enabled: usize, total: usize) -> String {
-        format!("{enabled}/{total}")
-    }
     /// 快捷键按钮在没绑定时显示的字。
     pub const SHORTCUT_EMPTY: &str = "快捷键";
     /// 录制快捷键时按钮上显示的字。

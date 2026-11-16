@@ -51,8 +51,6 @@ pub(crate) fn user_kind_icon(kind: ToolKind) -> gpui_kit::assets::IconName {
     }
 }
 
-/// 三列布局里第二列（子模块 / 子工具）的宽度。
-pub(crate) const MODULE_WIDTH: f32 = 168.;
 
 pub(crate) const SIDEBAR_WIDTH: f32 = 148.;
 /// 命令页里左侧子模块列的宽度。要放得下「GitHub 3/3」这种最长的组合。
@@ -178,20 +176,19 @@ impl ListKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
     System,
-    Commands,
-    Appearance,
+    /// 工具：各条命令的开关与快捷键，加上各工具自己的设置入口。
     Tools,
+    Appearance,
     Matchers,
     About,
 }
 
 impl SettingsTab {
     /// 全部子模块，按界面上的顺序。
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::System,
-        Self::Commands,
-        Self::Appearance,
         Self::Tools,
+        Self::Appearance,
         Self::Matchers,
         Self::About,
     ];
@@ -200,9 +197,8 @@ impl SettingsTab {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::System => strings::sections::SYSTEM,
-            Self::Commands => strings::sections::COMMANDS,
-            Self::Appearance => strings::sections::APPEARANCE,
             Self::Tools => strings::sections::TOOLS,
+            Self::Appearance => strings::sections::APPEARANCE,
             Self::Matchers => strings::sections::MATCHERS,
             Self::About => strings::sections::ABOUT,
         }
@@ -212,9 +208,8 @@ impl SettingsTab {
     pub(crate) fn icon(self) -> gpui_kit::assets::IconName {
         match self {
             Self::System => catalogue::Section::System.icon(),
-            Self::Commands => catalogue::Section::Commands.icon(),
-            Self::Appearance => catalogue::Section::Appearance.icon(),
             Self::Tools => gpui_kit::assets::IconName::Toolbox,
+            Self::Appearance => catalogue::Section::Appearance.icon(),
             Self::Matchers => gpui_kit::assets::IconName::Sparkles,
             Self::About => catalogue::Section::About.icon(),
         }
@@ -230,21 +225,19 @@ impl SettingsTab {
     }
 }
 
+/// 一个工具自己的设置（从设置页挪到了各工具的页面上，见 `Launcher::tool_settings`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolTab {
-    /// 计算器：和它的设置（比如精度）。
+    /// 计算器：精度。挂计算器页。
     Calculator,
-    /// 火狐系浏览器：profile 目录在哪儿。
+    /// 火狐系浏览器：profile 目录。挂书签页和历史页。
     Firefox,
-    /// GitHub：用户名和令牌。
+    /// GitHub：用户名和令牌。挂个人项目 / 星标 / 查询仓库三页。
     Github,
 }
 
 impl ToolTab {
-    /// 全部子标签，顺序就是左侧列表的顺序。
-    pub(crate) const ALL: [Self; 3] = [Self::Calculator, Self::Firefox, Self::Github];
-
-    /// 界面上的名字。
+    /// 界面上的名字。齿轮按钮的 tooltip 用。
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Calculator => strings::launcher::CALCULATOR_TITLE,
@@ -253,12 +246,12 @@ impl ToolTab {
         }
     }
 
-    /// 界面上的图标。
-    pub(crate) fn icon(self) -> gpui_kit::assets::IconName {
-        match self {
-            Self::Calculator => gpui_kit::assets::IconName::Calculator,
-            Self::Firefox => gpui_kit::assets::IconName::Globe,
-            Self::Github => gpui_kit::assets::IconName::Github,
+    /// 这个列表页属于哪个工具。**一个工具有几页就要在这几页都认出来**：
+    /// 浏览器两页、GitHub 三页，用户要求每页右上角都有自己那枚设置齿轮。
+    pub(crate) fn for_list(kind: ListKind) -> Option<Self> {
+        match kind {
+            ListKind::Bookmarks | ListKind::History => Some(Self::Firefox),
+            ListKind::Projects | ListKind::Stars | ListKind::Search => Some(Self::Github),
         }
     }
 }
@@ -432,10 +425,11 @@ pub struct Launcher {
     last_page: Option<(Instant, Page)>,
     /// 盯着面板有没有失去前台的循环。每次唤起重开，旧的那条已经结束了。
     focus_watch: Option<Task<()>>,
-    /// 命令页当前显示第几个子模块，`catalogue::Section::ALL` 的下标。
-    pub(crate) section: usize,
-    /// 工具标签下当前显示哪个子标签页（`ToolTab`）。
-    pub(crate) tool_tab: ToolTab,
+    /// 当前展开的是哪个工具自己的设置块（齿轮按钮切换的那块）。
+    ///
+    /// 工具设置不再堆在设置页里：计算器精度跟着计算器页、浏览器 profile 跟着书签/历史页、
+    /// GitHub 的用户名和令牌跟着三个仓库页。换页时清空，别的页面上不带着它。
+    pub(crate) tool_settings: Option<ToolTab>,
     /// 透明度滑动条。滑动的过程只改内存，库在面板收起时统一落盘。
     pub(crate) opacity: Entity<SliderState>,
     /// 计算器的公式行。最后一行永远是空行：它有内容，下面就自动补一个。
@@ -627,8 +621,7 @@ impl Launcher {
             page: Page::Commands,
             last_page: None,
             focus_watch: None,
-            section: 0,
-            tool_tab: ToolTab::Calculator,
+            tool_settings: None,
             opacity,
             calculator: Vec::new(),
             next_row_id: 0,
@@ -971,6 +964,8 @@ impl Launcher {
     /// 于是 `Page::UserTools` 被兜去命令页——「收起再唤出回不到自定义条目」就是这么来的。
     /// 现在穷尽写，以后新增页面漏了会直接编译不过。
     fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        // 换页就把工具设置弹窗收掉：它属于上一页的齿轮，跟着走会让人以为还在那一页。
+        self.tool_settings = None;
         match page {
             Page::Commands => {
                 self.page = Page::Commands;
@@ -1291,6 +1286,11 @@ impl Launcher {
             self.cancel_tool_editor(window, cx);
             return;
         }
+        // 工具设置弹窗盖在当前页上：`Esc` 先关它，别一下退回主页。
+        if self.tool_settings.is_some() {
+            self.close_tool_settings(cx);
+            return;
+        }
         if matches!(
             self.page,
             Page::Settings(_) | Page::Calculator | Page::List(_) | Page::UserTools
@@ -1487,15 +1487,25 @@ impl Launcher {
         cx.notify();
     }
 
-    /// 换一个设置子模块（命令页左列）。
-    pub(crate) fn select_section(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.section == index {
+    /// 打开 / 收起某个工具自己的设置弹窗（页头右上角那枚齿轮）。
+    ///
+    /// 再点一次同一个齿轮就关掉；点另一个工具的齿轮直接换成那个。
+    pub(crate) fn toggle_tool_settings(&mut self, tab: ToolTab, cx: &mut Context<Self>) {
+        self.tool_settings = (self.tool_settings != Some(tab)).then_some(tab);
+        // 设置里那几个输入框是「失焦就存」，弹窗一关先结一次账。
+        if self.tool_settings.is_none() {
+            self.commit_settings_inputs(cx);
+        }
+        cx.notify();
+    }
+
+    /// 关掉工具设置弹窗（换页、`Esc` 都要走这里）。
+    pub(crate) fn close_tool_settings(&mut self, cx: &mut Context<Self>) {
+        if self.tool_settings.is_none() {
             return;
         }
         self.commit_settings_inputs(cx);
-        self.section = index;
-        self.recording = None;
-        self.conflict = None;
+        self.tool_settings = None;
         cx.notify();
     }
 
@@ -1516,29 +1526,6 @@ impl Launcher {
     /// 收起「自定义条目」，回到某个子模块的命令列表。
 
     /// 搜索词变了：把结果重新喂给列表。
-
-    pub(crate) fn select_tool_tab(
-        &mut self,
-        tab: ToolTab,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.tool_tab == tab {
-            return;
-        }
-        self.commit_settings_inputs(cx);
-        self.tool_editor = None;
-        self.tool_notice = None;
-        window.blur(cx);
-        self.tool_tab = tab;
-        // 换一页就不带着上一页的关键词和高亮行。
-        self.tools_selected = 0;
-        self.tools_query.clear();
-        self.tools_search
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.reset_settings_scroll();
-        cx.notify();
-    }
 
     /// 设置页的滚动条回到顶部。
     fn reset_settings_scroll(&self) {

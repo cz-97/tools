@@ -13,129 +13,82 @@ use crate::catalogue;
 use crate::shortcuts::shortcut_label;
 use crate::strings;
 use crate::ui::colors::UiColors;
-use crate::ui::launcher::{Launcher, MODULE_WIDTH, RecordTarget};
-use crate::ui::metrics::{RADIUS_CHIP, RADIUS_CONTROL};
+use crate::ui::launcher::{Launcher, RecordTarget};
+use crate::ui::metrics::{RADIUS_CHIP, RADIUS_CONTROL, RADIUS_SURFACE};
 
-/// 画出整个命令页。
+/// 设置里「工具」页的分组：命令目录的 `Section` 归成这几组。
 ///
-/// 内容全部来自命令目录和每条命令的设置，所以新声明一条命令（挂在某个子模块下）
-/// 这里自动就有了，不用改这个函数。
+/// 内容太少的分组不单独占一行：自定义条目、计算器、关于都并进「其他」——
+/// 它们各自只有一两条命令，单起一个标题反而更难找。
+const GROUPS: [(&str, &[catalogue::Section]); 4] = [
+    (strings::sections::SYSTEM, &[catalogue::Section::System]),
+    (strings::sections::BROWSER, &[catalogue::Section::Browser]),
+    (strings::sections::GITHUB, &[catalogue::Section::Github]),
+    (
+        strings::sections::OTHER,
+        &[
+            catalogue::Section::Tools,
+            catalogue::Section::Calculator,
+            catalogue::Section::About,
+        ],
+    ),
+];
+
+/// 画出整个「工具」页：所有命令按分组排成一列。
+///
+/// 原来这里是「命令」页，左边一列子模块、右边一列命令，看一眼要换两次选中。
+/// 现在改成一张长页面：分组标题（**只写分类名**，不写「系统的命令 · 左键录制…」那种
+/// 啰嗦话）+ 一块淡色卡片，滚一遍全看得见。
+///
+/// 各工具**自己**的设置不在这里：计算精度跟着计算器页、浏览器 profile 跟着书签/历史页、
+/// GitHub 用户名和令牌跟着三个仓库页（页头右上角的齿轮，见
+/// [`crate::ui::settings_page::tool_settings_block`]）。
 pub(crate) fn render(
     launcher: &Launcher,
     colors: UiColors,
     cx: &Context<Launcher>,
 ) -> impl IntoElement {
     let settings = stored_settings(cx);
-    // 子模块是从命令目录现算的：没有命令的分组不画（见 `catalogue::sections`）。
-    let listed = catalogue::sections();
-    let selected = launcher.section.min(listed.len().saturating_sub(1));
-    let border = colors.border;
-
-    let sections = v_flex()
-        .w(px(MODULE_WIDTH))
-        .flex_shrink_0()
-        .gap_1()
-        .pr_3()
-        .border_r_1()
-        .border_color(border)
-        .children(listed.iter().enumerate().map(|(ix, section)| {
-            let current = ix == selected;
-            let owned = catalogue::commands(*section).collect::<Vec<_>>();
-            let shown = owned
-                .iter()
-                .filter(|command| settings.command_enabled(command.section.key(), command.id))
-                .count();
-            h_flex()
-                .id(SharedString::from(format!("section-{}", section.label())))
-                .gap_2()
-                .px_2()
-                .py_1p5()
-                .rounded(px(RADIUS_CONTROL))
-                .text_sm()
-                .cursor_pointer()
-                .text_color(if current {
-                    colors.accent_foreground
-                } else {
-                    colors.foreground
-                })
-                .when(current, move |this| this.bg(colors.accent))
-                .when(!current, move |this| {
-                    this.hover(move |style| style.bg(colors.hover))
-                })
-                .on_click(cx.listener(move |launcher, _, _, cx| launcher.select_section(ix, cx)))
-                .child(Icon::new(section.icon()).size_4())
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_ellipsis()
-                        .child(section.label()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(if current {
-                            colors.on_accent_muted
-                        } else {
-                            colors.muted_foreground
-                        })
-                        .child(strings::commands_page::enabled_ratio(shown, owned.len())),
-                )
-        }));
-
-    let section = listed
-        .get(selected)
-        .copied()
-        .unwrap_or(catalogue::Section::System);
-    let commands = catalogue::commands(section)
-        .map(|command| {
-            command_row(
-                command,
-                &settings.command(command.section.key(), command.id),
-                launcher,
-                colors,
-                cx,
-            )
-            .into_any_element()
-        })
-        .collect::<Vec<_>>();
-
-    h_flex()
-        .size_full()
+    v_flex()
+        .id("tools-settings")
+        .w_full()
         .min_w_0()
-        .items_stretch()
-        .overflow_hidden()
-        .child(sections)
-        .child(
-            // 右列跟着窗口高度走：命令多了、窗口小了就地滚，不裁掉最后几条。
-            v_flex()
-                .id("command-list")
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .overflow_y_scroll()
-                .pl_3()
-                .gap_1()
-                .child(
-                    div()
-                        .px_2()
-                        .pb_1()
-                        .text_xs()
-                        .text_color(colors.muted_foreground)
-                        .child(strings::commands_page::caption(section.label())),
-                )
-                .when(commands.is_empty(), |this| {
-                    this.child(
+        .gap_4()
+        .children(GROUPS.iter().filter_map(|(title, sections)| {
+            let rows = sections
+                .iter()
+                .flat_map(|section| catalogue::commands(*section))
+                .map(|command| {
+                    let state = settings.command(command.section.key(), command.id);
+                    command_row(command, &state, launcher, colors, cx).into_any_element()
+                })
+                .collect::<Vec<_>>();
+            if rows.is_empty() {
+                return None;
+            }
+            Some(
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(
                         div()
                             .px_2()
-                            .py_2()
                             .text_xs()
                             .text_color(colors.muted_foreground)
-                            .child(strings::commands_page::EMPTY),
+                            .child(*title),
                     )
-                })
-                .children(commands),
-        )
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap_0p5()
+                            .p_1()
+                            .rounded(px(RADIUS_SURFACE))
+                            .bg(colors.surface)
+                            .children(rows),
+                    )
+                    .into_any_element(),
+            )
+        }))
 }
 
 /// 命令页上的一行：名字、次数、快捷键按钮、启用开关。
@@ -274,4 +227,33 @@ pub(crate) fn shortcut_button(
         .on_click(on_click)
         .on_mouse_down(MouseButton::Right, on_clear)
         .child(label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GROUPS;
+    use crate::catalogue::{COMMANDS, Section};
+
+    /// 每个分组都得有命令，每条命令也都得落在某个分组里——两边漏一个，
+    /// 用户在「工具」页里就找不到那条命令了。
+    #[test]
+    fn every_section_with_commands_lands_in_exactly_one_group() {
+        for section in Section::ALL {
+            let has_commands = COMMANDS.iter().any(|command| command.section == section);
+            let groups = GROUPS
+                .iter()
+                .filter(|(_, listed)| listed.contains(&section))
+                .count();
+            if has_commands {
+                assert_eq!(
+                    groups,
+                    1,
+                    "{} 下面有命令，但没归进「工具」页的分组",
+                    section.label()
+                );
+            } else {
+                assert_eq!(groups, 0, "{} 下面没有命令，不该占一个分组", section.label());
+            }
+        }
+    }
 }

@@ -6566,7 +6566,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tools"
-version = "0.39.7"
+version = "0.40.0"
 dependencies = [
  "futures",
  "global-hotkey",
@@ -6580,7 +6580,7 @@ dependencies = [
 
 [[package]]
 name = "tools-core"
-version = "0.39.7"
+version = "0.40.0"
 dependencies = [
  "pinyin",
  "rusqlite",
@@ -6591,7 +6591,7 @@ dependencies = [
 
 [[package]]
 name = "tools-platform"
-version = "0.39.7"
+version = "0.40.0"
 dependencies = [
  "windows 0.61.3",
  "windows-sys 0.61.2",

@@ -19,9 +19,7 @@ use crate::strings;
 use crate::ui::colors::UiColors;
 use crate::ui::commands_page;
 use crate::ui::commands_page::shortcut_button;
-use crate::ui::launcher::{
-    Launcher, MODULE_WIDTH, RecordTarget, SIDEBAR_WIDTH, SettingsTab, ToolTab,
-};
+use crate::ui::launcher::{Launcher, RecordTarget, SIDEBAR_WIDTH, SettingsTab, ToolTab};
 use crate::ui::metrics::{RADIUS_CONTROL, RADIUS_SURFACE};
 
 /// 画出整个设置页。
@@ -74,11 +72,11 @@ pub(crate) fn render(
 
     let content = match tab {
         SettingsTab::System => system_page(launcher, settings, colors, cx),
-        SettingsTab::Commands => commands_page::render(launcher, colors, cx).into_any_element(),
+        // 「工具」= 所有命令的开关/快捷键，按分组排成一列（原来的「命令」页）。
+        // 各工具自己的设置（计算精度、浏览器 profile、GitHub 令牌）不在这里，
+        // 跟着各自的页面走，见 `tool_settings_block`。
+        SettingsTab::Tools => commands_page::render(launcher, colors, cx).into_any_element(),
         SettingsTab::Appearance => appearance_page(launcher, settings, colors, cx),
-        // 「工具」是容器标签：它自己不画设置项，而是把计算器等工具收在下面的
-        // 子标签页里，布局和命令页一样（左列列工具，右列列内容）。
-        SettingsTab::Tools => tools_page(launcher, colors, cx),
         SettingsTab::Matchers => matchers_page(settings, colors, cx),
         SettingsTab::About => about_page(colors, cx),
     };
@@ -121,77 +119,32 @@ pub(crate) fn render(
         )
 }
 
-/// 工具标签：左边列出全部工具子标签，右边画选中那一项的配置。
+/// 某个工具自己的设置，给页头齿轮弹出的那张卡片用。
 ///
-/// 布局和命令页一致（左列列子标签，右列列内容）；子标签都点选，不用键盘。
-fn tools_page(launcher: &Launcher, colors: UiColors, cx: &Context<Launcher>) -> AnyElement {
-    let border = colors.border;
-    let selected = launcher.tool_tab;
-
-    let tabs = v_flex()
-        .w(px(MODULE_WIDTH))
-        .flex_shrink_0()
-        .gap_1()
-        .pr_3()
-        .border_r_1()
-        .border_color(border)
-        .children(ToolTab::ALL.iter().map(|tool| {
-            let current = *tool == selected;
-            h_flex()
-                .id(SharedString::from(format!("tool-tab-{}", tool.label())))
-                .gap_2()
-                .px_2()
-                .py_1p5()
-                .rounded(px(RADIUS_CONTROL))
-                .text_sm()
-                .cursor_pointer()
-                .text_color(if current {
-                    colors.accent_foreground
-                } else {
-                    colors.foreground
-                })
-                .when(current, move |this| this.bg(colors.accent))
-                .when(!current, move |this| {
-                    this.hover(move |style| style.bg(colors.hover))
-                })
-                .on_click(cx.listener(move |launcher, _, window, cx| {
-                    launcher.select_tool_tab(*tool, window, cx)
-                }))
-                .child(Icon::new(tool.icon()).size_4())
-                .child(div().flex_1().min_w_0().text_ellipsis().child(tool.label()))
-        }));
-
-    let content = match selected {
+/// 这些设置**不再挂在设置页里**：计算器精度跟着计算器页、浏览器 profile 跟着书签/历史页、
+/// GitHub 的用户名和令牌跟着三个仓库页。一个工具有几页，那几页的右上角就都有这枚齿轮。
+pub(crate) fn tool_settings_block(
+    launcher: &Launcher,
+    tab: ToolTab,
+    colors: UiColors,
+    cx: &Context<Launcher>,
+) -> AnyElement {
+    let body = match tab {
         ToolTab::Calculator => calculator_settings_page(stored_settings(cx), colors, cx),
         ToolTab::Firefox => firefox_settings_page(launcher, colors, cx),
         ToolTab::Github => github_settings_page(launcher, colors, cx),
     };
-
-    h_flex()
-        .size_full()
-        .min_w_0()
-        .items_stretch()
-        .overflow_hidden()
-        .child(tabs)
+    v_flex()
+        .gap_1()
         .child(
-            v_flex()
-                .id("tool-content")
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .overflow_y_scroll()
-                .pl_3()
-                .gap_1()
-                .child(
-                    div()
-                        .px_2()
-                        .pb_1()
-                        .text_xs()
-                        .text_color(colors.muted_foreground)
-                        .child(strings::settings_page::tool_caption(selected.label())),
-                )
-                .child(content),
+            div()
+                .px_2()
+                .pb_1()
+                .text_xs()
+                .text_color(colors.muted_foreground)
+                .child(strings::settings_page::tool_caption(tab.label())),
         )
+        .child(body)
         .into_any_element()
 }
 

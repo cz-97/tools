@@ -35,6 +35,10 @@ pub enum Section {
 
 impl Section {
     /// 全部子模块，顺序就是界面上的顺序。
+    ///
+    /// 界面上不再直接按它铺开（「工具」页按 `GROUPS` 分组），它现在是完整性检查的
+    /// 基准：新加一个 `Section` 而忘了放进任何分组，测试会当场报出来。
+    #[allow(dead_code)]
     pub const ALL: [Self; 8] = [
         Self::System,
         Self::Commands,
@@ -227,50 +231,4 @@ pub fn commands(section: Section) -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
         .filter(move |command| command.section == section)
-}
-
-/// 目录里**真的有命令**的子模块，顺序沿用 [`Section::ALL`]。
-///
-/// 命令页左边列的就是它：一个子模块下一条命令都没有时不该出现在那儿，而且判断是从
-/// `COMMANDS` 现算的——加/删命令之后列表自己就变了，不用另外维护一份。
-pub fn sections() -> Vec<Section> {
-    Section::ALL
-        .into_iter()
-        .filter(|section| COMMANDS.iter().any(|command| command.section == *section))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{COMMANDS, Section, sections};
-
-    #[test]
-    fn sections_only_lists_modules_that_own_commands() {
-        let listed = sections();
-        for section in &listed {
-            assert!(
-                COMMANDS.iter().any(|command| command.section == *section),
-                "{} 下面没有命令，不该出现在命令页",
-                section.label()
-            );
-        }
-        assert_eq!(
-            listed.len(),
-            6,
-            "系统 / 工具 / 浏览器 / GitHub / 计算器 / 关于"
-        );
-        assert!(!listed.contains(&Section::Commands));
-        assert!(!listed.contains(&Section::Appearance));
-    }
-
-    #[test]
-    fn every_declared_section_survives_extraction() {
-        // 抽取出来的顺序必须和 `ALL` 一致，否则命令页的顺序会跟着跳。
-        let listed = sections();
-        let expected = Section::ALL
-            .into_iter()
-            .filter(|section| COMMANDS.iter().any(|command| command.section == *section))
-            .collect::<Vec<_>>();
-        assert_eq!(listed, expected);
-    }
 }

@@ -8,7 +8,7 @@ resolver = "3"
 members = ["crates/platform", "crates/core", "crates/app"]
 
 [workspace.package]
-version = "0.39.7"
+version = "0.40.0"
 edition = "2024"
 repository = "https://github.com/cz-97/tools"
 

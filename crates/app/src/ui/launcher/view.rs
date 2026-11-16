@@ -25,7 +25,7 @@ use crate::ui::settings_page::{self, small_button, small_button_fixed};
 use super::{
     CORNER_RADIUS, HEADER_MIN_HEIGHT, HEADER_SLACK, Launcher, ListKind, Page, SEARCH_FIELD_IDLE,
     SEARCH_FIELD_IDLE_NARROW, SEARCH_FIELD_MAX, SEARCH_FIELD_NARROW_MAX, SEARCH_FIELD_PADDING,
-    SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE,
+    SEARCH_FIELD_SLACK, SEARCH_TEXT_SIZE, ToolTab,
 };
 
 impl Launcher {
@@ -121,6 +121,10 @@ impl Launcher {
                         }),
                 )
                 .child(div().flex_1())
+                // 计算器自己的设置（精度）就在这一页的右上角，不必绕去设置页。
+                .when(is_calculator, |this| {
+                    this.child(self.settings_gear(ToolTab::Calculator, cx))
+                })
                 .into_any_element()
             }
             Page::List(kind) => self.list_header(bar, kind, window, cx),
@@ -259,6 +263,13 @@ impl Launcher {
             )
             .child(div().flex_1());
 
+        // 这个工具自己的设置齿轮。**每个页面都要有**：浏览器两页、GitHub 三页，
+        // 用户在哪一页用这个工具，就在哪一页改它的设置。
+        let bar = match ToolTab::for_list(kind) {
+            Some(tab) => bar.child(self.settings_gear(tab, cx)),
+            None => bar,
+        };
+
         // 右上角按钮：只有「要手动去取」的页面才给。
         // 书签和历史每次进页面都重读库，天生就是最新的，不再放刷新。
         if !kind.needs_action() {
@@ -293,6 +304,70 @@ impl Launcher {
             ),
         )
         .into_any_element()
+    }
+
+    /// 页头右上角那枚齿轮：点开这个工具自己的设置弹窗。
+    ///
+    /// 工具设置不放在设置页里，而是跟着工具自己的页面走（见 [`ToolTab::for_list`]）。
+    fn settings_gear(&self, tab: ToolTab, cx: &Context<Self>) -> AnyElement {
+        div()
+            .id(SharedString::from(format!("tool-settings-{}", tab.label())))
+            .occlude()
+            .flex_shrink_0()
+            .child(
+                Button::new(SharedString::from(format!(
+                    "tool-settings-button-{}",
+                    tab.label()
+                )))
+                .ghost()
+                .icon(gpui_kit::assets::IconName::Cog)
+                .tooltip(SharedString::from(strings::tool_settings_tooltip(tab.label())))
+                .on_click(cx.listener(move |launcher, _, _, cx| {
+                    launcher.toggle_tool_settings(tab, cx)
+                })),
+            )
+            .into_any_element()
+    }
+
+    /// 工具设置弹窗：盖在整页上的一张卡片，点外面或按 `Esc` 关掉。
+    fn tool_settings_layer(&self, colors: UiColors, cx: &Context<Self>) -> AnyElement {
+        let Some(tab) = self.tool_settings else {
+            return div().into_any_element();
+        };
+        let backdrop = cx.theme().background;
+        let card = v_flex()
+            .w(px(460.))
+            .gap_2()
+            .p_4()
+            .rounded(px(RADIUS_CARD))
+            .border_1()
+            .border_color(colors.border)
+            .bg(backdrop)
+            // 点卡片本身不该把它关了（那是背板的活）。
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|_, _: &gpui_kit::MouseDownEvent, _, cx| {
+                cx.stop_propagation()
+            }))
+            .child(settings_page::tool_settings_block(self, tab, colors, cx));
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(backdrop.opacity(0.72))
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|launcher, _: &gpui_kit::MouseDownEvent, _, cx| {
+                launcher.close_tool_settings(cx)
+            }))
+            .child(card)
+            .into_any_element()
     }
 }
 
@@ -510,6 +585,7 @@ impl Render for Launcher {
             .child(body)
             .child(footer)
             // 提示框盖在整页上，占用的是同一块地方，不改变版面。
+            .child(self.tool_settings_layer(colors, cx))
             .child(self.prompt_layer(colors, cx))
             .child(self.editor_layer(colors, cx))
     }
